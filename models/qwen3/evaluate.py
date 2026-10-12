@@ -122,7 +122,7 @@ def comparison_contract(root, source_config, kwargs):
     }
 
 
-def run_evaluation(evaluator, kwargs, backend, contract):
+def run_evaluation(evaluator, kwargs, backend, contract, result_metadata=None):
     """Keep reference main's lifecycle/output, then attach baseline-owned provenance."""
     output = Path(kwargs["output_path"]).resolve()
     kwargs = {**kwargs, "output_path": str(output)}
@@ -149,11 +149,12 @@ def run_evaluation(evaluator, kwargs, backend, contract):
         result = json.loads(path.read_text())
         if not isinstance(result.get("results"), dict):
             raise RuntimeError("Reference evaluator did not save structured task results")
-        if backend == "dms":
+        if backend in ("dms", "cam", "dense"):
             result = {k: v for k, v in result.items() if not k.startswith("log_kv_") and k != "swa_window_size"}
         result.update(model_backend=backend, comparison_contract=contract,
                       tokenizer_dir=kwargs["tokenizer_dir"],
                       max_seq_length=kwargs["config_overrides"]["block_size"])
+        result.update(result_metadata or {})
         path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
 
 

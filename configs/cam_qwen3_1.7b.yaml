@@ -1,0 +1,63 @@
+# Qwen3-1.7B-Base exported from the shared SemanticLogKV base checkpoint.
+model: outputs/semanticlogkv_base
+litgpt_root: ../litgpt
+semantic_config: exp/qwen1.7b-32k/arc_attach_alpha_beta_k12_b128_2k.yaml
+# Snapshot of ../litgpt/eval.sh defaults; --tasks selects a smaller check.
+tasks:
+  - boolq
+  - piqa
+  - social_iqa
+  - hellaswag
+  - winogrande
+  - arc_easy
+  - arc_challenge
+  - openbookqa
+  - mmlu
+  - ceval-valid
+  - ifeval
+  - truthfulqa_gen
+  - truthfulqa_mc1
+  - truthfulqa_mc2
+  - longbench_2wikimqa
+  - longbench_dureader
+  - longbench_gov_report
+  - longbench_hotpotqa
+  - longbench_lcc
+  - longbench_lsht
+  - longbench_multi_news
+  - longbench_multifieldqa_en
+  - longbench_multifieldqa_zh
+  - longbench_musique
+  - longbench_narrativeqa
+  - longbench_passage_count
+  - longbench_passage_retrieval_en
+  - longbench_qasper
+  - longbench_qmsum
+  - longbench_repobench-p
+  - longbench_samsum
+  - longbench_trec
+  - longbench_triviaqa
+  - longbench_vcsum
+  - longbench_2wikimqa_e
+  - longbench_gov_report_e
+  - longbench_hotpotqa_e
+  - longbench_lcc_e
+  - longbench_multi_news_e
+  - longbench_multifieldqa_en_e
+  - longbench_passage_count_e
+  - longbench_passage_retrieval_en_e
+  - longbench_qasper_e
+  - longbench_repobench-p_e
+  - longbench_samsum_e
+  - longbench_trec_e
+  - longbench_triviaqa_e
+  - niah_single_1
+  - niah_single_2
+  - niah_single_3
+ruler_lengths: [1024, 2048, 4096, 8192, 16384, 32768]
+seed: 42
+prefill_chunk_size: 256
+# 2,048 retained entries are an initial comparison point, not equal allocated bytes.
+start_size: 32
+recent_size: 2016
+merge_size: 16
