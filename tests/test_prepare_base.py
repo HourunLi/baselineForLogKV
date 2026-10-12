@@ -88,6 +88,43 @@ def test_source_tied_head_mismatch_is_rejected(source):
         build_hf_model(model.config, config, state, copy_weights_qwen_3)
 
 
+@pytest.mark.parametrize("schedule", [None, [], {}])
+def test_empty_legacy_schedule_preserves_source_and_weights(source, tmp_path, schedule):
+    path, model, _, experiment = source
+    config_path = path / "model_config.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["research_breakpoint_schedule"] = schedule
+    config_path.write_text(yaml.safe_dump(config))
+    original = config_path.read_bytes()
+    output = tmp_path / "prepared"
+    with pytest.warns(UserWarning, match="research_breakpoint_schedule"):
+        manifest = prepare_base(DEFAULT_LITGPT_ROOT, experiment, output)
+    assert config_path.read_bytes() == original
+    assert manifest["source_config_files"]["model_config.yaml"] == sha256_file(config_path)
+    assert verify_prepared_base(output) == manifest
+    restored = Qwen3ForCausalLM.from_pretrained(output, local_files_only=True).eval()
+    expected = {}
+    copy_weights_qwen_3(model.config, expected, model.state_dict())
+    for name, weights in restored.state_dict().items():
+        torch.testing.assert_close(weights, expected[name], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("field,value,error", [
+    ("research_breakpoint_schedule", [{"step": 10}], ValueError),
+    ("unknown_architecture_option", True, TypeError),
+])
+def test_active_schedule_and_unknown_fields_are_rejected(source, tmp_path, field, value, error):
+    path, _, _, experiment = source
+    config_path = path / "model_config.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config[field] = value
+    config_path.write_text(yaml.safe_dump(config))
+    output = tmp_path / "prepared"
+    with pytest.raises(error, match=field):
+        prepare_base(DEFAULT_LITGPT_ROOT, experiment, output)
+    assert not output.exists()
+
+
 def test_missing_weights_and_config_mismatch_are_rejected(source):
     _, model, config, _ = source
     state = dict(model.state_dict())
