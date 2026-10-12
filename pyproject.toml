@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "semanticlogkv-dms-baseline"
+version = "0.1.0"
+description = "Qwen3-1.7B-Base with NVIDIA Dynamic Memory Sparsification"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "transformers==4.57.3",
+    "accelerate==1.4.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+train = ["datasets==4.4.2"]
+eval = ["lm-eval[ruler]==0.4.9", "datasets>=2.18,<4", "pandas>=1.9", "openpyxl>=3"]
+
+[tool.setuptools.packages.find]
+include = ["dms*", "models*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["cuda: requires CUDA and the official DMS kernels"]
+filterwarnings = ["ignore:flex_attention called without torch.compile:UserWarning"]
