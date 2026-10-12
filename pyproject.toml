@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "semanticlogkv-dms-baseline"
 version = "0.1.0"
-description = "Qwen3-1.7B-Base with NVIDIA Dynamic Memory Sparsification"
+description = "Qwen3-1.7B-Base DMS and online CaM baselines with shared SemanticLogKV evaluation"
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "transformers==4.57.3",

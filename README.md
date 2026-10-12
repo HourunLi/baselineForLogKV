@@ -1,4 +1,20 @@
-# Qwen3-1.7B-Base DMS baseline
+# Qwen3-1.7B-Base baselines
+
+当前 `CaM` 分支新增 **CaM 在线缓存合并**，同时保留已有 DMS 实现。CaM 免训练，直接使用与 SemanticLogKV 相同的原始 Base；适配 Qwen3 的 GQA、Q/K normalization，真实删除 KV，复用只读 `litgpt` 的请求、评分与指标接口。
+
+**CaM 安装、配置、三方对比命令和验证范围：[docs/CAM.md](docs/CAM.md)。**
+
+```bash
+python -m pip install -e '.[eval,test]'
+python -m pip install -e ../litgpt
+# 已有经校验的 outputs/semanticlogkv_base 时直接复用，无须重新转换
+python -m models.qwen3.prepare_base
+bash scripts/evaluate_cam.sh --tasks niah_single_2,niah_single_3 --ruler-lengths 32768 --limit 4
+```
+
+默认完整配置包含与当前 `litgpt/eval.sh` 相同的 50 个任务入口和 NIAH 六种长度。上面命令只跑 32K 的小样本。CaM 不需要 FlashAttention；当前 attention 是逐 token 的 PyTorch 参考实现，32K prefill 较慢，尚无真实 1.7B GPU 实验分数。2048 个条目是初始预算点，不表示与 SemanticLogKV 等字节。
+
+## 已有 DMS baseline
 
 在 `DMS` 分支接入 NVIDIA 官方 **Dynamic Memory Sparsification**，底模为 SemanticLogKV 当前实验所用的原始 Qwen3-1.7B-Base。直接从相邻 `litgpt` 仓库配置指定的 `ckpt_dir/lit_model.pth` 转换，不重新下载同名模型。冻结底模，仅训练每层、每个 KV head 的淘汰适配器；同一底模关闭淘汰后作为蒸馏 teacher。
 
