@@ -10,6 +10,7 @@ import importlib.util
 import json
 import shutil
 import sys
+import warnings
 from pathlib import Path
 
 import torch
@@ -163,7 +164,21 @@ def prepare_base(
     with (source / "config.json").open(encoding="utf-8") as stream:
         if json.load(stream).get("model_type") != "qwen3":
             raise ValueError("The source HF config must identify model_type=qwen3")
-    lit_config = Config.from_file(source / "model_config.yaml")
+    with (source / "model_config.yaml").open(encoding="utf-8") as stream:
+        model_config = yaml.safe_load(stream)
+    if model_config is None:
+        raise ValueError(f"{source / 'model_config.yaml'} is empty")
+    # An empty experiment schedule has no effect on dense Base conversion.
+    # Keep the source file untouched so provenance hashes still cover it.
+    if "research_breakpoint_schedule" in model_config:
+        schedule = model_config.pop("research_breakpoint_schedule")
+        if schedule not in (None, [], {}):
+            raise ValueError(
+                "Non-empty research_breakpoint_schedule in source model_config.yaml; "
+                "its semantics must be checked before converting this checkpoint as a dense Base"
+            )
+        warnings.warn("Ignoring empty research_breakpoint_schedule for dense Base conversion", stacklevel=2)
+    lit_config = Config(**model_config)
     hf_config = Qwen3Config.from_pretrained(source, local_files_only=True)
     source_weights = torch.load(source / "lit_model.pth", map_location="cpu", weights_only=True, mmap=True)
     if "model" in source_weights:
