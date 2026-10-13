@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "semanticlogkv-dms-baseline"
 version = "0.1.0"
-description = "Qwen3-1.7B-Base with NVIDIA Dynamic Memory Sparsification"
+description = "Qwen3-1.7B-Base baselines for SemanticLogKV: NVIDIA DMS and ChunkKV"
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "transformers==4.57.3",
@@ -17,9 +17,11 @@ dependencies = [
 test = ["pytest>=8"]
 train = ["datasets==4.4.2"]
 eval = ["lm-eval[ruler]==0.4.9", "datasets>=2.18,<4", "pandas>=1.9", "openpyxl>=3"]
+# ChunkKV dense-CPT control runs SemanticLogKV's demo.py; versions follow its litgpt extras.
+chunkkv-train = ["litdata==0.2.59", "tensorboard>=2.14"]
 
 [tool.setuptools.packages.find]
-include = ["dms*", "models*"]
+include = ["dms*", "models*", "chunkkv*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

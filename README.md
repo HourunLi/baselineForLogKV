@@ -1,3 +1,25 @@
+# ChunkKV baseline（`chunkKV` 分支）
+
+本分支在 `DMS` 分支基础上新增 [ChunkKV](https://arxiv.org/html/2502.00299v5)，作为 SemanticLogKV 的对比 baseline；DMS 代码与下方说明原样保留。ChunkKV 免训练：prompt 先完整 prefill，再按观察窗注意力选出整块（默认 10 token）原始 K/V 加观察窗保留，生成 token 直接追加；支持论文的层间索引复用。代码在 `chunkkv/`，与参考仓库的边界同下文：`litgpt` 只读。
+
+- **模型**：直接加载 SemanticLogKV 实验 YAML 中原始 Base 的 `lit_model.pth`（同一 LitGPT 模型类，不转换），即 CPT 的同一起点。
+- **评测**：私有加载原版 `eval.py`，`ChunkKVLM` 继承 `LogKVLM` 的请求、生成、打分与 KV/速度指标；同一入口还可跑 `--backend logkv`（SemanticLogKV）与 `--backend dense`（Full KV），结果带 `comparison_contract`，默认任务 `niah_single_2,niah_single_3`、32K。
+- **预算**：默认按参考 LogKV 缓存的持久分配字节对齐（同其 SWA 对照口径）；也可用 `--budget-from-result` 按 SemanticLogKV 实测保留条目数对齐，或 `--budget` / `--keep-ratio`。
+- **训练接口（可选对照）**：ChunkKV 本身不训练；`scripts/chunkkv_train.sh` 用 SemanticLogKV 原版 `demo.py` 和同一实验 YAML 做同数据、同预算的 dense CPT，供 "CPT + ChunkKV" 对照。
+
+```bash
+python -m pip install -e '.[eval]' && python -m pip install -e ../litgpt
+python -m chunkkv.evaluate --print-config
+bash scripts/chunkkv_evaluate.sh --limit 4 --output outputs/cmp-chunkkv
+bash scripts/chunkkv_evaluate.sh --backend logkv --model /path/to/semanticlogkv/ckpt --limit 4 --output outputs/cmp-logkv
+python -m chunkkv.compare_results outputs/cmp-chunkkv/eval_results_*.json outputs/cmp-logkv/eval_results_*.json
+python -m pytest -q tests/chunkkv
+```
+
+实现细节、与论文的对应和取值依据、预算口径、对照训练与验证记录见 [docs/CHUNKKV.md](docs/CHUNKKV.md)。尚未在 CUDA 上用真实权重运行。
+
+---
+
 # Qwen3-1.7B-Base DMS baseline
 
 在 `DMS` 分支接入 NVIDIA 官方 **Dynamic Memory Sparsification**，底模为 SemanticLogKV 当前实验所用的原始 Qwen3-1.7B-Base。直接从相邻 `litgpt` 仓库配置指定的 `ckpt_dir/lit_model.pth` 转换，不重新下载同名模型。冻结底模，仅训练每层、每个 KV head 的淘汰适配器；同一底模关闭淘汰后作为蒸馏 teacher。

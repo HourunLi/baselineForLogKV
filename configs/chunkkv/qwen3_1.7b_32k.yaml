@@ -1,0 +1,10 @@
+# ChunkKV inference settings (arXiv:2502.00299); training-free. CLI flags of
+# chunkkv.evaluate override these values.
+chunk_size: 10      # paper default chunk size
+window_size: 64     # observation window, kept verbatim (KVPress SnapKV scorer default)
+# Prompt KV entries per layer and KV head, window included (the paper's L_max).
+# "logkv": convert the persistent cache bytes of the experiment's LogKV cache into
+# entries, as SemanticLogKV's own SWA comparison does with swa_window_size=0.
+budget: logkv
+keep_ratio: null    # instead of budget, e.g. 0.1 for the paper's 10% setting
+reuse_layers: 1     # layer-wise index reuse depth (Algorithm 2); 1 disables reuse

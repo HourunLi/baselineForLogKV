@@ -1,0 +1,9 @@
+# Optional control, not part of ChunkKV: run SemanticLogKV's own demo.py with this
+# experiment's Base, data, batch, steps, optimizer, schedule and checkpoint format,
+# but with standard causal attention. Evaluate the result with ChunkKV.
+semantic_config: exp/qwen1.7b-32k/arc_attach_alpha_beta_k12_b128_2k.yaml  # under the litgpt root
+save_path: outputs/dense_cpt/qwen1.7b-32k-attach-alpha-beta_k12_b128_2k  # under this repo
+expid: chunkkv-dense-control-qwen1.7b-32k
+# Extra demo.py keys (e.g. num_workers). Anything that changes data or budget makes
+# the control unequal to the SemanticLogKV run and is recorded in the manifest.
+overrides: {}
