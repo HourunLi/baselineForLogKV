@@ -1,12 +1,13 @@
 """Evaluate this KV-compression baseline under SemanticLogKV's evaluation contract.
 
-Same tasks (lm-eval 0.4.9; default RULER niah_single_2/3 at 32K), same offline
-HF/RULER caches, same prompt/scoring/generation rules, same KV-entry and speed
-metrics and the same result-file layout, so results line up with SemanticLogKV
-runs. Single GPU or one model per GPU with torchrun:
+Same tasks (lm-eval 0.4.9; the project-owned ``configs/eval_suites.yaml`` lists
+the reference's 47 main entries and 3 NIAH entries at 32K), same offline HF/RULER
+caches, same prompt/scoring/generation rules, same KV-entry and speed metrics and
+the same result-file layout, so results line up with SemanticLogKV runs. Single
+GPU or one model per GPU with torchrun; ``majob.sh`` runs both suites:
 
     torchrun --standalone --nproc_per_node 1 -m pyramidkv.evaluate \\
-        --config configs/qwen3_1.7b_32k_pyramidkv.yaml --limit 4
+        --config configs/qwen3_1.7b_32k_pyramidkv.yaml --suite niah --limit 4
 """
 
 from __future__ import annotations
@@ -17,7 +18,11 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import platform
+import re
+import socket
 import subprocess
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -32,6 +37,9 @@ from .qwen3 import detect_weights_format, load_config
 PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_DIR.parent
 DEFAULT_BASE = "/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/"
+DEFAULT_EVAL_SUITES = REPO_ROOT / "configs" / "eval_suites.yaml"
+SUITES = ("main", "longbench", "niah")
+LM_EVAL_VERSION = "0.4.9"
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer.model", "tokenizer_config.json", "special_tokens_map.json",
                    "added_tokens.json", "vocab.json", "merges.txt", "generation_config.json")
 
@@ -51,15 +59,20 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Base checkpoint dir: SemanticLogKV ckpt_dir with lit_model.pth, or a HF Qwen3 dir")
     group.add_argument("--tokenizer-dir", default=None, help="Defaults to --model")
     group.add_argument("--weights-format", choices=("auto", "litgpt", "hf"), default="auto")
-    group.add_argument("--tasks", default="niah_single_2,niah_single_3", help="Comma-separated lm-eval tasks")
+    group.add_argument("--suite", choices=SUITES, default=None,
+                       help="Reference task group from --eval-suites; outputs go to <output>/<suite>")
+    group.add_argument("--tasks", default=None, help="Comma-separated lm-eval tasks (diagnostics; not with --suite)")
+    group.add_argument("--eval-suites", type=Path, default=DEFAULT_EVAL_SUITES,
+                       help="Project-owned main/NIAH task lists and NIAH lengths")
     group.add_argument("--include-path", default=None, help="Extra directory of lm-eval task YAMLs")
     group.add_argument("--limit", type=_limit, default=None, help="First N docs per task (same for every method)")
     group.add_argument("--max-seq-length", type=int, default=32768, help="Model window shared with SemanticLogKV")
-    group.add_argument("--ruler-lengths", default=None, help="metadata.max_seq_lengths (default: --max-seq-length)")
+    group.add_argument("--ruler-lengths", default=None,
+                       help="metadata.max_seq_lengths for --tasks runs (default: --max-seq-length)")
     group.add_argument("--ruler-pretrained", default=None,
                        help="metadata.pretrained string for RULER (default: tokenizer dir exactly as given)")
-    group.add_argument("--hf-cache-base", default=DEFAULT_HF_CACHE_BASE)
-    group.add_argument("--hf-online", action="store_true", help="Allow downloads instead of the offline cache")
+    group.add_argument("--hf-cache-base", default=DEFAULT_HF_CACHE_BASE,
+                       help="Prepared offline HF/RULER cache root; evaluation never downloads data")
     group.add_argument("--output", default=None, help="Result directory (default: outputs/<method>-<budget>)")
     group.add_argument("--device", default=None, help="Default: cuda:LOCAL_RANK, or cpu without CUDA")
     group.add_argument("--dtype", choices=("bfloat16", "float16", "float32"), default="bfloat16")
@@ -70,6 +83,22 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--print-config", action="store_true", help="Resolve settings without loading weights")
     method.add_method_args(parser)
     return parser
+
+
+def load_eval_suite(path: Path, suite: str) -> tuple[list[str], list[int] | None]:
+    """Task names (and NIAH lengths) of one reference stage from the project-owned list."""
+    config = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    tasks = list(config.get("niah_tasks" if suite == "niah" else "main_tasks") or [])
+    if suite == "longbench":
+        tasks = [task for task in tasks if task.startswith("longbench_")]
+    if not tasks or any(not isinstance(task, str) or not task.strip() for task in tasks):
+        raise ValueError(f"Evaluation suite {suite!r} has no valid tasks in {path}")
+    lengths = [int(item) for item in config["niah_max_seq_lengths"]] if suite == "niah" else None
+    return tasks, lengths
+
+
+def uses_ruler_metadata(tasks: list[str]) -> bool:
+    return any(task.startswith(("niah_", "ruler_")) for task in tasks)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -87,18 +116,35 @@ def parse_args(argv=None) -> argparse.Namespace:
         args.limit = _limit(args.limit)
     args.tokenizer_dir = args.tokenizer_dir or args.model
     args.ruler_pretrained = args.ruler_pretrained or str(args.tokenizer_dir)
-    lengths = args.ruler_lengths
+    if (args.suite is None) == (args.tasks is None):
+        parser.error("Choose exactly one of --suite (reference task group) and --tasks (diagnostics)")
+    suite_lengths = None
+    if args.suite is not None:
+        if args.ruler_lengths is not None:
+            parser.error("--suite fixes the NIAH lengths; --ruler-lengths applies to --tasks runs only")
+        tasks, suite_lengths = load_eval_suite(args.eval_suites, args.suite)
+        args.tasks = ",".join(tasks)
+    task_list = [task.strip() for task in args.tasks.split(",") if task.strip()]
+    if not task_list:
+        parser.error("--tasks selected no task")
+    args.tasks = ",".join(task_list)
+    lengths = suite_lengths if suite_lengths is not None else args.ruler_lengths
     if lengths is None:
         lengths = [args.max_seq_length]
     elif isinstance(lengths, str):
         lengths = [int(item) for item in lengths.split(",") if item.strip()]
     args.ruler_lengths = [int(item) for item in lengths]
-    if max(args.ruler_lengths) > args.max_seq_length:
-        parser.error("--ruler-lengths cannot exceed --max-seq-length")
+    if not args.ruler_lengths or min(args.ruler_lengths) <= 0 or max(args.ruler_lengths) > args.max_seq_length:
+        parser.error("NIAH/RULER lengths must be positive and within --max-seq-length")
+    # Like the reference scripts, only NIAH/RULER tasks receive generation metadata.
+    args.metadata = ({"pretrained": args.ruler_pretrained, "max_seq_lengths": args.ruler_lengths}
+                     if uses_ruler_metadata(task_list) else None)
     method.resolve_method_args(args)
     if args.output is None:
         budget = "full" if args.method == "fullkv" else f"b{args.max_capacity_prompt}"
         args.output = str(REPO_ROOT / "outputs" / f"{args.method}-{budget}")
+    if args.suite is not None:
+        args.output = str(Path(args.output) / args.suite)
     return args
 
 
@@ -108,15 +154,17 @@ def evaluation_settings(args, num_hidden_layers: int | None = None) -> dict:
         "checkpoint_dir": str(args.model),
         "tokenizer_dir": str(args.tokenizer_dir),
         "weights_format": args.weights_format,
+        "suite": args.suite,
+        "eval_suites": str(Path(args.eval_suites).resolve()) if args.suite else None,
         "benchmark": args.tasks,
         "include_path": args.include_path,
         "limit": args.limit,
         "max_seq_length": args.max_seq_length,
-        "metadata": {"pretrained": args.ruler_pretrained, "max_seq_lengths": args.ruler_lengths},
+        "metadata": args.metadata,
         "loglikelihood_mode": args.loglikelihood_mode,
         "dtype": args.dtype,
         "hf_cache_base": args.hf_cache_base,
-        "hf_offline": not args.hf_online,
+        "hf_offline": True,
         "output": str(args.output),
         "method_config": method.method_config(args, num_hidden_layers, args.max_seq_length),
     }
@@ -132,12 +180,45 @@ def file_sha256(path: Path) -> str:
 
 def _versions() -> dict:
     out = {}
-    for name in ("torch", "lm-eval", "datasets", "transformers", "tokenizers", "numpy"):
+    for name in ("torch", "lm-eval", "datasets", "pyarrow", "transformers", "tokenizers", "numpy"):
         try:
             out[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
             out[name] = None
     return out
+
+
+def check_evaluation_environment() -> None:
+    """The shared protocol pins lm-eval 0.4.9 and datasets<4; refuse other environments."""
+    versions = _versions()
+    if versions["lm-eval"] != LM_EVAL_VERSION:
+        raise RuntimeError(f"The shared evaluation protocol requires lm-eval=={LM_EVAL_VERSION}, "
+                           f"found {versions['lm-eval']}")
+    if versions["datasets"] is None or int(versions["datasets"].split(".")[0]) >= 4:
+        raise RuntimeError(f"The shared evaluation protocol requires datasets<4, found {versions['datasets']}")
+
+
+def runtime_environment() -> dict:
+    """Interpreter, CUDA runtime and driver; environment names do not prove versions."""
+    import torch
+
+    driver = None
+    if torch.cuda.is_available():
+        try:
+            driver = subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+                                    capture_output=True, text=True, timeout=30, check=True).stdout.split()[0]
+        except (OSError, subprocess.SubprocessError, IndexError):
+            driver = None
+    return {"python": sys.version.split()[0], "python_executable": sys.executable, "platform": platform.platform(),
+            "torch_cuda": torch.version.cuda, "cuda_available": torch.cuda.is_available(),
+            "nvidia_driver": driver}
+
+
+def rank_topology(device: str) -> dict:
+    import torch
+
+    return {"rank": du.global_rank(), "local_rank": du.local_rank(), "host": socket.gethostname(),
+            "device": device, "gpu": torch.cuda.get_device_name(device) if device.startswith("cuda") else None}
 
 
 def _git_state() -> dict:
@@ -171,8 +252,10 @@ def provenance(args, model_info: dict, hash_weights: bool) -> dict:
         "code_sha256": {path.name: file_sha256(path) for path in sorted(PACKAGE_DIR.glob("*.py"))},
         "git": _git_state(),
         "versions": _versions(),
+        "environment": runtime_environment(),
         "cache": {key: os.environ.get(key) for key in ("HF_HOME", "HF_DATASETS_CACHE", "HF_HUB_CACHE",
-                                                       "RULER_CACHE_DIR", "HF_DATASETS_OFFLINE")},
+                                                       "RULER_CACHE_DIR", "HF_DATASETS_OFFLINE",
+                                                       "HF_HUB_OFFLINE")},
         "model": model_info,
     }
 
@@ -232,11 +315,22 @@ def compression_report(samples: list[dict]) -> dict:
     }
 
 
+def new_run_id(output_dir: Path) -> str:
+    """Timestamp naming this run's files; never reuse one that already has results."""
+    base = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id, counter = base, 1
+    while (output_dir / f"eval_results_{run_id}.json").exists() or \
+            (output_dir / f"resolved_eval_{run_id}.yaml").exists():
+        run_id, counter = f"{base}_{counter}", counter + 1
+    return run_id
+
+
 def write_outputs(output_dir: Path, settings: dict, results: dict, compression_samples: list[dict],
-                  speed_samples: list[dict], cache_budget: dict, prov: dict, world_size: int) -> Path:
+                  speed_samples: list[dict], cache_budget: dict, prov: dict, world_size: int,
+                  run_id: str) -> Path:
     from .metrics import summarize_inference_metrics
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = run_id
     gen_metrics = [row for rank in speed_samples for row in rank["generation"]]
     ppl_metrics = [row for rank in speed_samples for row in rank["scoring"]]
     inference_summary = summarize_inference_metrics(gen_metrics, ppl_metrics)
@@ -257,8 +351,12 @@ def write_outputs(output_dir: Path, settings: dict, results: dict, compression_s
 
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / f"eval_results_{ts}.json"
+    if output_file.exists():
+        raise FileExistsError(f"Refusing to overwrite an earlier result: {output_file}")
     payload = {
         "timestamp": ts,
+        "run_id": ts,
+        "suite": settings["suite"],
         "benchmark": settings["benchmark"],
         "checkpoint_dir": settings["checkpoint_dir"],
         "model_backend": settings["model_backend"],
@@ -323,8 +421,10 @@ def main(argv=None) -> None:
         print(json.dumps(evaluation_settings(args, layers), indent=2, ensure_ascii=False))
         return
 
+    check_evaluation_environment()
     # HF libraries read the cache variables at import time.
-    configure_hf_environment(args.hf_cache_base, offline=not args.hf_online)
+    configure_hf_environment(args.hf_cache_base, offline=True)
+    import datasets
     import torch
     import torch.distributed as dist
     from lm_eval import evaluator
@@ -339,7 +439,11 @@ def main(argv=None) -> None:
     settings = evaluation_settings(args, config.num_hidden_layers)
     output_dir = Path(args.output).expanduser().resolve()
     world = du.world_size()
+    expected = os.environ.get("KV_BASELINE_EXPECTED_WORLD_SIZE")
+    if expected and int(expected) != world:
+        raise RuntimeError(f"Launcher expected world size {expected}, torchrun started {world} processes")
     pg_owned, group, done = False, None, False
+    caching_enabled = datasets.is_caching_enabled()
     try:
         if world > 1 and not dist.is_initialized():
             dist.init_process_group(backend="gloo", timeout=timedelta(hours=12))
@@ -347,11 +451,13 @@ def main(argv=None) -> None:
         device = args.device or (f"cuda:{du.local_rank()}" if torch.cuda.is_available() else "cpu")
         if device.startswith("cuda"):
             torch.cuda.set_device(device)
+        run_id = None
         if du.is_main():
             output_dir.mkdir(parents=True, exist_ok=True)
-            (output_dir / "resolved_eval.yaml").write_text(
+            run_id = new_run_id(output_dir)
+            (output_dir / f"resolved_eval_{run_id}.yaml").write_text(
                 yaml.safe_dump(settings, allow_unicode=True, sort_keys=False), encoding="utf-8")
-            print(f"🚀 {args.method} | tasks: {args.tasks} | window: {args.max_seq_length} | "
+            print(f"🚀 {args.method} | run {run_id} | tasks: {args.tasks} | window: {args.max_seq_length} | "
                   f"{json.dumps(settings['method_config'], ensure_ascii=False)}", flush=True)
         lm = CompressedKVLM(
             args.model, method.build_cache_factory(args, config.num_hidden_layers),
@@ -359,26 +465,45 @@ def main(argv=None) -> None:
             dtype=getattr(torch, args.dtype), weights_format=weights_format,
             loglikelihood_mode=args.loglikelihood_mode, process_group=group,
         )
-        results = evaluator.simple_evaluate(
-            model=lm, tasks=[task.strip() for task in args.tasks.split(",") if task.strip()],
-            confirm_run_unsafe_code=True, batch_size=1, metadata=settings["metadata"],
-            limit=args.limit, log_samples=True,
-            # lm-eval only forwards ``metadata`` to tasks through the TaskManager it builds itself.
-            task_manager=(TaskManager(include_path=args.include_path, metadata=settings["metadata"])
-                          if args.include_path else None),
-        )
+        # map/filter results otherwise share one cache file across ranks on the shared mount.
+        # load_dataset still reads the prepared offline source cache; transforms use private temp files.
+        datasets.disable_caching()
+        try:
+            results = evaluator.simple_evaluate(
+                model=lm, tasks=args.tasks.split(","),
+                confirm_run_unsafe_code=True, batch_size=1, metadata=settings["metadata"],
+                limit=args.limit, log_samples=True,
+                # lm-eval only forwards ``metadata`` to tasks through the TaskManager it builds itself.
+                task_manager=(TaskManager(include_path=args.include_path, metadata=settings["metadata"])
+                              if args.include_path else None),
+            )
+        except ValueError as error:
+            # Raised while reading dataset_info.json of an offline entry, before any model call.
+            if not re.match(r"Feature type '\w+' not found", str(error)):
+                raise
+            raise RuntimeError(
+                f"An offline dataset entry under {os.environ.get('HF_DATASETS_CACHE')} was written by a newer "
+                f"`datasets` than the installed {importlib.metadata.version('datasets')}. The shared protocol "
+                "reads entries readable by datasets<4; repair or restore that entry instead of upgrading "
+                "datasets or switching data."
+            ) from error
         compression = lm.all_gather_results(lm.compression_metrics, tag="KV compression")
         speed = lm.all_gather_results([{"generation": lm.gen_metrics, "scoring": lm.ppl_metrics}],
                                       tag="inference speed")
+        topology = lm.all_gather_results([rank_topology(device)], tag="topology")
         if du.is_main():
             cache_budget = {"allocation": "dynamic", "persistent_cache_bytes": None,
                             **settings["method_config"]}
             prov = provenance(args, lm.model_info, hash_weights=not args.no_weight_hash)
             prov.update(world_size=world, device=torch.cuda.get_device_name(device)
-                        if device.startswith("cuda") else device)
-            write_outputs(output_dir, settings, results, compression, speed, cache_budget, prov, world)
+                        if device.startswith("cuda") else device,
+                        topology={"world_size": world, "nodes": len({row["host"] for row in topology}),
+                                  "ranks": topology})
+            write_outputs(output_dir, settings, results, compression, speed, cache_budget, prov, world, run_id)
         done = True
     finally:
+        if caching_enabled:
+            datasets.enable_caching()
         if du.dist_ready() and done:
             du.wait_all_ranks("final sync")
         if pg_owned and dist.is_initialized():

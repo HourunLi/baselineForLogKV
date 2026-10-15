@@ -1,8 +1,8 @@
-# PyramidKV on the original Qwen3-1.7B-Base used by SemanticLogKV, 32K NIAH single 2/3.
+# PyramidKV on the original Qwen3-1.7B-Base used by SemanticLogKV, 32K evaluation window.
 # Keys are evaluate.py option names; command-line options override them.
+# Tasks come from --suite main|niah (configs/eval_suites.yaml) or an explicit --tasks check.
 model: /home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/
-tasks: niah_single_2,niah_single_3
-max_seq_length: 32768          # SemanticLogKV context_length; RULER metadata uses the same single length
+max_seq_length: 32768          # SemanticLogKV context_length; NIAH metadata uses the single length 32768
 hf_cache_base: /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache
 
 method: pyramidkv
