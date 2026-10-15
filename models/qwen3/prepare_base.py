@@ -1,15 +1,16 @@
 """Export the exact original LitGPT Base checkpoint to local HF format.
 
-No model is downloaded. The SemanticLogKV experiment's ``ckpt_dir`` selects
-the source; its CPT ``save_path`` and ``resume_dir`` never select DMS weights.
+No model is downloaded. ``ckpt_dir`` of this project's experiment YAML selects
+the source Base (the SemanticLogKV CPT starting point); CPT outputs never do.
+The LitGPT config class comes from this project's private runtime snapshot and
+the tensor mapping from ``models.qwen3.convert_lit_to_hf``; no other checkout
+is imported or read.
 """
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import shutil
-import sys
 import warnings
 from pathlib import Path
 
@@ -17,10 +18,10 @@ import torch
 import yaml
 from transformers import Qwen3Config, Qwen3ForCausalLM
 
+from . import convert_lit_to_hf
+from .config import BASELINE_ROOT, DEFAULT_EXPERIMENT_CONFIG, load_experiment_config, require_project_file
 
-BASELINE_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_LITGPT_ROOT = BASELINE_ROOT.parent / "litgpt"
-DEFAULT_SEMANTIC_CONFIG = "exp/qwen1.7b-32k/arc_attach_alpha_beta_k12_b128_2k.yaml"
+MANIFEST_VERSION = 2
 TOKENIZER_NAMES = (
     "tokenizer.json", "tokenizer.model", "tokenizer_config.json",
     "special_tokens_map.json", "added_tokens.json", "vocab.json", "merges.txt",
@@ -50,7 +51,9 @@ def verify_prepared_base(path: Path) -> dict:
                   if key not in ("prepared_weight_files", "prepared_config_sha256")}
     if config.get("semanticlogkv_base") != provenance:
         raise ValueError("Prepared Base config provenance disagrees with its manifest")
-    if manifest.get("manifest_version") != 1:
+    # Version 1 manifests came from the earlier converter that imported a sibling LitGPT
+    # checkout; their tensors and hashes are verified the same way.
+    if manifest.get("manifest_version") not in (1, MANIFEST_VERSION):
         raise ValueError("Unsupported prepared Base manifest version")
     if sha256_file(path / "config.json") != manifest["prepared_config_sha256"]:
         raise ValueError("Prepared Base config hash mismatch")
@@ -64,32 +67,6 @@ def verify_prepared_base(path: Path) -> dict:
             if sha256_file(actual_path) != expected:
                 raise ValueError(f"Prepared Base file hash mismatch: {actual_path}")
     return manifest
-
-
-def load_semantic_config(path: Path) -> dict:
-    """Match the shared evaluator's shallow YAML inheritance semantics."""
-    with path.open(encoding="utf-8") as stream:
-        config = yaml.safe_load(stream) or {}
-    base = config.pop("config", None)
-    if base is not None:
-        config = {**load_semantic_config(path.parent / base), **config}
-    return config
-
-
-def _litgpt_tools(root: Path):
-    sys.path.insert(0, str(root))
-    import litgpt
-    from litgpt.config import Config
-    from litgpt.scripts.convert_lit_checkpoint import copy_weights_qwen_3
-
-    if Path(litgpt.__file__).resolve().parent != root / "litgpt":
-        raise RuntimeError(f"Imported a different LitGPT checkout: {litgpt.__file__}")
-    # Use the same ${VAR:-default} expansion as SemanticLogKV without importing
-    # eval.py, which sets offline caches and initializes evaluation dependencies.
-    spec = importlib.util.spec_from_file_location("semanticlogkv_source_utils", root / "utils.py")
-    utils = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(utils)
-    return Config, copy_weights_qwen_3, utils.expand_env_vars
 
 
 def validate_config(lit_config, hf_config: Qwen3Config) -> None:
@@ -135,26 +112,20 @@ def build_hf_model(lit_config, hf_config: Qwen3Config, lit_weights: dict, conver
 
 
 def prepare_base(
-    litgpt_root: Path = DEFAULT_LITGPT_ROOT,
-    semantic_config: Path = Path(DEFAULT_SEMANTIC_CONFIG),
+    experiment_config: Path = DEFAULT_EXPERIMENT_CONFIG,
     output: Path = BASELINE_ROOT / "outputs/semanticlogkv_base",
 ) -> dict:
-    root = Path(litgpt_root).expanduser().resolve()
-    config_path = Path(semantic_config).expanduser()
-    if not config_path.is_absolute():
-        config_path = root / config_path
-    config_path = config_path.resolve()
+    from models._vendor.semanticlogkv.litgpt.config import Config
+
+    config_path = Path(experiment_config).expanduser().resolve(strict=True)
     output = Path(output).expanduser().resolve()
     if output.exists():
         raise FileExistsError(f"Output already exists; choose a new directory: {output}")
-    Config, converter, expand_env_vars = _litgpt_tools(root)
-    experiment = expand_env_vars(load_semantic_config(config_path))
+    converter = convert_lit_to_hf.copy_weights_qwen_3
+    experiment = load_experiment_config(config_path)
     if not experiment.get("ckpt_dir"):
-        raise ValueError(f"SemanticLogKV config has no original Base ckpt_dir: {config_path}")
-    source = Path(experiment["ckpt_dir"]).expanduser()
-    if not source.is_absolute():
-        source = root / source
-    source = source.resolve()
+        raise ValueError(f"Experiment config has no original Base ckpt_dir: {config_path}")
+    source = Path(experiment["ckpt_dir"]).resolve()
     required = ("lit_model.pth", "model_config.yaml", "config.json", "tokenizer_config.json")
     for name in required:
         if not (source / name).is_file():
@@ -189,7 +160,7 @@ def prepare_base(
     if (source / "chat_templates").is_dir():
         tokenizer_paths.extend(sorted((source / "chat_templates").glob("*.jinja")))
     manifest = {
-        "manifest_version": 1,
+        "manifest_version": MANIFEST_VERSION,
         "source_checkpoint_dir": str(source),
         "source_weight_sha256": sha256_file(source / "lit_model.pth"),
         "source_config_files": {
@@ -198,11 +169,11 @@ def prepare_base(
         "tokenizer_files": {
             str(path.relative_to(source)): sha256_file(path) for path in tokenizer_paths
         },
-        "semantic_config": str(config_path),
-        "semantic_config_sha256": sha256_file(config_path),
+        "experiment_config": str(config_path),
+        "experiment_config_sha256": sha256_file(config_path),
         "source_model_name": lit_config.name,
-        "converter": "litgpt.scripts.convert_lit_checkpoint.copy_weights_qwen_3",
-        "converter_sha256": sha256_file(root / "litgpt/scripts/convert_lit_checkpoint.py"),
+        "converter": "models.qwen3.convert_lit_to_hf.copy_weights_qwen_3 (from LitGPT 0.5.12)",
+        "converter_sha256": sha256_file(Path(convert_lit_to_hf.__file__)),
     }
     # HF config round trips this field into the DMS student's config and export.
     model.config.semanticlogkv_base = manifest
@@ -225,11 +196,11 @@ def prepare_base(
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--litgpt-root", type=Path, default=DEFAULT_LITGPT_ROOT)
-    parser.add_argument("--semantic-config", type=Path, default=Path(DEFAULT_SEMANTIC_CONFIG))
+    parser.add_argument("--experiment-config", type=Path, default=DEFAULT_EXPERIMENT_CONFIG,
+                        help="Project-owned experiment YAML whose ckpt_dir is the original Base")
     parser.add_argument("--output", type=Path, default=BASELINE_ROOT / "outputs/semanticlogkv_base")
     args = parser.parse_args()
-    manifest = prepare_base(args.litgpt_root, args.semantic_config, args.output)
+    manifest = prepare_base(require_project_file(args.experiment_config), args.output)
     print(f"Prepared exact Base weights in {args.output.resolve()}")
     print(f"Original lit_model.pth SHA-256: {manifest['source_weight_sha256']}")
 

@@ -1,10 +1,10 @@
 # Qwen3-1.7B-Base DMS baseline
 
-在 `DMS` 分支接入 NVIDIA 官方 **Dynamic Memory Sparsification**，底模为 SemanticLogKV 当前实验所用的原始 Qwen3-1.7B-Base。直接从相邻 `litgpt` 仓库配置指定的 `ckpt_dir/lit_model.pth` 转换，不重新下载同名模型。冻结底模，仅训练每层、每个 KV head 的淘汰适配器；同一底模关闭淘汰后作为蒸馏 teacher。
+在 `DMS` 分支接入 NVIDIA 官方 **Dynamic Memory Sparsification**，底模为 SemanticLogKV 当前实验所用的原始 Qwen3-1.7B-Base。直接从本项目实验配置 `configs/experiment_qwen1.7b_32k.yaml` 指定的 `ckpt_dir/lit_model.pth` 转换，不重新下载同名模型。冻结底模，仅训练每层、每个 KV head 的淘汰适配器；同一底模关闭淘汰后作为蒸馏 teacher。
 
 这是一份可训练的实现，仓库不包含已经训练好的 1.7B DMS 权重。采用的是官方当前的 **adapter-only** 配方，不能表述为原论文全参数训练结果的复现，也不是 KVPress 的 `DMSPress` 包装器。
 
-**仓库边界：所有 baseline 接入代码只放在本仓库。** `litgpt` 是只读参考实现，不添加 DMS 分支、注册表或指标钩子。DMS 在本仓库继承其现有评测类、适配模型与缓存接口；评测输出也保存在参考仓库之外。后续新增 baseline 继续遵守这一边界。
+**项目边界：本项目独立运行。** 统一规则见 [AGENTS.md](AGENTS.md) 与 [Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md)。SemanticLogKV 的评测协议（`eval.py` 及其 LitGPT 依赖）以私有快照放在 `models/_vendor/semanticlogkv/`（来源 `HourunLi/LogKV@4fd97c7`，Apache-2.0，来源与哈希见其 `SOURCE.json`）；实验配置、任务清单、Base 转换器均在本项目内。运行时不读取、不导入相邻 `litgpt`/SemanticLogKV 的源码、实验 YAML 或脚本，也不需要其 editable 安装。共享的只读资产只有原始 Base 权重/tokenizer 与离线评测缓存。
 
 ## 实现与来源
 
@@ -21,11 +21,10 @@
 
 ```bash
 python -m pip install -e '.[train,test]'
-python -m pip install -e ../litgpt
 python -m models.qwen3.check_env
 ```
 
-训练环境固定 `transformers==4.57.3`、`datasets==4.4.2`、`accelerate==1.4.0`。评测需单独环境：共享 SemanticLogKV 的 `lm-eval==0.4.9`、`datasets<4`，不能同时安装 `[train,eval]`。LitGPT 只安装核心包，不安装会与 DMS Transformers 版本冲突的 `[extra]`。先准备匹配的 PyTorch/CUDA 与 FlashAttention，再检查依赖解析结果。预检实际检查 `AuxRequest`、CUDA、BF16 和 FlashAttention 接口；只有训练时可使用 `--training-only`。
+训练环境固定 `transformers==4.57.3`、`datasets==4.4.2`、`accelerate==1.4.0`。评测需单独环境：共享 SemanticLogKV 的 `lm-eval==0.4.9`、`datasets<4`（评测入口启动时检查），不能同时安装 `[train,eval]`。私有评测快照需要的 lightning、jsonargparse、psutil、sentencepiece 等已列入本项目依赖，不再安装相邻 LitGPT。先准备匹配的 PyTorch/CUDA 与 FlashAttention，再检查依赖解析结果。预检实际检查 `AuxRequest`、CUDA、BF16 和 FlashAttention 接口；只有训练时可使用 `--training-only`。
 
 ## 准备同一份 Base
 
@@ -33,9 +32,9 @@ python -m models.qwen3.check_env
 python -m models.qwen3.prepare_base
 ```
 
-默认读取 `../litgpt/exp/qwen1.7b-32k/arc_attach_alpha_beta_k12_b128_2k.yaml` 及其继承配置，使用其中 **原始 `ckpt_dir`**，不使用 SemanticLogKV CPT 的 `save_path`。输出到 `outputs/semanticlogkv_base`，两份训练配置均指向此处。输出目录已存在时拒绝覆盖。
+默认读取项目内 `configs/experiment_qwen1.7b_32k.yaml`（SemanticLogKV 实验 `arc_attach_alpha_beta_k12_b128_2k` 继承链的平铺快照，只保留 Base、32K 窗口和 LogKV 对照参数），使用其中 **原始 `ckpt_dir`**（可用 `DMS_BASE_CHECKPOINT` 覆盖），不使用 SemanticLogKV CPT 的输出。`--experiment-config` 只接受项目内文件。输出到 `outputs/semanticlogkv_base`，两份训练配置均指向此处。输出目录已存在时拒绝覆盖。
 
-转换复用该 LitGPT 仓库的 Qwen3 权重映射，严格校验参数、绑定 embedding 和模型配置，原样复制 tokenizer，保存来源及输出文件 SHA-256。训练启动前验证已转换文件；来源信息随 DMS 模型导出，并在正式评测前与当前比较 Base 再核对。没有 manifest 的旧模型不能直接进入正式对比。
+转换使用项目内 `models/qwen3/convert_lit_to_hf.py`（改编自 LitGPT 0.5.12 的 Qwen3 映射），严格校验参数、绑定 embedding 和模型配置，原样复制 tokenizer，保存来源、实验 YAML、转换器及输出文件 SHA-256。训练启动前验证已转换文件；来源信息随 DMS 模型导出，并在正式评测前与当前比较 Base 再核对。没有 manifest 的旧模型不能直接进入正式对比；早先用相邻 LitGPT 转换的产物（manifest v1）仍按同样哈希校验。
 
 当前配置的权重与测试缓存是服务器 `/home/ma-user/...` 路径，本地 Mac 未存放这些真实文件。应在同样挂载这些目录的 CUDA 机器执行；不会因文件缺失自动下载替代版本。完整说明见 [评测对齐记录](docs/SEMANTICLOGKV_ALIGNMENT.md)。
 
@@ -124,28 +123,42 @@ python -m models.qwen3.infer \
 
 `final_cr` 是**训练目标**。模型配置的 `dms_cr` 仅记录目标，修改它不会在推理时强制达到某个压缩倍数。实际压缩比随输入和保护窗口变化，应实测并与质量一同报告。
 
-正式横向评测在单独的评测环境中执行，两种方法使用同一入口：
+正式横向评测在单独的评测环境中执行，两种方法使用同一入口。每次必须选 `--suite main|niah|longbench`（项目内 `configs/eval_suites.yaml`：47 个 main 入口、其中 33 个 LongBench/LongBench-E，3 个 NIAH 仅 32768；输出进入 `<output>/<suite>/`）或诊断用 `--tasks`：
 
 ```bash
 python -m pip install -e '.[eval]'
-python -m pip install -e ../litgpt
-bash scripts/evaluate.sh outputs/qwen3_1.7b_base/student_model --limit 4
+python -m models.qwen3.evaluate --model outputs/qwen3_1.7b_base/student_model --suite main --print-config
+bash scripts/evaluate.sh outputs/qwen3_1.7b_base/student_model --suite niah --limit 4
 # 使用同一配置、任务、样本数检查 SemanticLogKV CPT checkpoint
-bash scripts/evaluate.sh /path/to/semanticlogkv/checkpoint --backend logkv --limit 4
+bash scripts/evaluate.sh /path/to/semanticlogkv/checkpoint --backend logkv --suite niah --limit 4
 ```
 
-默认 `niah_single_2,niah_single_3`、32K、batch 1，来自当前 Alpha/Beta 实验口径。删除 `--limit 4` 才是任务全量；`--tasks` 可为双方选同一组其他任务。`NPROC_PER_NODE` 控制每卡一份模型，默认 1。baseline 启动器只读加载原版 `../litgpt/eval.py`，在自身私有评测实例中接入 DMS 子类，复用 tokenizer、生成循环、评分与指标统计。无需修改或注册任何代码到 `litgpt`。
+模型窗口 32K、batch 1。main 阶段不传 NIAH metadata，与参考脚本一致。删除 `--limit` 才是任务全量。`NPROC_PER_NODE` 控制每卡一份模型，默认 1。启动器私有加载项目内快照的 `eval.py`，在该私有评测实例中接入 DMS 子类，复用 tokenizer、生成循环、评分与指标统计。评测强制离线；map/filter 预处理写进程私有临时文件；遇到新版 datasets 写入的不兼容缓存条目会明确报错，不升级 datasets、不换数据。
 
-结果包含 `comparison_contract` 和 harness 逐样本日志，可自动核对：
+### 训练平台作业：majob.sh
+
+`majob.sh` 是完整评测入口，**每个节点执行一次**：先 main（47 个入口）再 NIAH（3 个入口，仅 32768），两阶段各自一次 `torch.distributed.run`，main 失败即返回非零且不启动 NIAH。它只评测已导出的模型，必须给 `--model`，从不训练；拒绝 `--suite/--tasks/--evaluation-config/--experiment-config/--print-config`。
 
 ```bash
-python -m models.qwen3.compare_results /path/to/dms_result.json /path/to/semantic_result.json
+bash majob.sh configs/experiment_qwen1.7b_32k.yaml --model outputs/qwen3_1.7b_base/student_model \
+  --limit 4 --output outputs/dms-32k-smoke
+bash majob.sh configs/experiment_qwen1.7b_32k.yaml --model outputs/qwen3_1.7b_base/student_model \
+  --output outputs/dms-32k-full
 ```
 
-只有 Base 来源、tokenizer、评测代码、运行时版本、任务设置及实际样本/prompt/目标/生成参数一致才通过。旧评测结果若缺这些记录，需要先补小样本对照，不能直接宣称等价。
+平台变量与 chunkKV 等分支一致：`MA_NUM_GPUS`（每节点进程数，缺省 `NPROC_PER_NODE`/`LOCAL_WORLD_SIZE`/8）、`MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MA_VJ_NAME`/`MA_TASK_NAME`/`MA_MASTER_INDEX`（主节点 DNS，多节点禁止 localhost）、`MASTER_PORT`（main 用 +1、NIAH 用 +2，可由 `EVAL_MASTER_PORT`/`NIAH_MASTER_PORT` 覆盖）。`DMS_PYTHON` 直接指定解释器，否则激活 `/home/ma-user/anaconda3/bin/activate ${DMS_CONDA_ENV:-torch218}`；环境名不代表实际版本，以结果记录为准。脚本导出 `LITGPT_EXPECTED_WORLD_SIZE`，快照评测器据此检查 rendezvous。
+
+结果包含 `comparison_contract`、`resolved_eval` 和 harness 逐样本日志，可自动核对：
+
+```bash
+python -m models.qwen3.compare_results /path/to/dms/niah/eval_results_TIMESTAMP.json \
+  /path/to/semantic/niah/eval_results_TIMESTAMP.json
+```
+
+只有 Base 来源、tokenizer、评测代码、运行时版本（含 pyarrow）、任务设置及实际样本/prompt/目标/生成参数一致才通过；后端、实际评测权重与预算作为方法差异单独列出。每次启动写 `resolved_eval_<launch_id>.yaml`，不覆盖历史记录。旧评测结果若缺这些记录，需要先补小样本对照，不能直接宣称等价。
 
 ## 论文实验口径
 
 本实现名称建议记录为 **DMS-adapter / Qwen3-1.7B-Base**。记录底模版本、语料、训练 token 数、适配器参数量、目标与实测 CR、上下文长度。与 SemanticLogKV 比较时，需要另外明确语料和训练预算是否一致；当前默认 OpenR1/8K 配方本身不构成公平性证明。
 
-当前交付包含实现、共享评测接口和离线验证，不包含正式训练结果。检查范围与环境限制见 [验证记录](docs/VALIDATION.md)。CPU 检查不覆盖 CUDA 编译、FlashAttention decode、FSDP 多卡执行或真实 1.7B 精度。
+当前交付包含实现、项目内评测协议和离线 CPU 验证，不包含正式训练或评测结果。检查范围与环境限制见 [验证记录](docs/VALIDATION.md)。CPU 检查不覆盖 CUDA 编译、FlashAttention decode、FSDP 多卡执行、真实离线缓存、多节点作业或真实 1.7B 精度。

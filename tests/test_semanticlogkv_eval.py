@@ -13,8 +13,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-import litgpt
-from litgpt.generate.base import generate
+from models._vendor.semanticlogkv.litgpt.generate.base import generate
+from models.qwen3.config import RUNTIME_ROOT
 from models.qwen3.semanticlogkv_eval import (
     DMSModel, compression_snapshot, file_sha256, make_dms_lm, verify_base_source,
 )
@@ -130,7 +130,7 @@ class Tokenizer:
 @pytest.fixture(scope="module")
 def wrapper_class():
     # Import real methods without eval.py's distributed/CUDA/HF initialization.
-    source = Path(litgpt.__file__).resolve().parents[1] / "eval.py"
+    source = RUNTIME_ROOT / "eval.py"
     tree = ast.parse(source.read_text())
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "LogKVLM")
     names = {"_score_tokens", "generate_until", "loglikelihood", "loglikelihood_rolling",

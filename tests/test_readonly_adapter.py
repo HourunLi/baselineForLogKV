@@ -1,25 +1,24 @@
-"""Baseline integration must leave the reference checkout and native API intact."""
+"""Baseline integration must leave the bundled reference runtime and its native API intact."""
 
-from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 
-import litgpt
-from litgpt import kv_compression
+pytest.importorskip("lm_eval")
+
+from models._vendor.semanticlogkv.litgpt import kv_compression
 from models.qwen3 import evaluate
+from models.qwen3.config import RUNTIME_ROOT
 from models.qwen3.semanticlogkv_eval import compression_snapshot
 
 
-def test_private_adapter_does_not_modify_reference_files_or_native_metrics():
-    root = Path(litgpt.__file__).resolve().parents[1]
-    paths = [root / name for name in (
-        "eval.py", "litgpt/kv_compression.py", "docs/evaluation-metrics.md",
-    )]
+def test_private_adapter_does_not_modify_runtime_files_or_native_metrics():
+    paths = sorted(RUNTIME_ROOT.rglob("*.py"))
     contents = {path: path.read_bytes() for path in paths}
     native_snapshot = kv_compression.cache_compression_snapshot
 
-    evaluator = evaluate.load_evaluator(root)
+    evaluator = evaluate.load_evaluator()
     native_class = evaluator.LogKVLM
     evaluate.install_dms_adapter(evaluator)
 
@@ -33,7 +32,7 @@ def test_private_adapter_does_not_modify_reference_files_or_native_metrics():
 
     # Loading another evaluator remains native: DMS wiring belongs only to the
     # specific private module used by the baseline runner.
-    native_evaluator = evaluate.load_evaluator(root)
+    native_evaluator = evaluate.load_evaluator()
     assert native_evaluator is not evaluator
     assert native_evaluator.LogKVLM.__name__ == "LogKVLM"
     assert native_evaluator.cache_compression_snapshot is native_snapshot

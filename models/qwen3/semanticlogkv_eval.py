@@ -9,7 +9,7 @@ from torch import nn
 
 def compression_snapshot(model, processed_tokens):
     """Adapt metric collection locally; never register hooks in the reference package."""
-    from litgpt.kv_compression import _with_ratios, cache_compression_snapshot
+    from models._vendor.semanticlogkv.litgpt.kv_compression import _with_ratios, cache_compression_snapshot
 
     if isinstance(model, DMSModel):
         return _with_ratios(model.kv_compression_snapshot(processed_tokens))

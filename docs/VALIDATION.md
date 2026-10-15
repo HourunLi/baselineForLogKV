@@ -1,6 +1,41 @@
 # 本地验证记录
 
-日期：2026-10-12。分支：`DMS`。
+## 2026-10-15：项目独立化与统一评测协议
+
+改动：移除运行时对相邻 `../litgpt` 的全部依赖（评测代码、实验 YAML、权重转换），改用项目内私有快照、
+实验 YAML、任务清单与转换器；新增 `majob.sh`（main 与 32K NIAH 分阶段，失败停止）；评测必须显式选择
+`--suite` 或 `--tasks`；结果记录 pyarrow、解释器、CUDA/驱动与拓扑，解析配置按启动编号保存。
+
+环境：Linux CPU，Python 3.13.16、torch 2.14.1+cu130（仅 CPU 执行）、transformers 4.57.3、accelerate 1.4.0、
+lm-eval 0.4.9、datasets 3.6.0、pyarrow 26.0.0、lightning（随私有快照依赖安装）。没有 CUDA、FlashAttention，
+也没有相邻 `litgpt` 目录。
+
+```bash
+python -m pytest -q -m "not cuda"
+```
+
+结果：**77 passed, 10 skipped, 1 deselected**。跳过的 10 项为上游 `test_prefill_and_generate.py` 中需要 CUDA
+的参数化用例，deselect 的是 `cuda` 标记测试。改动前的评测/转换测试直接导入 `../litgpt`，在没有该目录的
+环境中无法运行，因此没有同环境的改动前对照数。新增或改写的检查：
+
+- 私有转换器：tiny LitGPT 模型 → HF，逐张量由参考快照的 HF→LitGPT 转换零误差还原；HF/LitGPT logits 一致；
+  manifest 记录转换器哈希与项目实验 YAML。
+- 配置边界：继承离开顶层 YAML 目录报错；`--experiment-config` 指向项目外文件时报错。
+- 真实私有加载快照 `eval.py`（lm-eval 0.4.9、datasets 3.6.0）并接入 DMS 子类，快照文件字节不变、原生类与
+  统计函数身份不变。
+- 任务清单 47/33/3、main 不传 NIAH metadata、NIAH 仅 32768；`--print-config` 只读项目内 YAML/源码且不导入
+  torch/transformers/lm-eval；不选任务时报错。
+- AST 检查项目 `models/` 下没有 `litgpt`/`utils`/`data` 顶层导入或 `sys.path` 操作，脚本与配置不含 `../litgpt`。
+- `majob.sh`：单/双节点 rank、world size、主节点 DNS、两阶段端口，main 失败返回原退出码且不启动 NIAH，
+  缺 `--model` 或改协议参数时报错。
+- 输出隔离、结果写入 `resolved_eval`、新版 datasets 缓存条目报错且恢复转换缓存开关。
+
+未验证：真实 1.7B Base 指纹与转换、CUDA/FlashAttention/FlexAttention、真实训练、服务器离线缓存与任务
+数据读取、多节点作业及任何任务分数。
+
+## 2026-10-12：初始实现（历史记录，发生在独立化之前）
+
+分支：`DMS`。以下检查当时依赖相邻 `litgpt` 可编辑安装，不能作为当前代码的通过记录。
 
 环境：macOS，Python 3.11.0、PyTorch 2.9.1、Transformers 4.57.3、accelerate 1.4.0。首次训练组件检查使用 datasets4.4.2；评测对齐检查切换到 datasets3.6.0、lm-eval0.4.9、LitGPT editable 核心包。依赖装在临时隔离环境，未修改系统 Python。没有可用 CUDA，也没有安装 FlashAttention。
 

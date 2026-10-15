@@ -14,6 +14,13 @@
 | experimental/dms/README.md、ARCHITECTURE.md | docs/upstream | 原文档快照，不代表本仓库命令和验证结果 |
 | LICENSE | LICENSE | 原许可证与第三方声明 |
 
+## 其他来源
+
+| 来源 | 当前路径 | 处理 |
+|---|---|---|
+| SemanticLogKV（`HourunLi/LogKV@4fd97c78e04f0ec96ad6aed18df9e9cf440c6090`）`eval.py` 及其导入闭包（LitGPT 0.5.12 分支） | `models/_vendor/semanticlogkv` | 评测协议私有快照，Apache-2.0；仅改命名空间、头注释与 `DMS_HF_CACHE`；省略 `demo.py`、`data.py`。逐文件来源/打包哈希见其 `SOURCE.json` |
+| LitGPT 0.5.12 `litgpt/scripts/convert_lit_checkpoint.py` 的 `copy_weights_qwen_3` | `models/qwen3/convert_lit_to_hf.py` | Apache-2.0；只保留 dense Qwen3 映射，去掉惰性加载 saver，未知键报错 |
+
 ## 本地差异
 
 - `configs/qwen3_1.7b_base.yaml`：从官方 1.7B 配置换为 Base、显式纯文本模板、FSDP 按 decoder layer 包装和完整 state dict，关闭外部实验追踪。核心门控、学习率、8K 长度和压缩日程保持原配方。
@@ -22,9 +29,10 @@
 - `models/qwen3/extract.py`：checkpoint 张量加载到 CPU，避免按原设备占用 GPU。
 - `dms/cache.py`：prefill 时把近期窗口的 contiguous KV 计入 CR；上游仅计 paged 部分，会在尚未开始 decode 时高估压缩率。淘汰和缓存更新算法保持原样。
 - `models/qwen3/check_env.py`、`infer.py`、`scripts/`：显式环境检查、Base 续写、训练和可选评测入口。
-- `pyproject.toml`：同时打包 `dms` 和 `models`，保留官方 Transformers/accelerate 版本；训练 extra 固定 datasets4.4.2，独立评测 extra 使用 SemanticLogKV 的 lm-eval0.4.9、datasets<4。
-- `prepare_base.py`：复用相邻 LitGPT 的原始权重转换，复制 tokenizer 并记录文件哈希；训练前验证产物，来源随 DMS config 导出。
-- `semanticlogkv_eval.py`、`evaluate.py`、`compare_results.py`：全部在 baseline 内兼容原版 `litgpt/eval.py`，子类继承请求方法，在私有模块实例接入模型/缓存；不修改参考源码或全局统计函数。统一任务、tokenizer、生成/评分与指标，核对实际样本和比较条件。输出与来源记录也由本仓库管理，详细边界见 [评测对齐记录](SEMANTICLOGKV_ALIGNMENT.md)。
+- `pyproject.toml`：同时打包 `dms` 和 `models`（含私有评测快照），保留官方 Transformers/accelerate 版本，并声明快照所需的 lightning 等依赖；训练 extra 固定 datasets4.4.2，独立评测 extra 使用共享协议的 `lm-eval[ruler,longbench,ifeval]==0.4.9`、datasets<4。
+- `prepare_base.py`：读取项目内实验 YAML 的原始 Base，用私有转换器精确转换，复制 tokenizer 并记录文件哈希；训练前验证产物，来源随 DMS config 导出。
+- `semanticlogkv_eval.py`、`evaluate.py`、`compare_results.py`、`config.py`：在项目内私有评测快照上接入 DMS，子类继承请求方法，在私有模块实例接入模型/缓存；不修改快照或全局统计函数。任务清单、实验配置、tokenizer、生成/评分与指标均由本项目维护，核对实际样本和比较条件。详细边界见 [评测对齐记录](SEMANTICLOGKV_ALIGNMENT.md)。
+- `majob.sh`：训练平台评测入口，每节点执行一次，main 与 32K NIAH 分阶段启动，失败即停止，从不训练。
 - `tests/test_qwen3_base.py`、`test_qwen3_cuda.py`：新增本地适配验证；CUDA 测试无设备时明确跳过。
 
 ## 不应混淆的口径
