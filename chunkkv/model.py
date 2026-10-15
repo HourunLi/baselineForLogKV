@@ -16,7 +16,7 @@ the budget nothing is compressed and the whole call is one dense forward.
 import torch
 from torch import nn
 
-from litgpt.model import CausalSelfAttention, apply_rope, apply_rope_interleave
+from chunkkv._vendor.semanticlogkv.litgpt.model import CausalSelfAttention, apply_rope, apply_rope_interleave
 
 from .core import ChunkKVSettings, keep_indices, observation_scores
 

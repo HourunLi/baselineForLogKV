@@ -165,7 +165,7 @@ def test_decode_capacity_grows_beyond_the_preallocated_tail(gpt_pair, monkeypatc
 
 
 def test_unsupported_architectures_are_rejected():
-    from litgpt.model import GPT
+    from chunkkv._vendor.semanticlogkv.litgpt.model import GPT
 
     with pytest.raises(ValueError, match="sliding_window_size"):
         ChunkKVModel(GPT(tiny_config(sliding_window_size=8)), ChunkKVSettings(budget=32, window_size=4))
