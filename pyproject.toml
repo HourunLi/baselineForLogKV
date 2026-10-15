@@ -24,7 +24,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=8"]
 train = ["datasets==4.4.2"]
-eval = ["lm-eval[ruler]==0.4.9", "datasets>=2.18,<4", "pandas>=1.9", "openpyxl>=3"]
+eval = ["lm-eval[ruler,longbench,ifeval]==0.4.9", "datasets>=2.18,<4", "pandas>=1.9", "openpyxl>=3"]
 # ChunkKV's bundled dense-CPT runtime uses these data and logging dependencies.
 chunkkv-train = ["litdata==0.2.59", "tensorboard>=2.14", "datasets>=2.18", "pandas>=1.9", "pyarrow>=15.0.2"]
 

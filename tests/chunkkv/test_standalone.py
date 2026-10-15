@@ -28,8 +28,13 @@ def test_chunkkv_uses_package_imports_without_sys_path_injection():
     assert not violations, "\n".join(violations)
 
 
-@pytest.mark.parametrize("module", ["chunkkv.evaluate", "chunkkv.train"])
-def test_print_config_needs_only_local_yaml_and_lightweight_dependencies(module, tmp_path):
+@pytest.mark.parametrize("module,extra_args", [
+    ("chunkkv.evaluate", []), ("chunkkv.train", []),
+    ("chunkkv.evaluate", ["--suite", "main"]),
+    ("chunkkv.evaluate", ["--suite", "longbench"]),
+    ("chunkkv.evaluate", ["--suite", "niah"]),
+])
+def test_print_config_needs_only_local_yaml_and_lightweight_dependencies(module, extra_args, tmp_path):
     script = r'''
 from pathlib import Path
 import runpy
@@ -53,12 +58,12 @@ def check_yaml(event, args):
 
 sys.meta_path.insert(0, BlockExternalAndHeavyImports())
 sys.addaudithook(check_yaml)
-sys.argv = [module, "--print-config"]
+sys.argv = [module, "--print-config", *sys.argv[3:]]
 runpy.run_module(module, run_name="__main__")
 assert root / "configs/chunkkv/experiment_qwen1.7b_32k.yaml" in yaml_reads
 '''
     result = subprocess.run(
-        [sys.executable, "-c", script, str(PROJECT_ROOT), module],
+        [sys.executable, "-c", script, str(PROJECT_ROOT), module, *extra_args],
         cwd=tmp_path, capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
