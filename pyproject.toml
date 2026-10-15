@@ -3,13 +3,14 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "semanticlogkv-dms-baseline"
+name = "semanticlogkv-chunkkv-baseline"
 version = "0.1.0"
-description = "Qwen3-1.7B-Base baselines for SemanticLogKV: NVIDIA DMS and ChunkKV"
+description = "Training-free ChunkKV on Qwen3-1.7B-Base under SemanticLogKV's evaluation protocol"
 requires-python = ">=3.10,<3.14"
 dependencies = [
+    # Kept at the version this project's evaluation environment has used so far;
+    # changing it can change NIAH tokenization and needs re-validation of both sides.
     "transformers==4.57.3",
-    "accelerate==1.4.0",
     "PyYAML>=6.0",
     "torch>=2.7",
     "lightning>=2.6.1",
@@ -23,13 +24,13 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
-train = ["datasets==4.4.2"]
+# Shared evaluation protocol. Formal runs record the exact installed versions (datasets, pyarrow, ...).
 eval = ["lm-eval[ruler,longbench,ifeval]==0.4.9", "datasets>=2.18,<4", "pandas>=1.9", "openpyxl>=3"]
-# ChunkKV's bundled dense-CPT runtime uses these data and logging dependencies.
+# Optional dense-CPT control only; install it in a separate training environment.
 chunkkv-train = ["litdata==0.2.59", "tensorboard>=2.14", "datasets>=2.18", "pandas>=1.9", "pyarrow>=15.0.2"]
 
 [tool.setuptools.packages.find]
-include = ["dms*", "models*", "chunkkv*"]
+include = ["chunkkv*"]
 
 [tool.setuptools.package-data]
 "chunkkv._vendor.semanticlogkv" = ["LICENSE.md", "README.md", "SOURCE.json"]
@@ -37,5 +38,3 @@ include = ["dms*", "models*", "chunkkv*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-markers = ["cuda: requires CUDA and the official DMS kernels"]
-filterwarnings = ["ignore:flex_attention called without torch.compile:UserWarning"]
