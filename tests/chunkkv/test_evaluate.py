@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -161,7 +162,19 @@ def test_slot_matched_budget_reads_semanticlogkv_generation_snapshots(tmp_path):
         runner.slot_matched_budget(path)
 
 
-def test_outputs_stay_outside_reference_and_results_are_relabelled(tmp_path, monkeypatch):
+@pytest.fixture
+def datasets_cache(monkeypatch):
+    state = SimpleNamespace(enabled=True)
+    module = SimpleNamespace(
+        is_caching_enabled=lambda: state.enabled,
+        disable_caching=lambda: setattr(state, "enabled", False),
+        enable_caching=lambda: setattr(state, "enabled", True),
+    )
+    monkeypatch.setitem(sys.modules, "datasets", module)
+    return state
+
+
+def test_outputs_stay_outside_reference_and_results_are_relabelled(tmp_path, monkeypatch, datasets_cache):
     monkeypatch.setenv("RANK", "0")
     installed = []
     monkeypatch.setattr(runner, "install_chunkkv_adapter", lambda evaluator, options: installed.append(options))
@@ -172,6 +185,7 @@ def test_outputs_stay_outside_reference_and_results_are_relabelled(tmp_path, mon
 
     def main(**kwargs):
         assert Path.cwd() == output
+        assert not datasets_cache.enabled
         Path("eval_results_cache.json").write_text("cached")
         Path("eval_results_20261013_000000.json").write_text(json.dumps({
             "log_kv_B": 128, "log_kv_dense_mode": False, "swa_window_size": None,
@@ -182,6 +196,7 @@ def test_outputs_stay_outside_reference_and_results_are_relabelled(tmp_path, mon
     cwd = Path.cwd()
     runner.run_evaluation(evaluator, kwargs, "chunkkv", {"example": "source"}, {"budget": 64})
     assert installed == [{"budget": 64}] and Path.cwd() == cwd
+    assert datasets_cache.enabled
     assert entrypoint.read_text() == "unchanged source" and list(reference.iterdir()) == [entrypoint]
     result = json.loads((output / "eval_results_20261013_000000.json").read_text())
     assert result["model_backend"] == "chunkkv" and result["comparison_contract"] == {"example": "source"}
@@ -194,6 +209,27 @@ def test_outputs_stay_outside_reference_and_results_are_relabelled(tmp_path, mon
     with pytest.raises(ValueError, match="outside"):
         runner.run_evaluation(evaluator, {**kwargs, "output_path": str(reference / "results")}, "dense", {})
     assert not (reference / "results").exists()
+
+
+@pytest.mark.parametrize("backend", runner.BACKENDS)
+@pytest.mark.parametrize("cache_enabled", [True, False])
+def test_eval_failure_restores_directory_and_transform_cache_policy(
+    tmp_path, monkeypatch, datasets_cache, backend, cache_enabled,
+):
+    monkeypatch.setenv("RANK", "1")
+    monkeypatch.setattr(runner, "install_chunkkv_adapter", lambda *args: None)
+    datasets_cache.enabled = cache_enabled
+    cwd = Path.cwd()
+
+    def fail(**kwargs):
+        assert not datasets_cache.enabled
+        raise RuntimeError("dataset failed")
+
+    evaluator = SimpleNamespace(main=fail, __file__=str(tmp_path / "runtime/eval.py"))
+    with pytest.raises(RuntimeError, match="dataset failed"):
+        runner.run_evaluation(evaluator, {"output_path": str(tmp_path / "output")}, backend, {})
+    assert datasets_cache.enabled == cache_enabled
+    assert Path.cwd() == cwd
 
 
 def test_result_check_rejects_different_prompts_or_runtime_but_not_answers():
