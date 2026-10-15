@@ -6,10 +6,11 @@ columns as feature type `List` (and, from 4.7, mixed dict columns as `Json`); on
 of a config, `datasets<4` fails with "Feature type 'List' not found" (or 'Json') before any task or
 model code runs. Reporting changes nothing;
 `--quarantine` moves such entries aside (never deletes them) so the older readable entry is used again.
-With `--convert`, a config that has no readable entry gets a datasets 3.x copy of its selected entry:
-the Arrow data is identical (`List` and `Sequence`/`[...]` describe the same Arrow types), only the
-feature metadata is rewritten, and the original stays in the quarantine. Exits with 1 while any
-dataset config would still fail offline loading.
+With `--convert`, a config that has no readable entry gets a datasets 3.x copy of its selected entry
+and the original stays in the quarantine. `List` and 3.x `Sequence`/`[...]` describe the same Arrow
+types, so those columns keep their Arrow data and only the feature metadata is rewritten; `Json`
+columns (JSON text) are decoded into the struct 3.x itself would store. Exits with 1 while any dataset
+config would still fail offline loading.
 """
 
 import argparse
@@ -74,66 +75,144 @@ def legacy_features(feature, known):
     return feature
 
 
+def _contains_json(feature):
+    if isinstance(feature, list):
+        return any(_contains_json(item) for item in feature)
+    if _is_struct(feature):
+        return any(_contains_json(value) for value in feature.values())
+    return feature["_type"] == "Json" or ("feature" in feature and _contains_json(feature["feature"]))
+
+
+def _decode_json(feature, value):
+    """A column value with every `Json` leaf (stored as JSON text) parsed back into Python objects."""
+    if value is None:
+        return None
+    if isinstance(feature, list):
+        return [_decode_json(feature[0], item) for item in value]
+    if _is_struct(feature):
+        return {key: _decode_json(sub, value.get(key)) for key, sub in feature.items()}
+    if feature["_type"] == "Json":
+        return json.loads(value) if isinstance(value, str) else value
+    if "feature" in feature:
+        return [_decode_json(feature["feature"], item) for item in value]
+    return value
+
+
+def _without_nulls(value):
+    # 3.x stores decoded dicts as structs over every key seen, so an absent key reads back as None.
+    if isinstance(value, dict):
+        return {key: _without_nulls(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [_without_nulls(item) for item in value]
+    return value
+
+
+def _read_table(path):
+    import pyarrow as pa
+
+    return pa.ipc.open_stream(pa.memory_map(str(path))).read_all()
+
+
 def conversion_plan(entry):
-    """Translated features and Arrow split files of `entry`; raises Unconvertible if the data differs."""
+    """3.x features for `entry` and its Arrow split files; raises Unconvertible if the data would change.
+
+    Columns without `Json` keep their Arrow data and only get the 3.x spelling of their features.
+    A `Json` column (datasets>=4.7 stores mixed-key dicts as JSON text) is decoded; its 3.x feature is
+    the type 3.x itself gives such data, a struct over every key, which is what loading the source
+    files with datasets 3.x produces.
+    """
     import pyarrow as pa
     from datasets import Features
     from datasets.features.features import _FEATURE_TYPES
 
     info = json.loads((entry / "dataset_info.json").read_text(encoding="utf-8"))
-    features = legacy_features(info["features"], set(_FEATURE_TYPES))
-    expected = Features.from_dict(features).arrow_schema.remove_metadata()
+    original = info["features"]
+    json_columns = [name for name, feature in original.items() if _contains_json(feature)]
+    features = {name: feature if name in json_columns else legacy_features(feature, set(_FEATURE_TYPES))
+                for name, feature in original.items()}
     arrows = []
     for path in sorted(entry.iterdir()):
         if path.is_dir():
             raise Unconvertible(f"unexpected directory {path.name}")
         # cache-*.arrow hold map/filter results; datasets recomputes them when missing.
-        if path.suffix != ".arrow" or path.name.startswith("cache-"):
-            continue
-        with pa.memory_map(str(path)) as source:
-            schema = pa.ipc.open_stream(source).schema
-        if not schema.remove_metadata().equals(expected):
-            raise Unconvertible(f"{path.name} stores a different Arrow type than its translated features")
-        arrows.append(path.name)
+        if path.suffix == ".arrow" and not path.name.startswith("cache-"):
+            arrows.append(path.name)
     if not arrows:
         raise Unconvertible("no Arrow split files")
-    return info, features, arrows
+    if json_columns:
+        tables = [_read_table(entry / name) for name in arrows]
+        for column in json_columns:
+            try:
+                values = [_decode_json(original[column], value)
+                          for table in tables for value in table.column(column).to_pylist()]
+                inferred = pa.array(values).type
+            except (pa.ArrowInvalid, pa.ArrowTypeError) as exc:
+                raise Unconvertible(f"decoded JSON of {column} has no single Arrow type: {exc}") from exc
+            features[column] = Features.from_arrow_schema(pa.schema([pa.field(column, inferred)])).to_dict()[column]
+    expected = Features.from_dict(features).arrow_schema.remove_metadata()
+    for name in arrows:
+        with pa.memory_map(str(entry / name)) as source:
+            schema = pa.ipc.open_stream(source).schema.remove_metadata()
+        if schema.names != expected.names or any(
+                not schema.field(column).equals(expected.field(column))
+                for column in schema.names if column not in json_columns):
+            raise Unconvertible(f"{name} stores a different Arrow type than its translated features")
+    return {"info": info, "original": original, "features": features, "arrows": arrows,
+            "json_columns": json_columns}
 
 
-def convert(source, destination, info, features, arrows):
-    """Copy entry `source` to `destination` with 3.x feature metadata, then check every batch is unchanged."""
+def _with_features(schema, features):
+    metadata = dict(schema.metadata or {})
+    huggingface = json.loads(metadata.get(b"huggingface", b"{}"))
+    huggingface.setdefault("info", {})["features"] = features
+    metadata[b"huggingface"] = json.dumps(huggingface).encode()
+    return metadata
+
+
+def convert(source, destination, plan):
+    """Write entry `source` to `destination` with 3.x features, then check that every row reads back."""
     import pyarrow as pa
     from datasets import Dataset, DatasetInfo, Features
 
+    features, arrows, json_columns = plan["features"], plan["arrows"], plan["json_columns"]
+    expected = Features.from_dict(features)
     destination.mkdir(parents=True)
     for path in sorted(source.iterdir()):
         target = destination / path.name
-        if path.name in arrows:
+        if path.name in arrows and not json_columns:
             with pa.memory_map(str(path)) as stream:
                 reader = pa.ipc.open_stream(stream)
-                metadata = dict(reader.schema.metadata or {})
-                huggingface = json.loads(metadata.get(b"huggingface", b"{}"))
-                huggingface.setdefault("info", {})["features"] = features
-                metadata[b"huggingface"] = json.dumps(huggingface).encode()
-                schema = reader.schema.with_metadata(metadata)
+                schema = reader.schema.with_metadata(_with_features(reader.schema, features))
                 with pa.OSFile(str(target), "wb") as sink, pa.ipc.new_stream(sink, schema) as writer:
                     for batch in reader:
                         writer.write_batch(pa.RecordBatch.from_arrays(batch.columns, schema=schema))
+        elif path.name in arrows:
+            table = _read_table(path)
+            schema = expected.arrow_schema.with_metadata(_with_features(table.schema, features))
+            columns = [pa.array([_decode_json(plan["original"][field.name], value)
+                                 for value in table.column(field.name).to_pylist()], type=field.type)
+                       if field.name in json_columns else table.column(field.name) for field in schema]
+            with pa.OSFile(str(target), "wb") as sink, pa.ipc.new_stream(sink, schema) as writer:
+                writer.write_table(pa.Table.from_arrays(columns, schema=schema))
         elif path.name == "dataset_info.json":
-            target.write_text(json.dumps({**info, "features": features}, indent=2, sort_keys=True), encoding="utf-8")
+            target.write_text(json.dumps({**plan["info"], "features": features}, indent=2, sort_keys=True),
+                              encoding="utf-8")
         elif path.suffix != ".arrow":
             shutil.copy2(path, target)
-    expected = Features.from_dict(features)
     if DatasetInfo.from_directory(str(destination)).features != expected:
         raise RuntimeError(f"Converted dataset_info.json in {destination} does not read back")
     for name in arrows:
         if Dataset.from_file(str(destination / name)).features != expected:
             raise RuntimeError(f"Converted {name} does not read back with the translated features")
-        with pa.memory_map(str(source / name)) as old, pa.memory_map(str(destination / name)) as new:
-            old_batches, new_batches = list(pa.ipc.open_stream(old)), list(pa.ipc.open_stream(new))
-            if len(old_batches) != len(new_batches) or not all(
-                    a.equals(b, check_metadata=False) for a, b in zip(old_batches, new_batches)):
-                raise RuntimeError(f"Converted {name} does not hold the original rows")
+        old, new = _read_table(source / name), _read_table(destination / name)
+        unchanged = old.num_rows == new.num_rows and all(
+            _without_nulls([_decode_json(plan["original"][column], value)
+                            for value in old.column(column).to_pylist()])
+            == _without_nulls(new.column(column).to_pylist())
+            if column in json_columns else old.column(column).equals(new.column(column))
+            for column in old.column_names)
+        if not unchanged:
+            raise RuntimeError(f"Converted {name} does not hold the original rows")
     return {name: {"original_sha256": sha256(source / name), "converted_sha256": sha256(destination / name)}
             for name in arrows}
 
@@ -187,7 +266,9 @@ def main():
             print(f"  no readable entry, no offline conversion ({exc}): "
                   "prepare this config with the evaluation environment (datasets<4)")
             continue
-        print("  no readable entry; convertible offline with --quarantine DIR --convert (Arrow data unchanged)")
+        decoded = f"; decodes Json columns {plan['json_columns']}" if plan["json_columns"] else ""
+        print(f"  no readable entry; convertible offline with --quarantine DIR --convert "
+              f"(rows unchanged{decoded})")
         if args.convert:
             movable += unreadable
             conversions.append((newest, plan))
@@ -207,12 +288,13 @@ def main():
             original = target / entry.relative_to(root)
             # Build outside the cache so a half-written entry can never be selected.
             staging = target / ".converting" / entry.relative_to(root)
-            files = convert(original, staging, *plan)
+            files = convert(original, staging, plan)
             shutil.move(str(staging), str(entry))
             os.utime(entry)  # newest entry of its config, so offline loading selects it
             records.append({"entry": str(entry), "original": str(original), "datasets": datasets.__version__,
                             "converted_at": datetime.now().isoformat(timespec="seconds"),
-                            "features": plan[1], "files": files})
+                            "features": plan["features"], "decoded_json_columns": plan["json_columns"],
+                            "files": files})
             log.write_text(json.dumps(records, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             print(f"converted {original} -> {entry}")
         staging_root = target / ".converting"

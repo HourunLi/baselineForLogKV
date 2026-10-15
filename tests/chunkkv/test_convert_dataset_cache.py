@@ -68,17 +68,19 @@ def test_entries_without_a_readable_fallback_are_converted_and_originals_kept(tm
         return run("-c", LOAD, path, name, split).stdout.strip()
 
     loads = [("truthfulqa/truthful_qa", "generation", "validation"),
-             ("truthfulqa/truthful_qa", "multiple_choice", "validation"), ("example/structs", "-", "train")]
+             ("truthfulqa/truthful_qa", "multiple_choice", "validation"), ("example/structs", "-", "train"),
+             ("google/IFEval", "-", "train")]
     assert all("Feature type 'List' not found" in load(*args) for args in loads)
     report = run("-m", "chunkkv.check_dataset_cache")
     assert report.returncode == 1 and "4 dataset configs fail" in report.stdout, report.stdout + report.stderr
-    assert report.stdout.count("convertible offline with --quarantine DIR --convert") == 3
-    assert "google___if_eval/default" in report.stdout and "feature type 'Json'" in report.stdout
+    assert report.stdout.count("convertible offline with --quarantine DIR --convert") == 4
+    assert "decodes Json columns ['kwargs']" in report.stdout
     assert run("-m", "chunkkv.check_dataset_cache", "--convert").returncode == 2
 
     quarantine = tmp_path / "quarantine"
     converted = run("-m", "chunkkv.check_dataset_cache", "--quarantine", str(quarantine), "--convert")
-    assert converted.returncode == 1 and "1 dataset configs fail" in converted.stdout, converted.stdout
+    assert converted.returncode == 0, converted.stdout + converted.stderr
+    assert "Every dataset config selects an entry" in converted.stdout
     assert json.loads(load(*loads[0])) == [
         {"type": "Adversarial", "question": "q1", "best_answer": "a1",
          "correct_answers": ["a1", "a1b"], "incorrect_answers": ["x1"]},
@@ -88,14 +90,14 @@ def test_entries_without_a_readable_fallback_are_converted_and_originals_kept(tm
     assert json.loads(load(*loads[2])) == [
         {"spans": [{"text": "t", "start": 1}], "pair": [1.0, 2.0], "nested": [[1, 2], [3]], "label": 1},
         {"spans": [], "pair": [3.0, 4.0], "nested": [[]], "label": 0}]
-    # Originals are moved aside byte for byte; the unconvertible Json entry is left in place.
+    # IFEval's JSON-text kwargs become the struct over all keys that datasets 3.x stores for them.
+    assert json.loads(load(*loads[3])) == [{"prompt": "p", "kwargs": [
+        {"num_words": 3, "language": None}, {"num_words": None, "language": "en"}]}]
+    # Originals are moved aside byte for byte.
     for original in FIXTURE.glob("*/*/*/*/*"):
         relative = original.relative_to(FIXTURE)
-        if relative.parts[0] == "google___if_eval":
-            assert (root / relative).read_bytes() == original.read_bytes()
-        else:
-            assert (quarantine / relative).read_bytes() == original.read_bytes()
+        assert (quarantine / relative).read_bytes() == original.read_bytes()
     records = json.loads((quarantine / "conversions.json").read_text())
-    assert len(records) == 3 and not (quarantine / ".converting").exists()
-    rerun = run("-m", "chunkkv.check_dataset_cache")
-    assert "google___if_eval/default" in rerun.stdout and "1 dataset configs fail" in rerun.stdout
+    assert [record["decoded_json_columns"] for record in records] == [[], ["kwargs"], [], []]
+    assert not (quarantine / ".converting").exists()
+    assert run("-m", "chunkkv.check_dataset_cache").returncode == 0
