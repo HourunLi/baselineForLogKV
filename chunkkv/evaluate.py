@@ -17,7 +17,7 @@ import sys
 
 import yaml
 
-from .config import BASELINE_ROOT, RUNTIME_ROOT, DEFAULT_EXPERIMENT_CONFIG, load_experiment_config
+from .config import BASELINE_ROOT, RUNTIME_ROOT, DEFAULT_EXPERIMENT_CONFIG, load_experiment_config, require_project_file
 
 DEFAULT_ROOT = RUNTIME_ROOT
 DEFAULT_CONFIG = DEFAULT_EXPERIMENT_CONFIG
@@ -344,7 +344,10 @@ def main():
             "window_size": args.window_size, "reuse_layers": args.reuse_layers,
         })
     root = RUNTIME_ROOT
-    source_config = args.experiment_config.resolve(strict=True)
+    try:
+        source_config = require_project_file(args.experiment_config)
+    except ValueError as error:
+        parser.error(str(error))
     model = args.model.resolve() if args.model else None
     output = (args.output or BASELINE_ROOT / "outputs/eval" / args.backend).resolve()
     if args.suite:

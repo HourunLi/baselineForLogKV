@@ -24,7 +24,9 @@ from types import SimpleNamespace
 
 import yaml
 
-from .config import BASELINE_ROOT, RUNTIME_ROOT, expand_env_vars, load_yaml_chain, normalize_input_paths
+from .config import (
+    BASELINE_ROOT, RUNTIME_ROOT, expand_env_vars, load_yaml_chain, normalize_input_paths, require_project_file,
+)
 
 DEFAULT_CONFIG = BASELINE_ROOT / "configs/chunkkv/dense_cpt_qwen1.7b_32k.yaml"
 # The control trains the same weights with ordinary attention and evaluates through
@@ -174,6 +176,10 @@ def main():
     parser.add_argument("--prepare", action="store_true", help="resolve, hash and record inputs (single process)")
     parser.add_argument("--print-config", action="store_true")
     args = parser.parse_args()
+    # Formal runs read only project-owned YAMLs (no other project's experiment chain).
+    _, record = resolve_training_config(require_project_file(args.config))
+    for path in record["experiment_config_files"]:
+        require_project_file(path)
     if args.print_config:
         resolved, _ = resolve_training_config(args.config)
         print(yaml.safe_dump(resolved, allow_unicode=True, sort_keys=True))

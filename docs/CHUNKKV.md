@@ -307,11 +307,12 @@ datasets 的作业应设置独立的 `HF_DATASETS_CACHE`，否则还会写入新
 
 2026-10-15 统一规则对齐：移除分支内与 ChunkKV 无关、且运行时依赖相邻 `../litgpt` 的 DMS 代码/配置/测试/文档；
 评测必须显式选择 `--suite` 或 `--tasks`；`majob.sh` 拒绝改动任务清单或实验配置的参数；结果记录 pyarrow 版本、
-解释器、CUDA/驱动与拓扑，解析配置按启动编号保存。Linux CPU、Python 3.13.16、torch 2.14.1+cu130（CPU 执行）、
+解释器、CUDA/驱动与拓扑，解析配置按启动编号保存；评测与 dense CPT 入口只接受项目内的实验/训练 YAML，`config:`
+继承不得离开顶层 YAML 所在目录。Linux CPU、Python 3.13.16、torch 2.14.1+cu130（CPU 执行）、
 lm-eval 0.4.9、datasets 3.6.0、transformers 4.57.6、pyarrow 26.0.0、litdata 0.2.59 下 `python -m pytest -q`：
-**63 passed**（含 dense CPT 训练器测试；改动前 `tests/chunkkv` 在同一环境为 60 passed、1 skipped，跳过项因未装
+**64 passed**（含 dense CPT 训练器测试；改动前 `tests/chunkkv` 在同一环境为 60 passed、1 skipped，跳过项因未装
 litdata）。新增项覆盖：不带任务选择时报错、项目内不再含其他 baseline 或 `../litgpt` 引用、`majob.sh` 拒绝协议参数、
-结果写入 `resolved_eval`。未执行真实权重、真实缓存、CUDA 或多节点作业。
+结果写入 `resolved_eval`、项目外配置与越界继承被拒绝。未执行真实权重、真实缓存、CUDA 或多节点作业。
 
 2026-10-15 离线缓存新版特征类型：用 datasets 3.6.0（服务器 traceback 的行号与可用类型列表都与之一致）、
 4.4.2 和 4.7.0 复现。4.x 写出的 `cais___mmlu/abstract_algebra` 条目较新时，参考方式（转换缓存开启、默认
