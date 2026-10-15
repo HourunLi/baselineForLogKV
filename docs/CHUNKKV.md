@@ -225,7 +225,66 @@ TMPDIR=/tmp bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml \
 `--limit 4` 限制评测样本数，不保证只预处理四条数据。修复不掩盖 Arrow 异常；
 若仍报错，应继续定位实际文件和挂载状态，而不是清空整套离线缓存。
 
+### 离线缓存报 `Feature type 'List' not found` / `'Json' not found`
+
+若栈为 `ConfigurableTask.download → datasets.load_dataset → packaged_modules/cache/cache.py →
+DatasetInfo.from_directory`，失败点是读取离线缓存条目的 `dataset_info.json`，而非缓存路径找不到；
+此时尚未开始该任务的模型推理，也没有进入 ChunkKV 代码。栈中嵌套两层任务组的是 `mmlu`
+（`mmlu → mmlu_humanities 等 → 各学科`），对应缓存目录 `cais___mmlu/<学科>/`；排在它前面的 boolq、
+hellaswag、arc、openbookqa 等已正常读取。
+
+离线模式下，`datasets` 对每个数据集配置选用目录修改时间最新的 `<config>/<version>/<hash>` 条目。
+特征类型 `List` 只由 `datasets>=4` 写出；从 datasets 4.7 起，键不统一的 dict 列（如 IFEval 的
+`kwargs`）还会存成 `List(Json())`。评测环境的 datasets 3.x（traceback 行号与 3.5.1/3.6.0 一致）
+不认识这些类型。也就是说，某个使用新版 datasets 的作业在共享缓存里重新准备了这些数据集，新条目盖过了
+此前可读的条目。离线的 `datasets>=4` 读取已有条目时不会写新条目，所以写入者通常是联网（或经镜像）
+重新准备数据的作业，也可能是从别处拷入的缓存。
+
+这并非 ChunkKV 与 Semantic 评测方式不同所致。数据仍由本地快照中同一个 `eval.main → simple_evaluate`
+加载，缓存根目录、离线变量和 `load_dataset` 包装都与 Semantic `eval.py` 相同。本入口只有两处不同：
+`disable_caching()` 和把工作目录切到输出目录。两者只决定 map/filter 结果放在哪里、相对路径怎样解析，
+不参与缓存条目的选择。用 datasets 3.6.0 复现时，两种方式在同一缓存状态下报同样的错误，移走新条目后
+都能恢复。按代码推断，在 torch218 中用 Semantic 自己的 `eval.py` 只跑 `mmlu`、`--limit 1`，
+也会得到同一错误，可用来交叉确认。
+
+曾尝试在评测作用域内把 `List` 元数据翻译成旧类型（提交 3144672）：mmlu 能读了，但加载到 IFEval 时改报
+`Feature type 'Json' not found`。`Json` 在 datasets 3.x 中没有等价类型：4.7 把这些 dict 存成 JSON
+字符串、读取时再解码，3.x 则存成包含全部键的 struct，缺失键为 `None`，无法无损翻译。该补丁还让本入口
+读取 Semantic 原脚本读不了的条目，数据来源与 Semantic 不同。因此已移除，评测路径恢复为与 Semantic
+`eval.py` 一致，改为修复缓存本身，使双方读取同一批旧条目。
+
+检查和处理如下。报告模式不改动缓存；`--quarantine` 只移动、不删除，需要时可原样移回。
+请在没有其他作业读取该缓存时执行：
+
+```bash
+cd /data/lihourun/baselineForLogKV/chunkKV
+source /home/ma-user/anaconda3/bin/activate torch218
+python -m chunkkv.check_dataset_cache
+python -m chunkkv.check_dataset_cache \
+  --quarantine /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache/unreadable_by_datasets3
+```
+
+报告一次列出所有"最新条目不可读"的数据集配置（不论是 `List`、`Json` 还是其他新类型），以及该条目的
+修改时间（可据此找到写入它的作业）和隔离后将重新被选中的可读条目。隔离后，离线加载回到这些可读条目，
+通常也就是此前 Semantic 评测读取的版本；新版 datasets 同样能读这些旧条目。
+
+报告为"no readable entry"的配置没有旧条目可退回，Semantic 原脚本同样读不了。若它属于评测任务，需要
+先把该条目移到隔离目录，再在评测环境（datasets<4）中联网或经镜像对该数据集执行一次 `load_dataset`，
+重新生成旧格式条目。报告中与评测任务无关的条目（例如本地 json/parquet 构建器缓存）可以不处理。
+不要为此升级评测环境的 datasets，lm-eval 0.4.9 + datasets<4 是双方共同的评测口径。今后使用新版
+datasets 的作业应设置独立的 `HF_DATASETS_CACHE`，否则还会写入新的条目。
+
 ## 验证记录
+
+2026-10-15 离线缓存新版特征类型：用 datasets 3.6.0（服务器 traceback 的行号与可用类型列表都与之一致）、
+4.4.2 和 4.7.0 复现。4.x 写出的 `cais___mmlu/abstract_algebra` 条目较新时，参考方式（转换缓存开启、默认
+工作目录）和 ChunkKV 方式（`disable_caching()`、输出目录）都报 `Feature type 'List' not found`。
+4.7.0 由同一 JSONL 准备的 IFEval 条目为 `kwargs: List(Json())`，3.6.0 为全部键的 struct 列表。加上
+3144672 的补丁后 mmlu 可读、IFEval 报 `Feature type 'Json' not found`，与服务器现象一致。
+`check_dataset_cache --quarantine` 移走两个新条目后，不带任何补丁的 3.6.0 读回旧条目，4.7.0 也能读这些旧条目；
+离线的 4.4.2 读取已有 3.x 条目时不写新文件。`tests/chunkkv/test_check_dataset_cache.py` 与原转换缓存
+回归在 datasets 3.6.0 和 4.4.2 下各 **2 passed**；Linux、Python 3.13、datasets 3.6.0 下，轻量配置/启动器
+测试连同这两项共 **37 passed，2 deselected**。未接触服务器上的真实缓存，也未执行真实模型任务。
 
 2026-10-15 Arrow 转换缓存隔离：轻量配置/启动器测试 **35 passed，2 deselected**。
 额外使用 datasets 3.6.0、PyArrow 17.0.0 与三个合成样本执行真实 Arrow 回归 **1 passed**：
