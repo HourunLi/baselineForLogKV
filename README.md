@@ -30,7 +30,8 @@ python -m pytest -q tests/chunkkv
 bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml --output outputs/chunkkv-base-32k-full
 ```
 
-每个节点执行一次；提交前在目标环境安装 `.[eval]`。环境选择、多节点参数、实现细节、
+每个节点执行一次；提交前在目标环境安装 `.[eval]`，并可用 `python -m chunkkv.check_dataset_cache`
+检查共享离线缓存中是否有评测环境（datasets<4）读不了的条目。环境选择、多节点参数、实现细节、
 预算口径与验证记录见 [docs/CHUNKKV.md](docs/CHUNKKV.md)。尚未在 CUDA 上用真实权重运行。
 
 ---
