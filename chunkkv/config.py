@@ -14,13 +14,24 @@ INPUT_PATHS = ("ckpt_dir", "resume_dir", "data_dir", "dataset_dir", "tokenizer_d
                "log_kv_semantic_s_h_path")
 
 
-def load_yaml_chain(path):
-    """Load shallow ``config:`` inheritance relative to each YAML, recording its inputs."""
+def require_project_file(path):
+    """Experiment/training YAMLs used by entry points must belong to this project."""
     path = Path(path).resolve(strict=True)
+    if not path.is_relative_to(BASELINE_ROOT):
+        raise ValueError(f"Configs must live inside this project ({BASELINE_ROOT}): {path}")
+    return path
+
+
+def load_yaml_chain(path, root=None):
+    """Load shallow ``config:`` inheritance, recording its inputs; parents stay in the top YAML's folder."""
+    path = Path(path).resolve(strict=True)
+    root = path.parent if root is None else root
+    if not path.is_relative_to(root):
+        raise ValueError(f"Config inheritance leaves {root}: {path}")
     config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     files = [path]
     if "config" in config:
-        parent, parent_files = load_yaml_chain(path.parent / config.pop("config"))
+        parent, parent_files = load_yaml_chain(path.parent / config.pop("config"), root)
         config, files = {**parent, **config}, parent_files + files
     return config, files
 

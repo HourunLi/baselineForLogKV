@@ -84,3 +84,18 @@ def test_project_contains_no_other_baseline_or_external_checkout_reference():
         if path.suffix in {".py", ".sh", ".yaml", ".toml"} and ".git" not in path.parts and path != Path(__file__):
             text = path.read_text(encoding="utf-8")
             assert "../litgpt" not in text and "litgpt_root" not in text, path
+
+
+def test_entry_points_reject_configs_outside_the_project(tmp_path):
+    from chunkkv.config import load_yaml_chain
+
+    outside = tmp_path / "experiment.yaml"
+    outside.write_text("ckpt_dir: /x\ncontext_length: 32768\n")
+    result = subprocess.run([sys.executable, "-m", "chunkkv.evaluate", "--suite", "niah", "--print-config",
+                             "--experiment-config", str(outside)], cwd=PROJECT_ROOT, capture_output=True, text=True)
+    assert result.returncode == 2 and "inside this project" in result.stderr
+    nested = tmp_path / "nested" / "run.yaml"
+    nested.parent.mkdir()
+    nested.write_text("config: ../experiment.yaml\n")
+    with pytest.raises(ValueError, match="inheritance"):
+        load_yaml_chain(nested)
