@@ -13,7 +13,6 @@ import sys
 import yaml
 
 from .config import BASELINE_ROOT, RUNTIME_ROOT, DEFAULT_EXPERIMENT_CONFIG, load_experiment_config
-from .dataset_compat import compatible_list_features
 
 DEFAULT_ROOT = RUNTIME_ROOT
 DEFAULT_CONFIG = DEFAULT_EXPERIMENT_CONFIG
@@ -170,7 +169,7 @@ def comparison_contract(root, source_config, kwargs):
                             if (base / name).is_file()},
         "evaluation_code": {str(path.relative_to(root)): file_sha256(path) for path in source_files},
         "compatibility_code": {name: file_sha256(Path(__file__).parent / name)
-                               for name in ("evaluate.py", "semanticlogkv_eval.py", "config.py", "dataset_compat.py")},
+                               for name in ("evaluate.py", "semanticlogkv_eval.py", "config.py")},
         "versions": {name: importlib.metadata.version(name)
                      for name in ("torch", "transformers", "datasets", "lm-eval", "tokenizers")},
         "cache": {key: os.environ[key] for key in
@@ -235,8 +234,7 @@ def run_evaluation(evaluator, kwargs, backend, contract, options=None, budget_re
     previous_dir = Path.cwd()
     try:
         os.chdir(output)
-        with compatible_list_features():
-            evaluator.main(**kwargs)
+        evaluator.main(**kwargs)
     finally:
         os.chdir(previous_dir)
         if caching_enabled:
