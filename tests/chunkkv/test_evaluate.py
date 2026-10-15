@@ -1,6 +1,7 @@
 """Launcher contract: shared inputs, budget options, output isolation and result checks."""
 
 import copy
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -171,6 +172,7 @@ def datasets_cache(monkeypatch):
         enable_caching=lambda: setattr(state, "enabled", True),
     )
     monkeypatch.setitem(sys.modules, "datasets", module)
+    monkeypatch.setattr(runner, "compatible_list_features", nullcontext)
     return state
 
 

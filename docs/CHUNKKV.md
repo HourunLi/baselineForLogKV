@@ -225,7 +225,28 @@ TMPDIR=/tmp bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml \
 `--limit 4` 限制评测样本数，不保证只预处理四条数据。修复不掩盖 Arrow 异常；
 若仍报错，应继续定位实际文件和挂载状态，而不是清空整套离线缓存。
 
+### 本地缓存报 Feature type 'List' not found
+
+若栈为 `DatasetInfo.from_directory → Features.from_dict`，说明当前评测库不能解析
+`dataset_info.json` 的特征类型描述，而非缓存路径找不到。新版 datasets 使用 `List` 描述列表，
+本项目 `datasets<4` 环境使用旧特征表示；仅关闭转换缓存不能解决这种元数据版本差异。
+
+`chunkkv/dataset_compat.py` 在评测作用域内兼容读取新版 `List`，同时覆盖 JSON 和 Arrow 内嵌元数据。
+原始缓存文件不改写，退出时恢复库方法，不需要升级环境或重新下载数据。可变长度字典列表保留
+`list<struct>`，不会简单替换为会转置字典的旧 `Sequence`；普通列表及固定长度的非字典元素列表
+使用等价旧类型。旧库无法等价表示的固定长度字典列表明确报错，未知特征类型仍交给库报错。
+兼容代码的哈希纳入评测对齐记录。类型定义依据
+[datasets 4.0 的 List/Sequence 实现](https://github.com/huggingface/datasets/blob/4.0.0/src/datasets/features/features.py)。
+
+同步修改后的 `chunkkv/evaluate.py` 和新增的 `chunkkv/dataset_compat.py` 后，沿用原来的
+`TMPDIR=/tmp bash majob.sh ... --limit 4` 命令验证即可；仍需保留现有离线缓存和环境变量。
+
 ## 验证记录
+
+2026-10-15 List 元数据兼容：轻量测试 **35 passed，2 deselected**；真实 Arrow/元数据测试
+**4 passed**（datasets 3.6.0、PyArrow 17.0.0）。覆盖原来的双进程转换缓存隔离、
+新版 JSON/Arrow 元数据在修复前报错与修复后等价读取、列表嵌套/固定长度/ClassLabel、
+原始文件哈希不变、未知类型及不支持结构报错，以及异常后恢复接口。未运行服务器八卡任务。
 
 2026-10-15 Arrow 转换缓存隔离：轻量配置/启动器测试 **35 passed，2 deselected**。
 额外使用 datasets 3.6.0、PyArrow 17.0.0 与三个合成样本执行真实 Arrow 回归 **1 passed**：
