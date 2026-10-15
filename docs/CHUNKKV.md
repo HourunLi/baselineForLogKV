@@ -202,7 +202,35 @@ bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml \
 该入口为 CUDA GPU 作业设计；每张卡持有完整模型、分担评测样本。增加 GPU 数能分摊任务，
 不会降低单条 32K 输入的单卡显存需求。LongBench 的 32K 指上下文上限，NIAH 只生成/评测 32768 长度。
 
+### HellaSwag 预处理的 Arrow schema 错误
+
+若栈为 `hellaswag.process_docs → dataset.map → _map_single → Dataset.from_file`，
+并报 `Tried reading schema message, was null or length 0`，失败点是转换结果的 Arrow 文件回读，
+尚未开始该任务的模型推理。不能仅凭此认定原始 HellaSwag 内容或 ChunkKV 模型接口有问题；
+多个 rank 共用转换缓存文件、共享挂载的文件可见性异常是需要排查的原因。
+
+评测入口现在通过 `datasets.disable_caching()` 让自动生成的 map/filter 缓存使用各进程独立的
+临时文件，退出后恢复原来的开关。原始 `load_dataset()` 离线缓存仍然使用，不清理或重新下载数据。
+这是 [Hugging Face 的转换缓存机制](https://huggingface.co/docs/datasets/v3.6.0/en/package_reference/main_classes#datasets.disable_caching)，
+会增加每次启动的 CPU 预处理时间和临时磁盘占用。
+
+平台上可显式使用节点本地临时盘，避免临时文件也写回桶挂载：
+
+```bash
+cd /data/lihourun/baselineForLogKV/chunkKV
+TMPDIR=/tmp bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml \
+  --limit 4 --output outputs/chunkkv-base-32k-smoke
+```
+
+`--limit 4` 限制评测样本数，不保证只预处理四条数据。修复不掩盖 Arrow 异常；
+若仍报错，应继续定位实际文件和挂载状态，而不是清空整套离线缓存。
+
 ## 验证记录
+
+2026-10-15 Arrow 转换缓存隔离：轻量配置/启动器测试 **35 passed，2 deselected**。
+额外使用 datasets 3.6.0、PyArrow 17.0.0 与三个合成样本执行真实 Arrow 回归 **1 passed**：
+两个独立进程通过实际评测入口绕过空的共享转换缓存，输出相同，临时目录不同，原始文件哈希不变。
+这验证缓存隔离行为，不代表已复现或验证服务器的八卡共享挂载故障；未执行真实模型任务。
 
 2026-10-15 训练平台入口：配置、启动器与隔离测试 **29 passed，2 deselected**（命令同下）。
 通过模拟解释器检查单节点/双节点的 rank、world size、主节点 DNS、独立端口与首阶段失败停止；

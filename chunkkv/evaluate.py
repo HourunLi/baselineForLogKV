@@ -221,6 +221,15 @@ def run_evaluation(evaluator, kwargs, backend, contract, options=None, budget_re
     before = set(output.glob("eval_results_[0-9]*.json")) if is_main else set()
     if backend == "chunkkv":
         install_chunkkv_adapter(evaluator, options)
+    import datasets
+
+    # map/filter caches otherwise share a filename across ranks on the mounted cache.
+    # This keeps load_dataset's offline source cache, but gives transforms private temp files.
+    caching_enabled = datasets.is_caching_enabled()
+    datasets.disable_caching()
+    if is_main:
+        print("[hf-cache] Dataset transforms use per-process temporary files; offline source cache is unchanged.",
+              flush=True)
     # The unchanged main writes eval_results_cache.json to its working directory.
     previous_dir = Path.cwd()
     try:
@@ -228,6 +237,8 @@ def run_evaluation(evaluator, kwargs, backend, contract, options=None, budget_re
         evaluator.main(**kwargs)
     finally:
         os.chdir(previous_dir)
+        if caching_enabled:
+            datasets.enable_caching()
     if is_main:
         created = set(output.glob("eval_results_[0-9]*.json")) - before
         if len(created) != 1:
