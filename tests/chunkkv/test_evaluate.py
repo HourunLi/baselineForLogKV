@@ -232,6 +232,21 @@ def test_eval_failure_restores_directory_and_transform_cache_policy(
     assert Path.cwd() == cwd
 
 
+def test_cache_entries_from_newer_datasets_point_to_the_cache_check(tmp_path, monkeypatch, datasets_cache):
+    monkeypatch.setenv("RANK", "1")
+
+    def fail(**kwargs):
+        raise ValueError("Feature type 'List' not found. Available feature types: ['Value', 'Sequence']")
+
+    evaluator = SimpleNamespace(main=fail, __file__=str(tmp_path / "runtime/eval.py"))
+    with pytest.raises(RuntimeError, match="chunkkv.check_dataset_cache") as raised:
+        runner.run_evaluation(evaluator, {"output_path": str(tmp_path / "output")}, "logkv", {})
+    assert "Feature type 'List'" in str(raised.value.__cause__)
+    evaluator.main = lambda **kwargs: (_ for _ in ()).throw(ValueError("unrelated"))
+    with pytest.raises(ValueError, match="unrelated"):
+        runner.run_evaluation(evaluator, {"output_path": str(tmp_path / "output")}, "logkv", {})
+
+
 def test_result_check_rejects_different_prompts_or_runtime_but_not_answers():
     result = {"comparison_contract": dict.fromkeys(CONTRACT_FIELDS, "same"), "results": {"samples": {"niah": [
         dict(doc_id=0, doc_hash="doc", prompt_hash="prompt", target_hash="target",

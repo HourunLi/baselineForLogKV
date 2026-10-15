@@ -8,6 +8,7 @@ import inspect
 import json
 import os
 from pathlib import Path
+import re
 import sys
 
 import yaml
@@ -235,6 +236,15 @@ def run_evaluation(evaluator, kwargs, backend, contract, options=None, budget_re
     try:
         os.chdir(output)
         evaluator.main(**kwargs)
+    except ValueError as exc:
+        # Raised while task data loads from the offline cache, before any model call.
+        if not re.match(r"Feature type '\w+' not found", str(exc)):
+            raise
+        raise RuntimeError(
+            f"An offline cache entry under {os.environ.get('HF_DATASETS_CACHE')} was written by a newer "
+            f"`datasets` than the installed {importlib.metadata.version('datasets')}. Run "
+            "`python -m chunkkv.check_dataset_cache` (then `--quarantine DIR`); see docs/CHUNKKV.md."
+        ) from exc
     finally:
         os.chdir(previous_dir)
         if caching_enabled:
