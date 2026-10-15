@@ -1,0 +1,15 @@
+# PyramidKV on the original Qwen3-1.7B-Base used by SemanticLogKV, 32K NIAH single 2/3.
+# Keys are evaluate.py option names; command-line options override them.
+model: /home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/
+tasks: niah_single_2,niah_single_3
+max_seq_length: 32768          # SemanticLogKV context_length; RULER metadata uses the same single length
+hf_cache_base: /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache
+
+method: pyramidkv
+max_capacity_prompt: 2048      # average entries per layer and KV head after prefill (window included)
+window_size: 8                 # KVCache-Factory runner defaults below
+kernel_size: 7
+pooling: maxpool
+beta: 20
+kv_cache_granularity: kv_head  # one entry per KV head, same unit as SemanticLogKV's KV-group slots
+gqa_score_agg: mean
