@@ -1,8 +1,11 @@
-"""Check that result files used identical test inputs, then tabulate them side by side.
+"""Check that result files used the same evaluation protocol and test inputs, then tabulate them.
 
 Works on this baseline's results and on SemanticLogKV ``eval_results_*.json``
 files alike: both keep lm-eval's per-sample log (doc/prompt/target hashes and
 the exact request arguments) plus ``kv_compression`` and ``inference_metrics``.
+Protocol fields (samples, task versions and settings, limit, window, tokenizer,
+harness versions) must agree; method fields (backend, budget, weights) are
+reported separately and are expected to differ.
 
     python -m h2okv.compare_results semantic.json h2o.json [pyramidkv.json ...]
 """
@@ -15,6 +18,17 @@ import json
 from pathlib import Path
 
 SAMPLE_KEYS = ("doc_id", "doc_hash", "prompt_hash", "target_hash", "arguments")
+# Task settings that change prompts, generation or scoring; ``metadata`` only names caches.
+TASK_CONFIG_KEYS = ("output_type", "num_fewshot", "generation_kwargs", "target_delimiter",
+                    "fewshot_delimiter", "repeats")
+# Recorded by this project's results only; SemanticLogKV's own files leave them unverified.
+PROVENANCE_FIELDS = {
+    "max_seq_length": lambda result: result.get("max_seq_length"),
+    "tokenizer_files": lambda result: (result.get("provenance") or {}).get("tokenizer_files"),
+    "lm-eval": lambda result: ((result.get("provenance") or {}).get("versions") or {}).get("lm-eval"),
+    "datasets": lambda result: ((result.get("provenance") or {}).get("versions") or {}).get("datasets"),
+    "pyarrow": lambda result: ((result.get("provenance") or {}).get("versions") or {}).get("pyarrow"),
+}
 
 
 def sample_signatures(result: dict) -> dict[str, list[str]]:
@@ -35,6 +49,36 @@ def sample_signatures(result: dict) -> dict[str, list[str]]:
     return signatures
 
 
+def protocol_record(result: dict) -> dict:
+    """Harness-level settings both kinds of result files carry inside lm-eval's ``results``."""
+    harness = result.get("results") or {}
+    configs = harness.get("configs") or {}
+    return {
+        "limit": (harness.get("config") or {}).get("limit"),
+        "n-samples": harness.get("n-samples"),
+        "task_versions": harness.get("versions"),
+        "task_configs": {task: {key: config.get(key) for key in TASK_CONFIG_KEYS}
+                         for task, config in sorted(configs.items())},
+    }
+
+
+def protocol_differences(results: list[dict]) -> tuple[list[str], list[str]]:
+    """Return (fields that differ, fields not recorded in every file)."""
+    differing, unverified = [], []
+    records = [protocol_record(result) for result in results]
+    for key in records[0]:
+        values = [json.dumps(record[key], sort_keys=True, default=str) for record in records]
+        if len(set(values)) > 1:
+            differing.append(key)
+    for key, read in PROVENANCE_FIELDS.items():
+        values = [read(result) for result in results]
+        if any(value is None for value in values):
+            unverified.append(key)
+        elif len({json.dumps(value, sort_keys=True) for value in values}) > 1:
+            differing.append(key)
+    return differing, unverified
+
+
 def verify_same_inputs(results: list[dict]) -> dict[str, int]:
     """Raise unless every file evaluated the same tasks on the same prompts/targets/arguments."""
     first = sample_signatures(results[0])
@@ -46,11 +90,24 @@ def verify_same_inputs(results: list[dict]) -> dict[str, int]:
             if current[task] != first[task]:
                 raise ValueError(f"File {index}: {task} samples, prompts, targets or generation "
                                  "arguments differ from file 0")
+    differing, unverified = protocol_differences(results)
+    if differing:
+        raise ValueError("Evaluation protocol differs between files: " + ", ".join(differing))
+    if unverified:
+        print("⚠️ protocol fields not recorded in every file (not verified): " + ", ".join(unverified))
     for key in ("metadata",):
         values = [json.dumps(result.get(key), sort_keys=True) for result in results]
         if len(set(values)) > 1:
             print(f"⚠️ {key} differs between files (inputs still verified identical): {values}")
     return {task: len(rows) for task, rows in first.items()}
+
+
+def method_record(result: dict) -> dict:
+    """Fields expected to differ between methods; shown, never used to accept a comparison."""
+    provenance = result.get("provenance") or {}
+    return {"model_backend": result.get("model_backend"), "checkpoint_dir": result.get("checkpoint_dir"),
+            "weights_sha256": provenance.get("weights_sha256"), "method_config": result.get("method_config"),
+            "cache_budget": result.get("cache_budget")}
 
 
 def _label(result: dict, path: Path) -> str:
@@ -94,8 +151,11 @@ def main(argv=None) -> None:
     loaded = [json.loads(path.read_text(encoding="utf-8")) for path in args.results]
     if len(loaded) > 1 and not args.skip_input_check:
         counts = verify_same_inputs(loaded)
-        print("Verified identical test inputs (samples, prompts, targets, generation arguments):")
+        print("Verified identical test inputs (samples, prompts, targets, generation arguments) "
+              "and evaluation protocol:")
         print(json.dumps(counts, ensure_ascii=False))
+        print("Method differences (expected; not part of the protocol check):")
+        print(json.dumps([method_record(result) for result in loaded], ensure_ascii=False, indent=2, default=str))
     rows = [summary_rows(result) for result in loaded]
     labels = [_label(result, path) for result, path in zip(loaded, args.results)]
     keys = list(dict.fromkeys(key for row in rows for key in row))

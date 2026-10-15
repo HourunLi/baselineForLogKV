@@ -17,7 +17,10 @@ dependencies = [
 
 [project.optional-dependencies]
 # Same harness pins as SemanticLogKV's evaluation environment; lm-eval 0.4.9 needs transformers<5.
-eval = ["lm-eval[ruler]==0.4.9", "datasets>=2.18,<4", "transformers>=4.45,<5", "pandas>=1.5", "openpyxl>=3"]
+# The ruler/longbench/ifeval extras cover the NIAH, LongBench(-E) and IFEval entries of the full suite.
+# Formal runs additionally record the exact installed versions (datasets, pyarrow, ...) in each result.
+eval = ["lm-eval[ruler,longbench,ifeval]==0.4.9", "datasets>=2.18,<4", "transformers>=4.45,<5",
+        "pandas>=1.5", "openpyxl>=3"]
 test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
