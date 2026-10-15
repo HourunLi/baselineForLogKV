@@ -253,6 +253,8 @@ hellaswag、arc、openbookqa 等已正常读取。
 读取 Semantic 原脚本读不了的条目，数据来源与 Semantic 不同。因此已移除，评测路径恢复为与 Semantic
 `eval.py` 一致，改为修复缓存本身，使双方读取同一批旧条目。
 
+评测入口遇到这一错误时会改报 `RuntimeError`，指向下面的检查工具，原始 traceback 保留在 `__cause__` 中。
+
 检查和处理如下。报告模式不改动缓存；`--quarantine` 只移动、不删除，需要时可原样移回。
 请在没有其他作业读取该缓存时执行：
 
