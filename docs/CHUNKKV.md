@@ -270,9 +270,24 @@ python -m chunkkv.check_dataset_cache \
 修改时间（可据此找到写入它的作业）和隔离后将重新被选中的可读条目。隔离后，离线加载回到这些可读条目，
 通常也就是此前 Semantic 评测读取的版本；新版 datasets 同样能读这些旧条目。
 
-报告为"no readable entry"的配置没有旧条目可退回，Semantic 原脚本同样读不了。若它属于评测任务，需要
-先把该条目移到隔离目录，再在评测环境（datasets<4）中联网或经镜像对该数据集执行一次 `load_dataset`，
-重新生成旧格式条目。报告中与评测任务无关的条目（例如本地 json/parquet 构建器缓存）可以不处理。
+报告为"no readable entry"的配置没有旧条目可退回，Semantic 原脚本同样读不了（例如 2026-09-23 写入的
+`truthfulqa___truthful_qa/generation`、`multiple_choice`，main 的 `truthfulqa_gen/mc1/mc2` 依赖它们）。
+报告会逐个注明能否离线转换。`List` 只是 datasets 4 对列表的新写法：`List(x)` 与 3.x 的 `Sequence(x)`、
+`List({...})` 与 3.x 的 `[{...}]` 对应完全相同的 Arrow 类型，所以可以不联网、不改数据地转换：
+
+```bash
+python -m chunkkv.check_dataset_cache \
+  --quarantine /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache/unreadable_by_datasets3 --convert
+```
+
+`--convert` 先把这些配置的条目（连同其他不可读条目）移入隔离目录，再在原路径写出一份副本：Arrow
+数据逐批原样复制，只把 `dataset_info.json` 与 Arrow schema 里的特征描述改成 3.x 写法；`cache-*.arrow`
+（map/filter 结果）不复制，需要时自动重算。写入前核对翻译后的特征与 Arrow 物理类型一致，写入后核对
+datasets 能按该特征读回且每个 batch 与原文件相同；原文件、副本哈希与特征记录在隔离目录的
+`conversions.json`。datasets 4.4.2/5.1.0 读取副本得到与原条目相同的特征和行。`Json`（4.7+，Arrow
+扩展类型）、定长的 struct 列表等 3.x 无对应写法的类型不转换，仍需在评测环境中联网或经镜像对该数据集
+执行一次 `load_dataset` 重新生成旧格式条目。报告中与评测任务无关的条目（例如 `ucinlp___drop`、本地
+json/parquet 构建器缓存）可以不处理。
 不要为此升级评测环境的 datasets，lm-eval 0.4.9 + datasets<4 是双方共同的评测口径。今后使用新版
 datasets 的作业应设置独立的 `HF_DATASETS_CACHE`，否则还会写入新的条目。
 
