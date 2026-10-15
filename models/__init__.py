@@ -13,4 +13,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Model-specific DMS adaptations."""
+"""Qwen3 Base preparation, the CaM method and its bundled evaluation runtime."""

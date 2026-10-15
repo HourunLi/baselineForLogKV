@@ -1,9 +1,7 @@
 import os
 from pathlib import Path
-import re
 import subprocess
 
-import pytest
 import yaml
 
 
@@ -30,31 +28,30 @@ def _launch(tmp_path, env=None, args=()):
 
 
 def test_default_launcher_passes_the_shared_config_and_cli_overrides(tmp_path):
-    result, args = _launch(tmp_path, args=("--backend", "dense", "--tasks", "niah_single_2", "--limit", "4"))
+    result, args = _launch(tmp_path, args=("--backend", "dense", "--suite", "niah", "--limit", "4"))
     assert result.returncode == 0, result.stderr
     assert args[:3] == ["--standalone", "--nproc_per_node", "1"]
     config = ROOT / args[args.index("--config") + 1]
     settings = yaml.safe_load(config.read_text())
-    assert settings["semantic_config"].endswith("arc_attach_alpha_beta_k12_b128_2k.yaml")
+    assert settings["experiment_config"] == "configs/experiment_qwen1.7b_32k.yaml"
+    assert settings["evaluation_config"] == "configs/eval_suites.yaml"
     assert settings["model"] == "outputs/semanticlogkv_base"
-    assert settings["tasks"][-3:] == ["niah_single_1", "niah_single_2", "niah_single_3"]
     assert settings["start_size"] + settings["recent_size"] == 2048
-    assert args[-6:] == ["--backend", "dense", "--tasks", "niah_single_2", "--limit", "4"]
+    assert args[-6:] == ["--backend", "dense", "--suite", "niah", "--limit", "4"]
 
 
-def test_benchmark_snapshot_matches_current_litgpt_defaults():
-    settings = yaml.safe_load((ROOT / "configs/cam_qwen3_1.7b.yaml").read_text())
-    reference = (ROOT / settings["litgpt_root"] / "eval.sh").resolve()
-    if not reference.is_file():
-        pytest.skip("Paired SemanticLogKV checkout is not available")
-    source = reference.read_text()
-    benchmarks = ""
-    for assignment in re.findall(r'^DEFAULT_BENCHMARKS="([^"]+)"$', source, flags=re.MULTILINE):
-        benchmarks = assignment.replace("${DEFAULT_BENCHMARKS}", benchmarks)
-    niah = re.search(r'^NIAH_BENCHMARKS=\$\{3:-([^}]+)\}', source, flags=re.MULTILINE).group(1)
-    assert settings["tasks"] == (benchmarks + "," + niah).split(",")
-    lengths = re.search(r'"max_seq_lengths": \[([0-9, ]+)\]', source).group(1)
-    assert settings["ruler_lengths"] == [int(value) for value in lengths.split(",")]
+def test_project_task_lists_are_the_fixed_32k_protocol():
+    """Snapshot of the reference eval.sh/majob.sh defaults (HourunLi/LogKV@4fd97c7), NIAH at 32K only."""
+    suites = yaml.safe_load((ROOT / "configs/eval_suites.yaml").read_text())
+    main = suites["main_tasks"]
+    assert len(main) == 47 and len(set(main)) == 47
+    longbench = [task for task in main if task.startswith("longbench_")]
+    assert len(longbench) == 33 and sum(task.endswith("_e") for task in longbench) == 13
+    assert main[:14] == ["boolq", "piqa", "social_iqa", "hellaswag", "winogrande", "arc_easy", "arc_challenge",
+                         "openbookqa", "mmlu", "ceval-valid", "ifeval", "truthfulqa_gen", "truthfulqa_mc1",
+                         "truthfulqa_mc2"]
+    assert suites["niah_tasks"] == ["niah_single_1", "niah_single_2", "niah_single_3"]
+    assert suites["niah_max_seq_lengths"] == [32768]
 
 
 def test_standard_multinode_launcher_uses_shared_rendezvous(tmp_path):

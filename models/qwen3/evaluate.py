@@ -1,6 +1,11 @@
-"""Baseline-owned compatibility layer for an unmodified SemanticLogKV checkout."""
+"""Shared helpers for running the project-owned SemanticLogKV evaluation runtime.
 
-import argparse
+The evaluator (``eval.py``: tasks, prompts, truncation, generation, scoring,
+KV/speed metrics and result files) is a private snapshot under
+``models/_vendor/semanticlogkv``; no sibling checkout is imported or read.
+The CaM command line is ``models.cam.evaluate``.
+"""
+
 import ast
 import importlib.metadata
 import importlib.util
@@ -8,19 +13,25 @@ import inspect
 import json
 import os
 from pathlib import Path
+import platform
+import re
+import socket
+import subprocess
 import sys
 
+import yaml
 
-DEFAULT_ROOT = Path(__file__).resolve().parents[3] / "litgpt"
-DEFAULT_CONFIG = "exp/qwen1.7b-32k/arc_attach_alpha_beta_k12_b128_2k.yaml"
+from .config import RUNTIME_ROOT, load_experiment_config
+
+DEFAULT_HF_CACHE = "/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache"
+TOKENIZER_NAMES = ("tokenizer.json", "tokenizer.model", "tokenizer_config.json", "special_tokens_map.json",
+                   "added_tokens.json", "vocab.json", "merges.txt", "chat_template.jinja",
+                   "generation_config.json")
 
 
-def configure_environment(root):
-    # Read only the source cache root; HF libraries capture these values at first import.
-    tree = ast.parse((root / "eval.py").read_text())
-    assignment = next(node for node in tree.body if isinstance(node, ast.Assign)
-                      and any(isinstance(target, ast.Name) and target.id == "BASE" for target in node.targets))
-    base = ast.literal_eval(assignment.value)
+def configure_environment():
+    # HF libraries capture these values at first import. This path is data, not source code.
+    base = os.environ.get("CAM_HF_CACHE", DEFAULT_HF_CACHE)
     os.environ.update(
         HF_HOME=base, HF_DATASETS_CACHE=f"{base}/hf_cache", HF_EVALUATE_CACHE=f"{base}/evaluate",
         HF_MODULES_CACHE=f"{base}/modules", HF_HUB_CACHE=f"{base}/hub",
@@ -31,10 +42,14 @@ def configure_environment(root):
     )
 
 
-def load_evaluator(root):
-    configure_environment(root)
-    sys.path.insert(0, str(root))
-    spec = importlib.util.spec_from_file_location("_baseline_semanticlogkv_evaluation", root / "eval.py")
+def load_evaluator(root=RUNTIME_ROOT):
+    """Private evaluator instance with imports confined to the bundled runtime."""
+    if importlib.metadata.version("lm-eval") != "0.4.9":
+        raise RuntimeError("Shared evaluation requires lm-eval==0.4.9")
+    if int(importlib.metadata.version("datasets").split(".")[0]) >= 4:
+        raise RuntimeError("Use the shared evaluation environment (datasets<4)")
+    configure_environment()
+    spec = importlib.util.spec_from_file_location("models._vendor.semanticlogkv._evaluation", root / "eval.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     previous = sys.dont_write_bytecode
@@ -43,65 +58,59 @@ def load_evaluator(root):
         spec.loader.exec_module(module)
     finally:
         sys.dont_write_bytecode = previous
-    import litgpt
-    if Path(litgpt.__file__).resolve().parent != root / "litgpt":
-        raise RuntimeError(f"Wrong LitGPT checkout imported: {litgpt.__file__}")
-    if Path(sys.modules["utils"].__file__).resolve() != root / "utils.py":
-        raise RuntimeError("An unrelated utils module was imported instead of SemanticLogKV utils.py")
-    if importlib.metadata.version("lm-eval") != "0.4.9":
-        raise RuntimeError("Shared evaluation requires lm-eval==0.4.9")
-    if int(importlib.metadata.version("datasets").split(".")[0]) >= 4:
-        raise RuntimeError("Use the evaluation environment (datasets<4), not the DMS training environment")
     return module
 
 
-def install_dms_adapter(evaluator):
-    """Bind this baseline only inside its private evaluator instance, not the litgpt package."""
-    from .semanticlogkv_eval import compression_snapshot, make_dms_lm
-
-    evaluator.LogKVLM = make_dms_lm(evaluator)
-    evaluator.cache_compression_snapshot = compression_snapshot
-    # The reference main labels every non-dense/SWA model as LogKV.
-    def print_backend(*args, **kwargs):
-        if args and isinstance(args[0], str) and args[0].startswith("🧩 logKV "):
-            args = ("🧩 DMS adapters | SemanticLogKV-compatible request and metric interfaces", *args[1:])
-        print(*args, **kwargs)
-    evaluator.print = print_backend
+def load_eval_suite(path, suite):
+    """Read the project-owned snapshot of the reference shell scripts' task groups."""
+    config = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    tasks = config["niah_tasks" if suite == "niah" else "main_tasks"]
+    if suite == "longbench":
+        tasks = [task for task in tasks if task.startswith("longbench_")]
+    if not tasks:
+        raise ValueError(f"Evaluation suite {suite} has no tasks in {path}")
+    lengths = config["niah_max_seq_lengths"] if suite == "niah" else None
+    return ",".join(tasks), lengths
 
 
-def build_eval_kwargs(evaluator, source_config, model, backend, tasks, limit, output):
-    source = evaluator.expand_env_vars(evaluator._load_yaml_config(str(source_config), str(model)))
+def build_eval_kwargs(evaluator, source_config, model, backend, tasks, limit, output, max_seq_lengths=None):
+    source = load_experiment_config(source_config)
     # Preserve the configured spelling (including trailing slash) used by RULER metadata/cache keys.
-    base = os.path.expanduser(str(source["ckpt_dir"]))
-    if not Path(base).is_absolute():
-        base = str((Path(evaluator.__file__).parent / base).resolve())
+    base = source["ckpt_dir"]
     context_length = int(source["context_length"])
     if context_length <= 0:
-        raise ValueError("SemanticLogKV context_length must be positive")
-    # Only method parameters cross over from the training YAML; the task contract is explicit.
-    supported = inspect.signature(evaluator.main).parameters
+        raise ValueError("Experiment context_length must be positive")
+    metadata = None
+    if any(task.startswith(("niah_", "ruler_")) for task in tasks.split(",")):
+        lengths = [context_length] if max_seq_lengths is None else max_seq_lengths
+        if not lengths or any(not isinstance(n, int) or n <= 0 or n > context_length for n in lengths):
+            raise ValueError("NIAH lengths must be positive and within the experiment context_length")
+        metadata = {"pretrained": str(base), "max_seq_lengths": lengths}
+    if evaluator is None:
+        # --print-config must work before installing evaluation/model dependencies.
+        tree = ast.parse((RUNTIME_ROOT / "eval.py").read_text(encoding="utf-8"))
+        main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
+        supported = {arg.arg for arg in main.args.args + main.args.kwonlyargs}
+    else:
+        supported = inspect.signature(evaluator.main).parameters
+    # Only the SemanticLogKV control reads its method parameters; the task contract is explicit.
     kwargs = {k: v for k, v in source.items()
               if backend == "logkv" and k.startswith("log_kv_")
               and not k.startswith("log_kv_diag_") and k in supported}
     kwargs.update(
         checkpoint_dir=str(model), tokenizer_dir=str(base),
         config_overrides={"block_size": context_length}, benchmark=tasks, limit=limit,
-        metadata={"pretrained": str(base), "max_seq_lengths": [context_length]},
-        output_path=str(output),
+        metadata=metadata, output_path=str(output),
     )
-    calibration = kwargs.get("log_kv_semantic_s_h_path")
-    if calibration and not Path(calibration).is_absolute():
-        kwargs["log_kv_semantic_s_h_path"] = str((Path(evaluator.__file__).parent / calibration).resolve())
     return kwargs
 
 
-def comparison_contract(root, source_config, kwargs):
-    from .prepare_base import TOKENIZER_NAMES
-    from .semanticlogkv_eval import file_sha256
+def comparison_contract(root, source_config, kwargs, compatibility_files):
+    from .provenance import file_sha256
 
     base = Path(kwargs["tokenizer_dir"])
-    source_files = ("eval.py", "utils.py", "litgpt/tokenizer.py", "litgpt/generate/base.py",
-                    "litgpt/kv_compression.py", "litgpt/ruler_patch.py")
+    source_files = sorted(root.rglob("*.py")) + [root / "SOURCE.json"]
+    project = Path(__file__).resolve().parents[2]
     return {
         "source_config": str(source_config),
         "source_checkpoint_dir": str(base),
@@ -110,11 +119,11 @@ def comparison_contract(root, source_config, kwargs):
                                 for name in ("config.json", "model_config.yaml")},
         "tokenizer_files": {name: file_sha256(base / name) for name in TOKENIZER_NAMES
                             if (base / name).is_file()},
-        "evaluation_code": {name: file_sha256(root / name) for name in source_files},
-        "compatibility_code": {name: file_sha256(Path(__file__).parent / name)
-                               for name in ("evaluate.py", "semanticlogkv_eval.py")},
+        "evaluation_code": {str(path.relative_to(root)): file_sha256(path) for path in source_files},
+        "compatibility_code": {str(Path(path).resolve().relative_to(project)): file_sha256(path)
+                               for path in compatibility_files},
         "versions": {name: importlib.metadata.version(name)
-                     for name in ("torch", "transformers", "datasets", "lm-eval", "tokenizers")},
+                     for name in ("torch", "transformers", "datasets", "pyarrow", "lm-eval", "tokenizers")},
         "cache": {key: os.environ[key] for key in
                   ("HF_HOME", "HF_DATASETS_CACHE", "HF_HUB_CACHE", "RULER_CACHE_DIR")},
         "benchmark": kwargs["benchmark"], "metadata": kwargs["metadata"],
@@ -122,25 +131,83 @@ def comparison_contract(root, source_config, kwargs):
     }
 
 
-def run_evaluation(evaluator, kwargs, backend, contract, result_metadata=None):
+def runtime_environment():
+    """Interpreter, CUDA/driver and launch topology; recorded, not part of the protocol check."""
+    import torch
+
+    driver = None
+    if torch.cuda.is_available():
+        try:
+            driver = subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+                                    capture_output=True, text=True, timeout=30, check=True).stdout.split()[0]
+        except (OSError, subprocess.SubprocessError, IndexError):
+            driver = None
+    return {
+        "python": sys.version.split()[0], "python_executable": sys.executable, "platform": platform.platform(),
+        "host": socket.gethostname(), "torch_cuda": torch.version.cuda, "cuda_available": torch.cuda.is_available(),
+        "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None, "nvidia_driver": driver,
+        # torchrun: GROUP_WORLD_SIZE nodes x LOCAL_WORLD_SIZE processes = WORLD_SIZE ranks.
+        "topology": {key: os.environ.get(key) for key in
+                     ("WORLD_SIZE", "LOCAL_WORLD_SIZE", "GROUP_WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT",
+                      "LITGPT_EXPECTED_WORLD_SIZE")},
+    }
+
+
+def evaluated_model(evaluator, checkpoint_dir, backend):
+    """Identity of the weights actually evaluated (after the reference step_* resolution)."""
+    from .provenance import file_sha256
+
+    path = Path(evaluator._resolve_checkpoint_dir(str(checkpoint_dir)))
+    if backend == "logkv":
+        return {"checkpoint_dir": str(path), "lit_model_sha256": file_sha256(path / "lit_model.pth")}
+    weights = sorted(item for item in path.iterdir()
+                     if item.is_file() and (item.suffix in (".safetensors", ".bin") or item.name.endswith(".index.json")))
+    if not weights:
+        raise FileNotFoundError(f"No HF weight files in {path}")
+    manifest = path / "semanticlogkv_base_manifest.json"
+    return {
+        "checkpoint_dir": str(path),
+        "weight_files": {item.name: file_sha256(item) for item in weights},
+        "config_sha256": file_sha256(path / "config.json"),
+        "prepared_base_manifest_sha256": file_sha256(manifest) if manifest.is_file() else None,
+    }
+
+
+def run_evaluation(evaluator, kwargs, backend, contract, resolved=None, result_metadata=None):
     """Keep reference main's lifecycle/output, then attach baseline-owned provenance."""
     output = Path(kwargs["output_path"]).resolve()
     kwargs = {**kwargs, "output_path": str(output)}
     root = Path(evaluator.__file__).parent.resolve()
-    if output.resolve().is_relative_to(root):
-        raise ValueError("Baseline evaluation outputs must be outside the reference litgpt checkout")
+    if output.is_relative_to(root):
+        raise ValueError("Evaluation outputs must be outside the bundled runtime directory")
     output.mkdir(parents=True, exist_ok=True)
     is_main = int(os.environ.get("RANK", "0")) == 0
     before = set(output.glob("eval_results_[0-9]*.json")) if is_main else set()
-    if backend == "dms":
-        install_dms_adapter(evaluator)
+    import datasets
+
+    # map/filter caches otherwise share a filename across ranks on the mounted cache.
+    # This keeps load_dataset's offline source cache, but gives transforms private temp files.
+    caching_enabled = datasets.is_caching_enabled()
+    datasets.disable_caching()
     # The unchanged main writes eval_results_cache.json to its working directory.
     previous_dir = Path.cwd()
     try:
         os.chdir(output)
         evaluator.main(**kwargs)
+    except ValueError as exc:
+        # Raised while task data loads from the offline cache, before any model call.
+        if not re.match(r"Feature type '\w+' not found", str(exc)):
+            raise
+        raise RuntimeError(
+            f"An offline cache entry under {os.environ.get('HF_DATASETS_CACHE')} was written by a newer "
+            f"`datasets` than the installed {importlib.metadata.version('datasets')}. The shared protocol "
+            "reads entries readable by datasets<4: repair or restore that entry instead of upgrading "
+            "datasets or switching data."
+        ) from exc
     finally:
         os.chdir(previous_dir)
+        if caching_enabled:
+            datasets.enable_caching()
     if is_main:
         created = set(output.glob("eval_results_[0-9]*.json")) - before
         if len(created) != 1:
@@ -149,50 +216,14 @@ def run_evaluation(evaluator, kwargs, backend, contract, result_metadata=None):
         result = json.loads(path.read_text())
         if not isinstance(result.get("results"), dict):
             raise RuntimeError("Reference evaluator did not save structured task results")
-        if backend in ("dms", "cam", "dense"):
+        if backend != "logkv":
+            # LogKV method fields describe a different cache; other backends record their own budget.
             result = {k: v for k, v in result.items() if not k.startswith("log_kv_") and k != "swa_window_size"}
         result.update(model_backend=backend, comparison_contract=contract,
                       tokenizer_dir=kwargs["tokenizer_dir"],
                       max_seq_length=kwargs["config_overrides"]["block_size"])
         result.update(result_metadata or {})
+        if resolved is not None:
+            result["resolved_eval"] = resolved
         path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", required=True, type=Path)
-    parser.add_argument("--backend", choices=("dms", "logkv"), default="dms")
-    parser.add_argument("--litgpt-root", type=Path, default=DEFAULT_ROOT)
-    parser.add_argument("--semantic-config", type=Path, default=Path(DEFAULT_CONFIG))
-    parser.add_argument("--tasks", default="niah_single_2,niah_single_3")
-    parser.add_argument("--limit", type=int, help="Same first N samples per task for both methods")
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--print-config", action="store_true", help="Resolve shared settings without loading weights")
-    args = parser.parse_args()
-    if args.limit is not None and args.limit < 1:
-        parser.error("--limit must be positive")
-    root = args.litgpt_root.resolve(strict=True)
-    source_config = (root / args.semantic_config).resolve(strict=True)
-    model = args.model.resolve()
-    output = (args.output or model / "eval_aligned").resolve()
-    evaluator = load_evaluator(root)
-    kwargs = build_eval_kwargs(evaluator, source_config, model, args.backend,
-                               args.tasks, args.limit, output)
-    if args.print_config:
-        print(json.dumps({"backend": args.backend, **kwargs}, ensure_ascii=False, indent=2))
-        return
-    if output.is_relative_to(root):
-        parser.error("Keep baseline outputs outside the reference litgpt checkout")
-    contract = None
-    if int(os.environ.get("RANK", "0")) == 0:
-        contract = comparison_contract(root, source_config, kwargs)
-        output.mkdir(parents=True, exist_ok=True)
-        import yaml
-        (output / "resolved_eval.yaml").write_text(yaml.safe_dump(
-            {"backend": args.backend, "evaluation": kwargs, "comparison_contract": contract}, allow_unicode=True,
-        ))
-    run_evaluation(evaluator, kwargs, args.backend, contract)
-
-
-if __name__ == "__main__":
-    main()
+        print(f"Annotated {path}")

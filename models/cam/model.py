@@ -5,7 +5,7 @@ from torch import nn
 from transformers import DynamicCache, Qwen3ForCausalLM
 
 from models.qwen3.prepare_base import verify_prepared_base
-from models.qwen3.semanticlogkv_eval import verify_base_source
+from models.qwen3.provenance import verify_base_source
 from .attention import install_cam_attention
 
 

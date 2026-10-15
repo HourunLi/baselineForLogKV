@@ -1,0 +1,42 @@
+# Project-owned snapshot of the SemanticLogKV experiment this baseline is compared with.
+# Source: HourunLi/LogKV 4fd97c78e04f0ec96ad6aed18df9e9cf440c6090,
+#   exp/qwen1.7b-32k/arc_attach_alpha_beta_k12_b128_2k.yaml -> arc_semantic_fast -> base (flattened).
+# No cross-project YAML is read at runtime. Kept fields: the original Base (ckpt_dir) that
+# prepare_base converts and that supplies the tokenizer/NIAH metadata, the 32K window, and the
+# SemanticLogKV method parameters used only by the --backend logkv control. Training fields of
+# the SemanticLogKV CPT run are omitted: CaM is training-free and evaluates the original Base.
+# Override a relocated Base with CAM_BASE_CHECKPOINT.
+arch_name: Qwen/Qwen3-1.7B-Base
+context_length: 32768
+expid: qwen1.7b-32k-attach-alpha-beta_k12_b128_2k
+ckpt_dir: ${CAM_BASE_CHECKPOINT-/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/}
+log_kv_B: 128
+log_kv_recent_size: 2048
+log_kv_train_block: 2048
+log_kv_prefill_block: 2048
+log_kv_second_order_scale: 0
+log_kv_second_order_warmup_steps: 100
+log_kv_semantic_clusters: true
+log_kv_cluster_k_max: 12
+log_kv_cluster_lambda_rel: 1.0
+log_kv_seg_eta: 1.0
+log_kv_seg_g0: 2048.0
+log_kv_seg_gap_max: null
+log_kv_seg_block_level: 0
+log_kv_seg_forget: 0.5
+log_kv_semantic_s_h_path: null
+log_kv_semantic_flush_granularity: 2048
+log_kv_semantic_capacity_beta: 0.0
+log_kv_semantic_capacity_hard_cap_mult: 0.0
+log_kv_alpha_exact_tokens: 256
+log_kv_beta_novelty: true
+log_kv_beta_adaptive_merge: true
+log_kv_semantic_cluster_chunk_size: 0
+log_kv_semantic_legacy_route: null
+log_kv_semantic_anchor_mode: mid
+log_kv_semantic_pack_backend: auto
+log_kv_profile_steps: null
+log_kv_semantic_centroid_backend: parallel
+log_kv_semantic_replay_updates: true
+log_kv_semantic_unified_route: false
+log_kv_alpha_span_max_tokens: 64

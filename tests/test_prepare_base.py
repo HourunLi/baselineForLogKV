@@ -1,21 +1,21 @@
-"""Real LitGPT -> HF conversion on a tiny offline Qwen3 fixture."""
+"""Real LitGPT -> HF conversion on a tiny offline Qwen3 fixture, using only project code."""
 
 import json
 from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 import torch
 import yaml
-from litgpt import Config, GPT
-from litgpt.scripts.convert_lit_checkpoint import copy_weights_qwen_3
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from transformers import PreTrainedTokenizerFast, Qwen3Config, Qwen3ForCausalLM
 
-from models.qwen3.prepare_base import (
-    DEFAULT_LITGPT_ROOT, build_hf_model, load_semantic_config, prepare_base, sha256_file,
-    verify_prepared_base,
-)
+from models._vendor.semanticlogkv.litgpt import Config, GPT
+from models._vendor.semanticlogkv.litgpt.scripts import convert_hf_checkpoint
+from models.qwen3.config import load_experiment_config, require_project_file
+from models.qwen3.convert_lit_to_hf import copy_weights_qwen_3
+from models.qwen3.prepare_base import build_hf_model, prepare_base, sha256_file, verify_prepared_base
 
 
 @pytest.fixture
@@ -58,7 +58,7 @@ def source(tmp_path):
 def test_exact_export_round_trip_and_provenance(source, tmp_path):
     path, model, _, experiment = source
     output = tmp_path / "hf"
-    manifest = prepare_base(DEFAULT_LITGPT_ROOT, experiment, output)
+    manifest = prepare_base(experiment, output)
     assert verify_prepared_base(output) == manifest
     restored = Qwen3ForCausalLM.from_pretrained(output, local_files_only=True).eval()
     assert restored.lm_head.weight is restored.model.embed_tokens.weight
@@ -70,10 +70,14 @@ def test_exact_export_round_trip_and_provenance(source, tmp_path):
     assert manifest["prepared_weight_files"] == {"model.safetensors": sha256_file(output / "model.safetensors")}
     for name, digest in manifest["tokenizer_files"].items():
         assert sha256_file(output / name) == digest == sha256_file(path / name)
-    expected = {}
-    copy_weights_qwen_3(model.config, expected, model.state_dict())
-    for name, weights in restored.state_dict().items():
-        torch.testing.assert_close(weights, expected[name], rtol=0, atol=0)
+    # Independent inverse: the reference HF -> LitGPT converter restores every source tensor exactly.
+    round_trip = {}
+    convert_hf_checkpoint.copy_weights_qwen_3(model.config, {}, round_trip, restored.state_dict())
+    source_state = model.state_dict()
+    assert set(round_trip) == set(source_state)
+    for name, weights in source_state.items():
+        torch.testing.assert_close(round_trip[name], weights, rtol=0, atol=0)
+    assert manifest["converter_sha256"] == sha256_file(Path(copy_weights_qwen_3.__code__.co_filename))
     # This catches QKV order / QK normalization / RoPE errors missed by shapes.
     tokens = torch.tensor([[1, 2, 3, 4, 5]])
     with torch.no_grad():
@@ -98,7 +102,7 @@ def test_empty_legacy_schedule_preserves_source_and_weights(source, tmp_path, sc
     original = config_path.read_bytes()
     output = tmp_path / "prepared"
     with pytest.warns(UserWarning, match="research_breakpoint_schedule"):
-        manifest = prepare_base(DEFAULT_LITGPT_ROOT, experiment, output)
+        manifest = prepare_base(experiment, output)
     assert config_path.read_bytes() == original
     assert manifest["source_config_files"]["model_config.yaml"] == sha256_file(config_path)
     assert verify_prepared_base(output) == manifest
@@ -121,7 +125,7 @@ def test_active_schedule_and_unknown_fields_are_rejected(source, tmp_path, field
     config_path.write_text(yaml.safe_dump(config))
     output = tmp_path / "prepared"
     with pytest.raises(error, match=field):
-        prepare_base(DEFAULT_LITGPT_ROOT, experiment, output)
+        prepare_base(experiment, output)
     assert not output.exists()
 
 
@@ -143,22 +147,30 @@ def test_existing_export_is_not_overwritten(source, tmp_path):
     marker = output / "marker"
     marker.write_text("keep me")
     with pytest.raises(FileExistsError):
-        prepare_base(DEFAULT_LITGPT_ROOT, experiment, output)
+        prepare_base(experiment, output)
     assert marker.read_text() == "keep me"
 
 
-def test_yaml_inheritance_uses_original_base(source):
+def test_yaml_inheritance_uses_original_base_and_stays_local(source, tmp_path):
     path, _, _, experiment = source
-    loaded = load_semantic_config(experiment)
+    loaded = load_experiment_config(experiment)
     assert loaded["ckpt_dir"] == str(path)
     assert loaded["context_length"] == 64
+    outside = tmp_path / "nested" / "selected.yaml"
+    outside.parent.mkdir()
+    outside.write_text(yaml.safe_dump({"config": "../base.yaml"}))
+    with pytest.raises(ValueError, match="inheritance"):
+        load_experiment_config(outside)
+    with pytest.raises(ValueError, match="inside this project"):
+        require_project_file(experiment)
+    assert require_project_file(Path(__file__).parents[1] / "configs/experiment_qwen1.7b_32k.yaml")
 
 
 @pytest.mark.parametrize("changed", ["model.safetensors", "tokenizer.json", "config.json", "provenance"])
 def test_changed_prepared_artifacts_are_rejected(source, tmp_path, changed):
     _, _, _, experiment = source
     output = tmp_path / "prepared"
-    prepare_base(DEFAULT_LITGPT_ROOT, experiment, output)
+    prepare_base(experiment, output)
     if changed == "provenance":
         config_path = output / "config.json"
         config = json.loads(config_path.read_text())
@@ -182,23 +194,3 @@ def test_changed_prepared_artifacts_are_rejected(source, tmp_path, changed):
 def test_unprepared_base_is_rejected(tmp_path):
     with pytest.raises(FileNotFoundError, match="run models.qwen3.prepare_base first"):
         verify_prepared_base(tmp_path)
-
-
-def test_converted_base_to_dms_export_to_shared_model_loader(source, tmp_path, monkeypatch):
-    from dms.training.engine import DistillationModelArguments, ModelArguments, get_student_model
-    from models.qwen3 import check_env
-    from models.qwen3.modeling_qwen3_dms import Qwen3ForCausalLMDMS
-    from models.qwen3.semanticlogkv_eval import DMSModel
-
-    original, _, _, experiment = source
-    prepared, exported = tmp_path / "prepared", tmp_path / "student_model"
-    manifest = prepare_base(DEFAULT_LITGPT_ROOT, experiment, prepared)
-    args = DistillationModelArguments(student=ModelArguments(model_name_or_path=str(prepared), dtype="float32"))
-    student = get_student_model(args, Qwen3ForCausalLMDMS, True, {"dms_separate_alpha": True})
-    student.save_pretrained(exported)
-    # Loader coverage only: never execute GPU inference on this CPU fixture.
-    monkeypatch.setattr(check_env, "check_environment", lambda: None)
-    facade = DMSModel.from_checkpoint(exported, original, 64, "cpu")
-    assert facade.hf_model.config.semanticlogkv_base["source_weight_sha256"] == manifest["source_weight_sha256"]
-    assert facade.max_seq_length == 64 and not facade.training
-    assert next(facade.parameters()).dtype == torch.bfloat16
