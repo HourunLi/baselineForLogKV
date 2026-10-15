@@ -280,13 +280,22 @@ python -m chunkkv.check_dataset_cache \
   --quarantine /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache/unreadable_by_datasets3 --convert
 ```
 
-`--convert` 先把这些配置的条目（连同其他不可读条目）移入隔离目录，再在原路径写出一份副本：Arrow
-数据逐批原样复制，只把 `dataset_info.json` 与 Arrow schema 里的特征描述改成 3.x 写法；`cache-*.arrow`
-（map/filter 结果）不复制，需要时自动重算。写入前核对翻译后的特征与 Arrow 物理类型一致，写入后核对
-datasets 能按该特征读回且每个 batch 与原文件相同；原文件、副本哈希与特征记录在隔离目录的
-`conversions.json`。datasets 4.4.2/5.1.0 读取副本得到与原条目相同的特征和行。`Json`（4.7+，Arrow
-扩展类型）、定长的 struct 列表等 3.x 无对应写法的类型不转换，仍需在评测环境中联网或经镜像对该数据集
-执行一次 `load_dataset` 重新生成旧格式条目。报告中与评测任务无关的条目（例如 `ucinlp___drop`、本地
+`--convert` 先把这些配置的条目（连同其他不可读条目）移入隔离目录，再在原路径写出一份副本：不含 `Json`
+的列逐批原样复制 Arrow 数据，只把 `dataset_info.json` 与 Arrow schema 里的特征描述改成 3.x 写法；
+`cache-*.arrow`（map/filter 结果）不复制，需要时自动重算。写入前核对翻译后的特征与 Arrow 物理类型
+一致，写入后核对 datasets 能按该特征读回且每列与原文件相同；原文件、副本哈希与特征记录在隔离目录的
+`conversions.json`。datasets 4.4.2/5.1.0 读取副本得到与原条目相同的特征和行。
+
+`google___if_eval/default`（IFEval）的 `kwargs` 由 datasets>=4.7 存成 `List(Json())`：每个 dict 是一段
+JSON 文本（Arrow 扩展类型 `arrow.json`），3.x 没有对应类型。3.x 对同一份数据的存法是"所有键的并集组成的
+struct 列表"，缺失的键为 `null`。`--convert` 把这一列的 JSON 解码后按 3.x 的规则重建，其余列原样复制；
+写入后逐行核对：去掉 `null` 键后与原 JSON 内容完全一致。lm-eval 0.4.9 的 IFEval 在使用 kwargs 前会
+用 `if v` 去掉空值，所以两种存法评分相同。验证：同一份 IFEval 形状的 jsonl（200 行、15 种键），
+datasets 3.6.0 直接准备的条目，与 5.1.0 准备后经 `--convert` 得到的条目，特征和全部行完全相同。
+转换后，共用缓存的新版 datasets 读到的 kwargs 也是这种 struct 形式。
+
+仍无法转换的情况（例如解码后同一字段类型冲突、定长的 struct 列表）会在报告中注明原因，需要在评测环境
+中联网或经镜像对该数据集执行一次 `load_dataset` 重新生成旧格式条目。报告中与评测任务无关的条目（例如 `ucinlp___drop`、本地
 json/parquet 构建器缓存）可以不处理。
 不要为此升级评测环境的 datasets，lm-eval 0.4.9 + datasets<4 是双方共同的评测口径。今后使用新版
 datasets 的作业应设置独立的 `HF_DATASETS_CACHE`，否则还会写入新的条目。
