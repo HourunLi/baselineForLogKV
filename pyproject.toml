@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "semanticlogkv-h2o-baseline"
+version = "0.1.0"
+description = "H2O (ported from KVCache-Factory) on Qwen3 under SemanticLogKV's evaluation contract"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.1",
+    "tokenizers>=0.19",
+    "safetensors>=0.4",
+    "PyYAML>=6.0",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+# Same harness pins as SemanticLogKV's evaluation environment; lm-eval 0.4.9 needs transformers<5.
+eval = ["lm-eval[ruler]==0.4.9", "datasets>=2.18,<4", "transformers>=4.45,<5", "pandas>=1.5", "openpyxl>=3"]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["h2okv*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
