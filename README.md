@@ -3,7 +3,7 @@
 本分支在 `DMS` 分支基础上新增 [ChunkKV](https://arxiv.org/html/2502.00299v5)，作为 SemanticLogKV 的对比 baseline；DMS 代码与下方说明原样保留。ChunkKV 免训练：prompt 先完整 prefill，再按观察窗注意力选出整块（默认 10 token）原始 K/V 加观察窗保留，生成 token 直接追加；支持论文的层间索引复用。**ChunkKV 的配置、模型和训练/评测运行代码均在本项目内，不需要相邻 `litgpt` 或 SemanticLogKV checkout。**
 
 - **配置与模型**：自有平铺实验配置在 `configs/chunkkv/experiment_qwen1.7b_32k.yaml`，直接加载其中原始 Base 的 `lit_model.pth`（兼容 LitGPT 权重格式，不转换），即 CPT 的同一起点。
-- **评测**：本地运行快照在 `chunkkv/_vendor/semanticlogkv/`，`ChunkKVLM` 继承其中 `LogKVLM` 的请求、生成、打分与 KV/速度指标；同一入口还可跑 `--backend logkv`（SemanticLogKV）与 `--backend dense`（Full KV），结果带 `comparison_contract`，默认任务 `niah_single_2,niah_single_3`、32K。
+- **评测**：本地运行快照在 `chunkkv/_vendor/semanticlogkv/`，`ChunkKVLM` 继承其中 `LogKVLM` 的请求、生成、打分与 KV/速度指标；同一入口还可跑 `--backend logkv`（SemanticLogKV）与 `--backend dense`（Full KV），结果带 `comparison_contract`。`scripts/chunkkv_evaluate_all.sh` 按 Semantic 当前默认脚本分两阶段跑：47 个主任务入口（含 33 个 LongBench/LongBench-E）及三种 NIAH；按本次实验要求仅评测 32K；任务配置独立保存在本项目内。
 - **预算**：默认按参考 LogKV 缓存的持久分配字节对齐（同其 SWA 对照口径）；也可用 `--budget-from-result` 按 SemanticLogKV 实测保留条目数对齐，或 `--budget` / `--keep-ratio`。
 - **训练接口（可选对照）**：ChunkKV 本身不训练；`scripts/chunkkv_train.sh` 用本地训练运行快照和同一份自有实验配置做同数据、同预算的 dense CPT，供 "CPT + ChunkKV" 对照。
 
@@ -13,15 +13,25 @@ ChunkKV 使用 Python 3.10–3.13、PyTorch >= 2.7。
 ```bash
 cd /data/lihourun/baselineForLogKV/chunkKV
 python -m pip install -e '.[eval,test]'
-python -m chunkkv.evaluate --print-config
+python -m chunkkv.evaluate --suite main --print-config
+python -m chunkkv.evaluate --suite niah --print-config
 python -m chunkkv.train --print-config
-bash scripts/chunkkv_evaluate.sh --limit 4 --output outputs/cmp-chunkkv
-bash scripts/chunkkv_evaluate.sh --backend logkv --model /path/to/semanticlogkv/ckpt --limit 4 --output outputs/cmp-logkv
-python -m chunkkv.compare_results outputs/cmp-chunkkv/eval_results_*.json outputs/cmp-logkv/eval_results_*.json
+bash scripts/chunkkv_evaluate_all.sh --limit 4 --output outputs/cmp-chunkkv
+bash scripts/chunkkv_evaluate_all.sh --backend logkv --model /path/to/semanticlogkv/ckpt --limit 4 --output outputs/cmp-logkv
+# 比较各阶段本次生成的结果文件；将 TIMESTAMP 替换为实际文件名中的时间戳
+python -m chunkkv.compare_results outputs/cmp-chunkkv/main/eval_results_TIMESTAMP.json outputs/cmp-logkv/main/eval_results_TIMESTAMP.json
 python -m pytest -q tests/chunkkv
 ```
 
-实现细节、与论文的对应和取值依据、预算口径、对照训练与验证记录见 [docs/CHUNKKV.md](docs/CHUNKKV.md)。尚未在 CUDA 上用真实权重运行。
+训练平台作业使用根目录 `majob.sh`，沿用 Semantic 的 `MA_*` 节点约定，默认激活 `torch218`，
+直接执行 Base + ChunkKV 的完整 32K 评测：
+
+```bash
+bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml --output outputs/chunkkv-base-32k-full
+```
+
+每个节点执行一次；提交前在目标环境安装 `.[eval]`。环境选择、多节点参数、实现细节、
+预算口径与验证记录见 [docs/CHUNKKV.md](docs/CHUNKKV.md)。尚未在 CUDA 上用真实权重运行。
 
 ---
 

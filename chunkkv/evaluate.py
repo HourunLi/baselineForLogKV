@@ -17,6 +17,7 @@ from .config import BASELINE_ROOT, RUNTIME_ROOT, DEFAULT_EXPERIMENT_CONFIG, load
 DEFAULT_ROOT = RUNTIME_ROOT
 DEFAULT_CONFIG = DEFAULT_EXPERIMENT_CONFIG
 DEFAULT_CHUNKKV_CONFIG = BASELINE_ROOT / "configs/chunkkv/qwen3_1.7b_32k.yaml"
+DEFAULT_EVALUATION_CONFIG = BASELINE_ROOT / "configs/chunkkv/eval_semantic_default.yaml"
 CHUNKKV_FIELDS = ("chunk_size", "window_size", "budget", "keep_ratio", "reuse_layers")
 BACKENDS = ("chunkkv", "logkv", "dense")
 
@@ -97,7 +98,20 @@ def slot_matched_budget(path):
                           "retained_slots_per_layer_group": entries, "requests": stats["request_count"]}
 
 
-def build_eval_kwargs(evaluator, source_config, model, backend, tasks, limit, output, options=None):
+def load_eval_suite(path, suite):
+    """Read a project-owned snapshot of the reference shell scripts' task groups."""
+    config = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    tasks = config["niah_tasks" if suite == "niah" else "main_tasks"]
+    if suite == "longbench":
+        tasks = [task for task in tasks if task.startswith("longbench_")]
+    if not tasks:
+        raise ValueError(f"Evaluation suite {suite} has no tasks in {path}")
+    lengths = config["niah_max_seq_lengths"] if suite == "niah" else None
+    return ",".join(tasks), lengths
+
+
+def build_eval_kwargs(evaluator, source_config, model, backend, tasks, limit, output, options=None,
+                      max_seq_lengths=None):
     source = load_experiment_config(source_config)
     # Preserve the configured spelling (including trailing slash) used by RULER metadata/cache keys.
     base = source["ckpt_dir"]
@@ -108,6 +122,12 @@ def build_eval_kwargs(evaluator, source_config, model, backend, tasks, limit, ou
     context_length = int(source["context_length"])
     if context_length <= 0:
         raise ValueError("Experiment context_length must be positive")
+    metadata = None
+    if any(task.startswith(("niah_", "ruler_")) for task in tasks.split(",")):
+        lengths = [context_length] if max_seq_lengths is None else max_seq_lengths
+        if not lengths or any(not isinstance(n, int) or n <= 0 or n > context_length for n in lengths):
+            raise ValueError("NIAH lengths must be positive and within the experiment context_length")
+        metadata = {"pretrained": str(base), "max_seq_lengths": lengths}
     # LogKV method parameters cross over only for LogKV itself or to size a byte-matched budget.
     needs_logkv = backend == "logkv" or (backend == "chunkkv" and (options or {}).get("budget") == "logkv")
     if evaluator is None:
@@ -125,7 +145,7 @@ def build_eval_kwargs(evaluator, source_config, model, backend, tasks, limit, ou
     kwargs.update(
         checkpoint_dir=str(model), tokenizer_dir=str(base),
         config_overrides={"block_size": context_length}, benchmark=tasks, limit=limit,
-        metadata={"pretrained": str(base), "max_seq_lengths": [context_length]},
+        metadata=metadata,
         output_path=str(output),
     )
     return kwargs
@@ -246,13 +266,23 @@ def main():
     parser.add_argument("--chunk-size", type=int)
     parser.add_argument("--window-size", type=int)
     parser.add_argument("--reuse-layers", type=int, help="layer-wise index reuse depth; 1 disables reuse")
-    parser.add_argument("--tasks", default="niah_single_2,niah_single_3")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--tasks", help="Comma-separated task names; without --suite, defaults to the 32K NIAH smoke tasks")
+    selection.add_argument("--suite", choices=("main", "longbench", "niah"),
+                           help="Reference task group; outputs go into a same-named subdirectory")
+    parser.add_argument("--evaluation-config", type=Path, default=DEFAULT_EVALUATION_CONFIG,
+                        help="Project-owned task lists and NIAH lengths")
     parser.add_argument("--limit", type=int, help="Same first N samples per task for every method")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--print-config", action="store_true", help="Resolve shared settings without loading weights")
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be positive")
+    lengths = None
+    if args.suite:
+        args.tasks, lengths = load_eval_suite(args.evaluation_config, args.suite)
+    elif args.tasks is None:
+        args.tasks = "niah_single_2,niah_single_3"
     options = budget_reference = None
     if args.budget_from_result:
         if args.backend != "chunkkv" or args.budget or args.keep_ratio:
@@ -268,13 +298,16 @@ def main():
     source_config = args.experiment_config.resolve(strict=True)
     model = args.model.resolve() if args.model else None
     output = (args.output or BASELINE_ROOT / "outputs/eval" / args.backend).resolve()
+    if args.suite:
+        output = output / args.suite
     if output.is_relative_to(root):
         parser.error("Keep evaluation outputs outside the bundled runtime directory")
     evaluator = None if args.print_config else load_evaluator()
     kwargs = build_eval_kwargs(evaluator, source_config, model, args.backend,
-                               args.tasks, args.limit, output, options)
+                               args.tasks, args.limit, output, options, max_seq_lengths=lengths)
     if args.print_config:
         print(json.dumps({"experiment_config": str(source_config), "runtime_root": str(root),
+                          "suite": args.suite,
                           "backend": args.backend, "chunkkv": options, **kwargs}, ensure_ascii=False, indent=2))
         return
     contract = None

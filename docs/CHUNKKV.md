@@ -17,6 +17,7 @@ SemanticLogKV CPT 起点相同的 Base `lit_model.pth`，不做 HF 转换。运�
 | `/data/lihourun/semanticLogKV` | 独立的 SemanticLogKV 对照项目，ChunkKV 运行不要求其存在 |
 | `configs/chunkkv/experiment_qwen1.7b_32k.yaml` | 自有平铺实验配置，保存 Base、数据、32K 上下文与训练/LogKV 参数，不继承外部 `exp/` YAML |
 | `configs/chunkkv/qwen3_1.7b_32k.yaml` | ChunkKV 的选块、预算和层间复用参数 |
+| `configs/chunkkv/eval_semantic_default.yaml` | Semantic 当前默认评测脚本的本地任务快照：47 个主任务入口和 3 个 NIAH，后者仅评测 32768 tokens |
 | `configs/chunkkv/dense_cpt_qwen1.7b_32k.yaml` | 可选 dense CPT 配置，`experiment_config` 引用同目录的自有实验配置 |
 | `outputs/` | 本项目评测与 dense CPT 的默认输出 |
 
@@ -68,7 +69,7 @@ dense 配置中的 `experiment_config` 相对其配置文件目录解析。
 |---|---|
 | 权重 | 默认本项目实验 YAML 的 `ckpt_dir`（原始 Base），与 CPT 起点相同；`--model` 可换为任意兼容的 LitGPT checkpoint |
 | 权重完整性 | 参考加载器是 `strict=False`；本实现另外按 mmap 读取 checkpoint 的键并要求与模型完全一致 |
-| tokenizer、任务、长度、样本 | 与 DMS 分支相同：Base 目录 tokenizer；默认 `niah_single_2,niah_single_3`；`block_size` 和 RULER `max_seq_lengths` 都取实验 `context_length=32768`；同 harness、seed、`--limit` |
+| tokenizer、任务、长度、样本 | Base 目录 tokenizer，模型 `block_size` 取实验 `context_length=32768`；完整评测按本地任务快照分 main 和 niah 两阶段，NIAH 仅使用 32768；沿用同一 harness 的任务定义、seed、生成参数和 `--limit` |
 | 生成与停止 | 共用本地快照的 `litgpt.generate.base.generate`，同截断与 EOS 规则（共享代码不执行 `until` 字符串） |
 | 选择题打分 | 参考代码一次前向 context+continuation 并用 `lm_head_start` 标出 context 末位；ChunkKV 以此为 prompt 边界：先 prefill 并压缩 context，再让 continuation 读压缩缓存，等价于逐 token 解码 |
 | rolling PPL | 每个窗口只有 1 个 context token，整窗一次 dense 前向，ChunkKV 不改变其结果 |
@@ -115,28 +116,102 @@ causal attention。固定改动只有：`run_eval: ""`、`save_ckpt: true`、`re
 
 ## 运行
 
+完整入口 `scripts/chunkkv_evaluate_all.sh` 对齐当前 `eval.sh` / `majob.sh` 的默认任务列表：
+
+- `main`：14 个通用任务入口、20 个 LongBench、13 个 LongBench-E，共 47 个入口。`mmlu` 等任务组会由 harness 进一步展开。
+- `niah`：`niah_single_1,niah_single_2,niah_single_3`，仅评测 32768 tokens。
+
+两个阶段各启动一次 torchrun，输出分别进入 `--output` 根目录下的 `main/` 和 `niah/`；
+main 阶段失败时立即停止，不继续启动 NIAH。任务名与顺序保持和本地 Semantic 源码快照一致；NIAH 长度按本次实验要求固定为 32K。
+LongBench 等真实数据任务使用 32K 模型上下文上限，保留原始样本，不把较短样本补齐到 32K。
+安装 `[eval]` 会包含 [lm-eval 0.4.9 的 ruler、longbench、ifeval 依赖](https://github.com/EleutherAI/lm-evaluation-harness/blob/v0.4.9/pyproject.toml)。
+
 ```bash
 # 评测环境：lm-eval==0.4.9、datasets<4；不安装相邻项目
 cd /data/lihourun/baselineForLogKV/chunkKV
 python -m pip install -e '.[eval]'
 
 # 只解析本项目配置，不加载权重或训练/评测依赖
-python -m chunkkv.evaluate --print-config
-python -m chunkkv.train --print-config
-# 先用 4 条样本检查三种后端
-bash scripts/chunkkv_evaluate.sh --limit 4 --output outputs/cmp-chunkkv
-bash scripts/chunkkv_evaluate.sh --backend logkv --model /path/to/semanticlogkv/ckpt --limit 4 --output outputs/cmp-logkv
-bash scripts/chunkkv_evaluate.sh --backend dense --limit 4 --output outputs/cmp-dense
-# 条目数对齐的 ChunkKV
-bash scripts/chunkkv_evaluate.sh --budget-from-result outputs/cmp-logkv/eval_results_TIMESTAMP.json --limit 4 --output outputs/cmp-chunkkv-slots
-python -m chunkkv.compare_results outputs/cmp-chunkkv/eval_results_TIMESTAMP.json outputs/cmp-logkv/eval_results_TIMESTAMP.json
+python -m chunkkv.evaluate --suite main --print-config
+python -m chunkkv.evaluate --suite niah --print-config
+# 各任务先用 4 条样本检查完整评测流程；默认加载原始 Base
+bash scripts/chunkkv_evaluate_all.sh --limit 4 --output outputs/cmp-chunkkv
+# 同一套任务评测 SemanticLogKV CPT 权重，便于核对实际输入
+bash scripts/chunkkv_evaluate_all.sh --backend logkv --model /path/to/semanticlogkv/ckpt --limit 4 --output outputs/cmp-logkv
+# 以双方 main 阶段本次生成的真实文件名替换 TIMESTAMP；niah 阶段同样核对
+python -m chunkkv.compare_results outputs/cmp-chunkkv/main/eval_results_TIMESTAMP.json outputs/cmp-logkv/main/eval_results_TIMESTAMP.json
+
+# 全量评测
+bash scripts/chunkkv_evaluate_all.sh --output outputs/chunkkv-full
+# 如只需 LongBench/LongBench-E，选择同一配置中的 33 个任务
+bash scripts/chunkkv_evaluate.sh --suite longbench --output outputs/chunkkv-longbench
 ```
 
 `NPROC_PER_NODE` 控制每卡一份模型。删除 `--limit` 才是任务全量；`--tasks` 为各方法选同一组任务。
+`chunkkv_evaluate.sh` 不带 `--suite` 或 `--tasks` 时仍保留旧的两项 32K NIAH 小检查；
+完整评测请使用新的 `chunkkv_evaluate_all.sh`。`--suite` 与 `--tasks` 互斥。
+主任务阶段不传 NIAH metadata，与 Semantic 默认脚本一致。NIAH 阶段统一使用原始 Base tokenizer
+作为 `metadata.pretrained`；Semantic 原脚本使用其 checkpoint 路径作为这一缓存标识，所以旧结果不能
+仅凭任务名相同就认定样本一致，应核对逐样本 prompt/target 或通过上面的统一入口重跑所需对照。
 层间复用：`--reuse-layers 2`。在同一 SemanticLogKV CPT 权重上换成 ChunkKV（`--model` 指向它）只是
 缓存机制诊断，不是各方法各自适配后的公平比较。
 
+### 训练平台作业：majob.sh
+
+项目根目录的 `majob.sh` 是纯评测入口：激活环境 → main → 32K NIAH，默认加载原始
+Qwen3-1.7B-Base，不执行 CPT。它只调用本项目的 `chunkkv.evaluate`，无需部署 SemanticLogKV。
+默认激活 `/home/ma-user/anaconda3/bin/activate torch218`；环境名称可通过
+`CHUNKKV_CONDA_ENV` 修改，或设置 `CHUNKKV_PYTHON=/absolute/path/to/python` 直接使用已准备的解释器。
+
+提交前在目标镜像/环境中一次性安装评测依赖，确保 Python 3.10–3.13、PyTorch >= 2.7
+且 CUDA 可用。环境名 `torch218` 不代表实际版本。不要同时安装 DMS 的 `[train]` extra，
+它要求 `datasets==4.4.2`，与此处评测的 `datasets<4` 冲突；有冲突时使用单独的评测环境。
+
+```bash
+source /home/ma-user/anaconda3/bin/activate torch218
+cd /data/lihourun/baselineForLogKV/chunkKV
+python -m pip install -e '.[eval]'
+```
+
+训练平台的启动命令设为以下内容，**每个节点执行一次**，由脚本启动该节点的 GPU 进程。
+先用 `--limit 4` 检查路径、缓存和分布式流程，通过后删除该参数进行全量评测。
+
+```bash
+cd /data/lihourun/baselineForLogKV/chunkKV
+bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml \
+  --limit 4 --output outputs/chunkkv-base-32k-smoke
+
+# 全量作业的启动命令
+bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml \
+  --output outputs/chunkkv-base-32k-full
+```
+
+| 平台变量 | 用途 |
+|---|---|
+| `MA_NUM_GPUS` | 每节点 GPU 进程数；缺省依次使用 `NPROC_PER_NODE`、`LOCAL_WORLD_SIZE`、8 |
+| `MA_NUM_HOSTS` | 节点数；缺省使用 `GROUP_WORLD_SIZE` 或 1 |
+| `VC_TASK_INDEX` | 节点 rank；缺省使用 `NODE_RANK`、`GROUP_RANK` 或 0 |
+| `MA_VJ_NAME`、`MA_TASK_NAME`、`MA_MASTER_INDEX` | 与 Semantic 原入口相同的主节点 DNS；无作业名时使用 `MASTER_ADDR` |
+| `MASTER_PORT` | 默认 6000；main 默认使用其 +1、NIAH 使用 +2，可由 `EVAL_MASTER_PORT`、`NIAH_MASTER_PORT` 分别覆盖 |
+
+所有节点需能读取同一路径下的代码、Base checkpoint、完整评测缓存，并使用同一输出路径。
+无需额外共享文件 barrier：每个阶段的 torchrun rendezvous 负责节点汇合；main 失败则不进入 NIAH。
+默认缓存与权重路径沿用前文的 `/home/ma-user/...`，缓存需提前准备齐全（评测默认离线）。
+输出分别位于指定目录的 `main/`、`niah/`。普通单机终端仍可使用 `scripts/chunkkv_evaluate_all.sh`。
+
+该入口为 CUDA GPU 作业设计；每张卡持有完整模型、分担评测样本。增加 GPU 数能分摊任务，
+不会降低单条 32K 输入的单卡显存需求。LongBench 的 32K 指上下文上限，NIAH 只生成/评测 32768 长度。
+
 ## 验证记录
+
+2026-10-15 训练平台入口：配置、启动器与隔离测试 **29 passed，2 deselected**（命令同下）。
+通过模拟解释器检查单节点/双节点的 rank、world size、主节点 DNS、独立端口与首阶段失败停止；
+多节点误用 localhost 会在启动前报错。Bash 语法与 diff 空白检查通过；未验证真实 CUDA/NCCL 作业。
+
+2026-10-15 完整任务对齐：配置、启动器与隔离测试 **26 passed，2 deselected**（命令同下）。
+新增检查覆盖三种后端的任务与长度一致性、main 阶段不传 NIAH metadata、捞针长度上界、
+两个独立启动阶段及首阶段失败即停止，以及各 suite 在禁止模型/外部项目导入时的配置预览。
+任务清单与 Semantic 当前 `eval.sh` / `majob.sh` 做了静态一致性核对；未执行真实 GPU 全量任务。
 
 2026-10-15 独立化改动：在 macOS、Python 3.11 下执行配置与隔离测试，结果为 **20 passed，2 deselected**：
 

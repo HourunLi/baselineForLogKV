@@ -2,7 +2,9 @@
 
 import copy
 import json
+import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -61,6 +63,90 @@ def test_chunkkv_options_merge_yaml_and_cli(tmp_path):
         runner.load_chunkkv_options(path, base)
     shipped = runner.load_chunkkv_options(runner.DEFAULT_CHUNKKV_CONFIG, base)
     assert shipped == dict(chunk_size=10, window_size=64, budget="logkv", keep_ratio=None, reuse_layers=1)
+
+
+def test_reference_suites_share_task_inputs_and_niah_lengths(tmp_path):
+    evaluator = fake_evaluator(tmp_path, {"ckpt_dir": str(tmp_path / "base"), "context_length": 32768})
+    main_tasks, _ = runner.load_eval_suite(runner.DEFAULT_EVALUATION_CONFIG, "main")
+    long_tasks, _ = runner.load_eval_suite(runner.DEFAULT_EVALUATION_CONFIG, "longbench")
+    assert len(main_tasks.split(",")) == 47
+    assert len(long_tasks.split(",")) == 33
+    assert long_tasks.split(",") == [task for task in main_tasks.split(",") if task.startswith("longbench_")]
+    for suite in ("main", "longbench", "niah"):
+        tasks, lengths = runner.load_eval_suite(runner.DEFAULT_EVALUATION_CONFIG, suite)
+        records = [runner.build_eval_kwargs(
+            evaluator, tmp_path / "train.yaml", tmp_path / "cpt" if backend == "logkv" else None,
+            backend, tasks, 4, tmp_path / suite, {"budget": 4096}, max_seq_lengths=lengths,
+        ) for backend in runner.BACKENDS]
+        for key in ("benchmark", "metadata", "limit", "tokenizer_dir", "config_overrides"):
+            assert records[0][key] == records[1][key] == records[2][key]
+        if suite == "niah":
+            assert tasks == "niah_single_1,niah_single_2,niah_single_3"
+            assert records[0]["metadata"]["max_seq_lengths"] == [32768]
+        else:
+            assert records[0]["metadata"] is None  # main phase matches the reference eval.sh
+    with pytest.raises(ValueError, match="context_length"):
+        runner.build_eval_kwargs(evaluator, tmp_path / "train.yaml", None, "chunkkv", "niah_single_1",
+                                 4, tmp_path, {"budget": 4096}, max_seq_lengths=[65536])
+
+
+@pytest.mark.parametrize("fail_main", [False, True])
+def test_full_suite_launcher_runs_separate_processes_and_stops_on_failure(tmp_path, fail_main):
+    executable = tmp_path / "torchrun"
+    log = tmp_path / "calls"
+    executable.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$CHUNKKV_TEST_CALLS"\n'
+                          'if [[ "$CHUNKKV_TEST_FAIL" = 1 && "$*" = *"--suite main"* ]]; then exit 7; fi\n')
+    executable.chmod(0o755)
+    result = subprocess.run(
+        ["bash", str(runner.BASELINE_ROOT / "scripts/chunkkv_evaluate_all.sh"),
+         "--backend", "dense", "--limit", "4", "--output", str(tmp_path / "results")],
+        cwd=tmp_path, env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+                          "CHUNKKV_TEST_CALLS": str(log), "CHUNKKV_TEST_FAIL": str(int(fail_main))},
+        capture_output=True, text=True,
+    )
+    assert result.returncode == (7 if fail_main else 0), result.stderr
+    calls = log.read_text().splitlines()
+    assert len(calls) == (1 if fail_main else 2)
+    assert "--suite main" in calls[0]
+    if not fail_main:
+        assert "--suite niah" in calls[1]
+    assert all("--backend dense --limit 4 --output" in call for call in calls)
+
+
+@pytest.mark.parametrize("nodes,rank,fail_main", [(1, 0, False), (2, 1, False), (2, 0, True)])
+def test_platform_launcher_maps_ranks_ports_and_stops_on_failure(tmp_path, nodes, rank, fail_main):
+    executable = tmp_path / "python"
+    log = tmp_path / "calls"
+    executable.write_text('#!/bin/bash\nprintf "%s | %s\\n" "$LITGPT_EXPECTED_WORLD_SIZE" "$*" >> "$CHUNKKV_TEST_CALLS"\n'
+                          'if [[ "$CHUNKKV_TEST_FAIL" = 1 && "$*" = *"--suite main"* ]]; then exit 7; fi\n')
+    executable.chmod(0o755)
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(("MA_", "MASTER_", "EVAL_MASTER_", "NIAH_MASTER_"))}
+    env.update(CHUNKKV_PYTHON=str(executable), CHUNKKV_TEST_CALLS=str(log),
+               CHUNKKV_TEST_FAIL=str(int(fail_main)), MA_NUM_GPUS="4", MA_NUM_HOSTS=str(nodes),
+               VC_TASK_INDEX=str(rank), MA_VJ_NAME="job", MA_TASK_NAME="worker", MA_MASTER_INDEX="0")
+    command = ["bash", str(runner.BASELINE_ROOT / "majob.sh"),
+               "configs/chunkkv/experiment_qwen1.7b_32k.yaml", "--limit", "4", "--output", "outputs/test"]
+    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert result.returncode == (7 if fail_main else 0), result.stderr
+    calls = log.read_text().splitlines()
+    assert len(calls) == (1 if fail_main else 2)
+    for call in calls:
+        assert call.startswith(f"{nodes * 4} | -m torch.distributed.run")
+        assert f"--nnodes {nodes} --nproc_per_node 4 --node_rank {rank}" in call
+        assert "--master_addr job-worker-0.job" in call
+        assert "-m chunkkv.evaluate" in call
+        assert "--limit 4 --output outputs/test" in call
+        assert "--standalone" not in call
+    assert "--master_port 6001" in calls[0] and "--suite main" in calls[0]
+    if not fail_main:
+        assert "--master_port 6002" in calls[1] and "--suite niah" in calls[1]
+    log.unlink()
+    env.pop("MA_VJ_NAME")
+    env.update(MA_NUM_HOSTS="2", MASTER_ADDR="localhost")
+    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert result.returncode == 2 and "MASTER_ADDR" in result.stderr
+    assert not log.exists()
 
 
 def test_slot_matched_budget_reads_semanticlogkv_generation_snapshots(tmp_path):
