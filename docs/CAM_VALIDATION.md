@@ -1,5 +1,35 @@
 # CaM 验证记录
 
+## 2026-10-15：项目独立化与统一评测协议
+
+改动：移除分支内的 DMS 方法代码；移除运行时对相邻 `../litgpt` 的全部依赖（评测代码、实验 YAML、`eval.sh`、
+权重转换），改用项目内私有评测快照、实验 YAML、任务清单与转换器；任务改为 47 个 main 入口与 3 个 NIAH
+（仅 32768）分阶段运行；新增 `majob.sh`；评测必须显式选择 `--suite`/`--tasks`；结果记录 pyarrow、解释器、
+CUDA/驱动与拓扑，解析配置按启动编号保存。
+
+环境：Linux CPU，Python 3.13.16、torch 2.14.1+cu130（仅 CPU 执行）、transformers 4.57.3、lm-eval 0.4.9、
+datasets 3.6.0、pyarrow 26.0.0；没有 CUDA，也没有相邻 `litgpt` 目录。
+
+```bash
+python -m pytest -q
+```
+
+结果：**52 passed**。改动前的同类测试直接导入 `../litgpt`，在没有该目录的环境中无法运行，因此没有同环境的
+改动前对照数。在原有 CaM 算法/缓存/模型测试之外，新增或改写：
+
+- 私有转换器：tiny LitGPT 模型 → HF，由参考快照的 HF→LitGPT 转换逐张量零误差还原，logits 一致。
+- 准备好的 tiny Base 经真实私有加载的快照 `eval.py` 接入 CaM，执行继承来的选择题与生成请求；快照文件字节不变。
+- 任务清单 47/33/13/3 与 NIAH `[32768]`；main 不传 NIAH metadata；三种后端任务输入一致。
+- 配置边界：实验 YAML 必须在项目内；`--print-config` 只读项目内文件且不导入 torch/transformers/lm-eval；
+  不选任务时报错；AST 检查无外部 `litgpt` 导入或 `sys.path` 操作；项目内不再包含 DMS。
+- `majob.sh`：单/双节点 rank、world size、主节点 DNS、两阶段端口，main 失败返回原退出码且不启动 NIAH，
+  改协议参数与多节点 localhost 报错；`scripts/evaluate_cam.sh` 的单机/多机参数。
+- 输出隔离、结果写入 `resolved_eval` 与方法元数据、新版 datasets 缓存条目报错。
+
+未验证：真实 1.7B CUDA/BF16 推理、32K 峰值显存/吞吐、服务器离线缓存与任务数据读取、多节点通信及任何任务分数。
+
+## 2026-10-12：初始实现（历史记录，发生在独立化之前）
+
 日期：2026-10-12；分支：`CaM`。macOS CPU，临时隔离环境 Python 3.11、PyTorch 2.9.1、Transformers 4.57.3、datasets 3.6.0、lm-eval 0.4.9。没有 CUDA、真实 1.7B 权重或服务器评测数据。
 
 执行：

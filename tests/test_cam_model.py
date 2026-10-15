@@ -10,7 +10,7 @@ from transformers import Qwen3Config, Qwen3ForCausalLM
 from models.cam.model import CaMModel
 from models.cam.semanticlogkv_eval import compression_snapshot, install_adapter
 from models.qwen3.evaluate import load_evaluator
-from models.qwen3.prepare_base import DEFAULT_LITGPT_ROOT, prepare_base
+from models.qwen3.prepare_base import prepare_base
 from tests.test_prepare_base import source
 
 
@@ -91,8 +91,8 @@ def test_prepared_base_loads_and_inherits_real_reference_requests(source, tmp_pa
     tokenizer.pre_tokenizer = Whitespace()
     tokenizer.save(str(original / "tokenizer.json"))
     output = tmp_path / "prepared"
-    prepare_base(DEFAULT_LITGPT_ROOT, experiment, output)
-    evaluator = load_evaluator(DEFAULT_LITGPT_ROOT)
+    prepare_base(experiment, output)
+    evaluator = load_evaluator()
     native = evaluator.LogKVLM
     options = dict(start_size=1, recent_size=4, merge_size=3, seed=42, prefill_chunk_size=4)
     install_adapter(evaluator, options)
@@ -110,4 +110,4 @@ def test_prepared_base_loads_and_inherits_real_reference_requests(source, tmp_pa
     assert lm.compression_metrics[-1]["processed_tokens"] >= 9
     assert lm.model.cache is None
     # A fresh reference import still has its original model and global metric function.
-    assert load_evaluator(DEFAULT_LITGPT_ROOT).LogKVLM.__name__ == "LogKVLM"
+    assert load_evaluator().LogKVLM.__name__ == "LogKVLM"

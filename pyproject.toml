@@ -3,26 +3,37 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "semanticlogkv-dms-baseline"
+name = "semanticlogkv-cam-baseline"
 version = "0.1.0"
-description = "Qwen3-1.7B-Base DMS and online CaM baselines with shared SemanticLogKV evaluation"
+description = "Training-free online CaM on Qwen3-1.7B-Base under SemanticLogKV's evaluation protocol"
 requires-python = ">=3.10,<3.14"
+# PyTorch/CUDA comes from the prepared CUDA image.
 dependencies = [
+    # Qwen3 model code used by CaM and the Base conversion; kept at the version validated so far.
     "transformers==4.57.3",
-    "accelerate==1.4.0",
     "PyYAML>=6.0",
+    # Bundled SemanticLogKV/LitGPT runtime (models/_vendor/semanticlogkv): same packages
+    # that installing the sibling litgpt checkout used to pull in.
+    "lightning>=2.6.1",
+    "jsonargparse[signatures]>=4.37,<=4.41",
+    "psutil>=5.9",
+    "safetensors>=0.4.3",
+    "tokenizers>=0.21",
+    "sentencepiece>=0.2",
+    "tqdm>4.66",
 ]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
-train = ["datasets==4.4.2"]
-eval = ["lm-eval[ruler]==0.4.9", "datasets>=2.18,<4", "pandas>=1.9", "openpyxl>=3"]
+# Shared evaluation protocol. Formal runs record the exact installed versions (datasets, pyarrow, ...).
+eval = ["lm-eval[ruler,longbench,ifeval]==0.4.9", "datasets>=2.18,<4", "pandas>=1.9", "openpyxl>=3"]
 
 [tool.setuptools.packages.find]
-include = ["dms*", "models*"]
+include = ["models*"]
+
+[tool.setuptools.package-data]
+"models._vendor.semanticlogkv" = ["LICENSE.md", "README.md", "SOURCE.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-markers = ["cuda: requires CUDA and the official DMS kernels"]
-filterwarnings = ["ignore:flex_attention called without torch.compile:UserWarning"]

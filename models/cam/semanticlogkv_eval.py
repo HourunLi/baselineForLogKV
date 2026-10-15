@@ -4,7 +4,7 @@ from .model import CaMModel
 
 
 def compression_snapshot(model, processed_tokens):
-    from litgpt.kv_compression import _with_ratios, cache_compression_snapshot
+    from models._vendor.semanticlogkv.litgpt.kv_compression import _with_ratios, cache_compression_snapshot
     if isinstance(model, CaMModel):
         return _with_ratios(model.kv_compression_snapshot(processed_tokens))
     return cache_compression_snapshot(model, processed_tokens)
