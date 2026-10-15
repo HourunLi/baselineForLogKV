@@ -2,13 +2,17 @@
 
 import argparse
 import ast
+from datetime import datetime
 import importlib.metadata
 import importlib.util
 import inspect
 import json
 import os
 from pathlib import Path
+import platform
 import re
+import socket
+import subprocess
 import sys
 
 import yaml
@@ -172,11 +176,33 @@ def comparison_contract(root, source_config, kwargs):
         "compatibility_code": {name: file_sha256(Path(__file__).parent / name)
                                for name in ("evaluate.py", "semanticlogkv_eval.py", "config.py")},
         "versions": {name: importlib.metadata.version(name)
-                     for name in ("torch", "transformers", "datasets", "lm-eval", "tokenizers")},
+                     for name in ("torch", "transformers", "datasets", "pyarrow", "lm-eval", "tokenizers")},
         "cache": {key: os.environ[key] for key in
                   ("HF_HOME", "HF_DATASETS_CACHE", "HF_HUB_CACHE", "RULER_CACHE_DIR")},
         "benchmark": kwargs["benchmark"], "metadata": kwargs["metadata"],
         "limit": kwargs["limit"], "max_seq_length": kwargs["config_overrides"]["block_size"],
+    }
+
+
+def runtime_environment():
+    """Interpreter, CUDA/driver and launch topology; recorded, not part of the protocol check."""
+    import torch
+
+    driver = None
+    if torch.cuda.is_available():
+        try:
+            driver = subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+                                    capture_output=True, text=True, timeout=30, check=True).stdout.split()[0]
+        except (OSError, subprocess.SubprocessError, IndexError):
+            driver = None
+    return {
+        "python": sys.version.split()[0], "python_executable": sys.executable, "platform": platform.platform(),
+        "host": socket.gethostname(), "torch_cuda": torch.version.cuda, "cuda_available": torch.cuda.is_available(),
+        "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None, "nvidia_driver": driver,
+        # torchrun: GROUP_WORLD_SIZE nodes x LOCAL_WORLD_SIZE processes = WORLD_SIZE ranks.
+        "topology": {key: os.environ.get(key) for key in
+                     ("WORLD_SIZE", "LOCAL_WORLD_SIZE", "GROUP_WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT",
+                      "LITGPT_EXPECTED_WORLD_SIZE")},
     }
 
 
@@ -210,7 +236,7 @@ def install_chunkkv_adapter(evaluator, options):
     evaluator.print = print_backend
 
 
-def run_evaluation(evaluator, kwargs, backend, contract, options=None, budget_reference=None):
+def run_evaluation(evaluator, kwargs, backend, contract, options=None, budget_reference=None, resolved=None):
     """Keep reference main's lifecycle/output, then attach baseline-owned provenance."""
     output = Path(kwargs["output_path"]).resolve()
     kwargs = {**kwargs, "output_path": str(output)}
@@ -267,6 +293,8 @@ def run_evaluation(evaluator, kwargs, backend, contract, options=None, budget_re
             result["log_kv_dense_mode"] = True
         if budget_reference:
             result["chunkkv_budget_reference"] = budget_reference
+        if resolved is not None:
+            result["resolved_eval"] = resolved
         path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
         print(f"Annotated {path}")
 
@@ -288,7 +316,7 @@ def main():
     parser.add_argument("--window-size", type=int)
     parser.add_argument("--reuse-layers", type=int, help="layer-wise index reuse depth; 1 disables reuse")
     selection = parser.add_mutually_exclusive_group()
-    selection.add_argument("--tasks", help="Comma-separated task names; without --suite, defaults to the 32K NIAH smoke tasks")
+    selection.add_argument("--tasks", help="Comma-separated task names for a diagnostic check (not a formal run)")
     selection.add_argument("--suite", choices=("main", "longbench", "niah"),
                            help="Reference task group; outputs go into a same-named subdirectory")
     parser.add_argument("--evaluation-config", type=Path, default=DEFAULT_EVALUATION_CONFIG,
@@ -303,7 +331,7 @@ def main():
     if args.suite:
         args.tasks, lengths = load_eval_suite(args.evaluation_config, args.suite)
     elif args.tasks is None:
-        args.tasks = "niah_single_2,niah_single_3"
+        parser.error("Choose --suite main|niah|longbench (reference task lists) or --tasks (diagnostics)")
     options = budget_reference = None
     if args.budget_from_result:
         if args.backend != "chunkkv" or args.budget or args.keep_ratio:
@@ -331,18 +359,23 @@ def main():
                           "suite": args.suite,
                           "backend": args.backend, "chunkkv": options, **kwargs}, ensure_ascii=False, indent=2))
         return
-    contract = None
+    contract = resolved = None
     if int(os.environ.get("RANK", "0")) == 0:
         contract = comparison_contract(root, source_config, kwargs)
         model_record = evaluated_model(evaluator, kwargs["checkpoint_dir"])
         output.mkdir(parents=True, exist_ok=True)
-        (output / "resolved_eval.yaml").write_text(yaml.safe_dump(
-            {"backend": args.backend, "chunkkv": options, "budget_reference": budget_reference,
-             "evaluation": kwargs, "evaluated_model": model_record, "comparison_contract": contract},
-            allow_unicode=True,
-        ))
+        launch_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        resolved = {"launch_id": launch_id, "suite": args.suite, "backend": args.backend, "chunkkv": options,
+                    "budget_reference": budget_reference, "evaluation": kwargs, "evaluated_model": model_record,
+                    "environment": runtime_environment(), "comparison_contract": contract}
+        # One file per launch: a later run in the same directory never replaces this record.
+        resolved_path = output / f"resolved_eval_{launch_id}.yaml"
+        suffix = 1
+        while resolved_path.exists():
+            resolved_path, suffix = output / f"resolved_eval_{launch_id}_{suffix}.yaml", suffix + 1
+        resolved_path.write_text(yaml.safe_dump(resolved, allow_unicode=True))
         contract = {**contract, "evaluated_model": model_record}
-    run_evaluation(evaluator, kwargs, args.backend, contract, options, budget_reference)
+    run_evaluation(evaluator, kwargs, args.backend, contract, options, budget_reference, resolved)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Training-platform entry point for Base + ChunkKV evaluation (no CPT).
+# Training-platform entry point for Base + ChunkKV evaluation (no CPT). Run once per node:
+# main suite (47 entries), then NIAH (3 entries, 32768 only); a failed stage stops the job.
 set -eo pipefail
 cd "$(dirname "$0")"
 
@@ -15,10 +16,12 @@ if [[ $# -gt 0 && "$1" != -* ]]; then
     shift
 fi
 [[ -f "$CONFIG_FILE" ]] || { echo "Missing experiment YAML: $CONFIG_FILE" >&2; exit 2; }
+# The task lists, NIAH lengths and experiment YAML are fixed for a formal run.
 for arg in "$@"; do
     case "$arg" in
-        --suite|--suite=*|--tasks|--tasks=*)
-            echo "majob.sh runs both full suites; use chunkkv.evaluate for selected tasks." >&2
+        --suite|--suite=*|--tasks|--tasks=*|--evaluation-config|--evaluation-config=*|\
+        --experiment-config|--experiment-config=*|--semantic-config|--semantic-config=*|--print-config)
+            echo "majob.sh runs both full suites; $arg is not allowed here (use chunkkv.evaluate)." >&2
             exit 2 ;;
     esac
 done

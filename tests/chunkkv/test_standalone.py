@@ -29,7 +29,7 @@ def test_chunkkv_uses_package_imports_without_sys_path_injection():
 
 
 @pytest.mark.parametrize("module,extra_args", [
-    ("chunkkv.evaluate", []), ("chunkkv.train", []),
+    ("chunkkv.evaluate", ["--tasks", "niah_single_1"]), ("chunkkv.train", []),
     ("chunkkv.evaluate", ["--suite", "main"]),
     ("chunkkv.evaluate", ["--suite", "longbench"]),
     ("chunkkv.evaluate", ["--suite", "niah"]),
@@ -69,3 +69,18 @@ assert root / "configs/chunkkv/experiment_qwen1.7b_32k.yaml" in yaml_reads
     assert result.returncode == 0, result.stdout + result.stderr
     assert "32768" in result.stdout
     assert str(PROJECT_ROOT / "outputs") in result.stdout
+
+
+def test_evaluation_requires_an_explicit_task_selection(tmp_path):
+    result = subprocess.run([sys.executable, "-m", "chunkkv.evaluate", "--print-config"],
+                            cwd=PROJECT_ROOT, capture_output=True, text=True)
+    assert result.returncode == 2 and "--suite" in result.stderr
+
+
+def test_project_contains_no_other_baseline_or_external_checkout_reference():
+    """Only ChunkKV code ships here; the removed DMS adapter used to load ../litgpt at runtime."""
+    assert not (PROJECT_ROOT / "dms").exists() and not (PROJECT_ROOT / "models").exists()
+    for path in sorted(PROJECT_ROOT.rglob("*")):
+        if path.suffix in {".py", ".sh", ".yaml", ".toml"} and ".git" not in path.parts and path != Path(__file__):
+            text = path.read_text(encoding="utf-8")
+            assert "../litgpt" not in text and "litgpt_root" not in text, path

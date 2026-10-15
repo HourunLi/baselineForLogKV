@@ -1,6 +1,7 @@
 # ChunkKV baseline：实现与 SemanticLogKV 对齐口径
 
-更新：2026-10-15。分支：`chunkKV`（自 `DMS` 创建，DMS 代码原样保留）。论文：
+更新：2026-10-15。分支：`chunkKV`（自 `DMS` 分支创建；现只保留 ChunkKV 项目，DMS 在其自己的分支维护）。统一规则见
+[AGENTS.md](../AGENTS.md) 与 [Baseline 实现规范](BASELINE_IMPLEMENTATION_GUIDE.md)。论文：
 [ChunkKV, arXiv:2502.00299v5](https://arxiv.org/html/2502.00299v5)。
 
 ChunkKV 免训练。本项目独立维护实验 YAML 和必要的模型、训练、评测代码，直接读取与
@@ -76,7 +77,8 @@ dense 配置中的 `experiment_config` 相对其配置文件目录解析。
 | KV 统计 | 请求结束、reset 前快照。所选块计为 `exact_slots`，观察窗与之后追加的 token 计为 `recent_slots`，`hierarchical_slots=0`；比例为 Σretained/Σdense |
 | 缓存预算记录 | `cache_budget` 写明预算来源、`prompt_budget_tokens`、每 token 字节数、参考 LogKV 字节数；ChunkKV 缓存按请求动态分配，`persistent_cache_bytes` 为 null |
 | 计时与显存 | 沿用参考 prefill/decode 计时边界；prefill 时间包含打分与压缩 |
-| 来源记录 | `comparison_contract` 含 Base/tokenizer/评测代码/兼容层哈希与依赖版本，另含实际评测权重的 SHA-256（按参考规则解析 `step_*` 后的目录）及 dense 对照的 manifest |
+| 来源记录 | `comparison_contract` 含 Base/tokenizer/评测代码/兼容层哈希与依赖版本（torch、transformers、datasets、pyarrow、lm-eval、tokenizers），另含实际评测权重的 SHA-256（按参考规则解析 `step_*` 后的目录）及 dense 对照的 manifest；结果的 `resolved_eval` 另记解释器、CUDA/驱动、GPU 与 torchrun 拓扑（不参与协议比较） |
+| 运行区分 | 每次启动写 `resolved_eval_<launch_id>.yaml`，不覆盖同目录旧记录；结果 `eval_results_<时间>.json` 由参考 main 命名，启动器只标注本次新生成的那一个文件，并把解析配置写入其 `resolved_eval` 字段 |
 
 ## 预算口径
 
@@ -147,9 +149,9 @@ bash scripts/chunkkv_evaluate_all.sh --output outputs/chunkkv-full
 bash scripts/chunkkv_evaluate.sh --suite longbench --output outputs/chunkkv-longbench
 ```
 
-`NPROC_PER_NODE` 控制每卡一份模型。删除 `--limit` 才是任务全量；`--tasks` 为各方法选同一组任务。
-`chunkkv_evaluate.sh` 不带 `--suite` 或 `--tasks` 时仍保留旧的两项 32K NIAH 小检查；
-完整评测请使用新的 `chunkkv_evaluate_all.sh`。`--suite` 与 `--tasks` 互斥。
+`NPROC_PER_NODE` 控制每卡一份模型。删除 `--limit` 才是任务全量；`--tasks` 为各方法选同一组任务（诊断用）。
+`chunkkv.evaluate` 必须显式给出 `--suite` 或 `--tasks`（二者互斥），不再默认跑两项 NIAH 小检查；
+完整评测请使用 `chunkkv_evaluate_all.sh` 或 `majob.sh`。
 主任务阶段不传 NIAH metadata，与 Semantic 默认脚本一致。NIAH 阶段统一使用原始 Base tokenizer
 作为 `metadata.pretrained`；Semantic 原脚本使用其 checkpoint 路径作为这一缓存标识，所以旧结果不能
 仅凭任务名相同就认定样本一致，应核对逐样本 prompt/target 或通过上面的统一入口重跑所需对照。
@@ -164,8 +166,9 @@ Qwen3-1.7B-Base，不执行 CPT。它只调用本项目的 `chunkkv.evaluate`，
 `CHUNKKV_CONDA_ENV` 修改，或设置 `CHUNKKV_PYTHON=/absolute/path/to/python` 直接使用已准备的解释器。
 
 提交前在目标镜像/环境中一次性安装评测依赖，确保 Python 3.10–3.13、PyTorch >= 2.7
-且 CUDA 可用。环境名 `torch218` 不代表实际版本。不要同时安装 DMS 的 `[train]` extra，
-它要求 `datasets==4.4.2`，与此处评测的 `datasets<4` 冲突；有冲突时使用单独的评测环境。
+且 CUDA 可用。环境名 `torch218` 不代表实际版本，实际版本以结果中的 `comparison_contract.versions`
+与 `resolved_eval.environment` 为准。可选 dense CPT 的 `[chunkkv-train]` 依赖放在单独的训练环境，不与评测环境混装。
+`majob.sh` 拒绝 `--suite/--tasks/--evaluation-config/--experiment-config/--print-config`，保证正式作业使用固定任务清单和实验配置。
 
 ```bash
 source /home/ma-user/anaconda3/bin/activate torch218
@@ -301,6 +304,14 @@ json/parquet 构建器缓存）可以不处理。
 datasets 的作业应设置独立的 `HF_DATASETS_CACHE`，否则还会写入新的条目。
 
 ## 验证记录
+
+2026-10-15 统一规则对齐：移除分支内与 ChunkKV 无关、且运行时依赖相邻 `../litgpt` 的 DMS 代码/配置/测试/文档；
+评测必须显式选择 `--suite` 或 `--tasks`；`majob.sh` 拒绝改动任务清单或实验配置的参数；结果记录 pyarrow 版本、
+解释器、CUDA/驱动与拓扑，解析配置按启动编号保存。Linux CPU、Python 3.13.16、torch 2.14.1+cu130（CPU 执行）、
+lm-eval 0.4.9、datasets 3.6.0、transformers 4.57.6、pyarrow 26.0.0、litdata 0.2.59 下 `python -m pytest -q`：
+**63 passed**（含 dense CPT 训练器测试；改动前 `tests/chunkkv` 在同一环境为 60 passed、1 skipped，跳过项因未装
+litdata）。新增项覆盖：不带任务选择时报错、项目内不再含其他 baseline 或 `../litgpt` 引用、`majob.sh` 拒绝协议参数、
+结果写入 `resolved_eval`。未执行真实权重、真实缓存、CUDA 或多节点作业。
 
 2026-10-15 离线缓存新版特征类型：用 datasets 3.6.0（服务器 traceback 的行号与可用类型列表都与之一致）、
 4.4.2 和 4.7.0 复现。4.x 写出的 `cais___mmlu/abstract_algebra` 条目较新时，参考方式（转换缓存开启、默认

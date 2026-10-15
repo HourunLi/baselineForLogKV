@@ -143,6 +143,10 @@ def test_platform_launcher_maps_ranks_ports_and_stops_on_failure(tmp_path, nodes
     if not fail_main:
         assert "--master_port 6002" in calls[1] and "--suite niah" in calls[1]
     log.unlink()
+    for extra in (["--tasks", "boolq"], ["--evaluation-config=other.yaml"], ["--experiment-config", "x.yaml"]):
+        result = subprocess.run(command + extra, cwd=tmp_path, env=env, capture_output=True, text=True)
+        assert result.returncode == 2 and "not allowed" in result.stderr
+    assert not log.exists()
     env.pop("MA_VJ_NAME")
     env.update(MA_NUM_HOSTS="2", MASTER_ADDR="localhost")
     result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)
@@ -194,7 +198,8 @@ def test_outputs_stay_outside_reference_and_results_are_relabelled(tmp_path, mon
     evaluator = SimpleNamespace(main=main, __file__=str(entrypoint))
     kwargs = dict(output_path=str(output), tokenizer_dir="base", config_overrides={"block_size": 32768})
     cwd = Path.cwd()
-    runner.run_evaluation(evaluator, kwargs, "chunkkv", {"example": "source"}, {"budget": 64})
+    runner.run_evaluation(evaluator, kwargs, "chunkkv", {"example": "source"}, {"budget": 64},
+                          resolved={"launch_id": "20261013_000000"})
     assert installed == [{"budget": 64}] and Path.cwd() == cwd
     assert datasets_cache.enabled
     assert entrypoint.read_text() == "unchanged source" and list(reference.iterdir()) == [entrypoint]
@@ -202,6 +207,7 @@ def test_outputs_stay_outside_reference_and_results_are_relabelled(tmp_path, mon
     assert result["model_backend"] == "chunkkv" and result["comparison_contract"] == {"example": "source"}
     assert not any(key.startswith("log_kv_") for key in result) and "swa_window_size" not in result
     assert result["cache_budget"] == {"method": "ChunkKV"}
+    assert result["resolved_eval"] == {"launch_id": "20261013_000000"}
     # A failed second run must not relabel existing results with a new contract.
     evaluator.main = lambda **kwargs: None
     with pytest.raises(RuntimeError, match="one new evaluation result"):
