@@ -1,0 +1,1 @@
+{"description": "", "citation": "", "homepage": "", "license": "", "features": {"prompt": {"dtype": "string", "_type": "Value"}, "kwargs": {"feature": {"_type": "Json"}, "_type": "List"}}, "dataset_name": "if_eval", "config_name": "default", "splits": {"train": {"name": "train", "num_bytes": 49, "num_examples": 1, "dataset_name": "if_eval"}}}
