@@ -1,0 +1,62 @@
+# Project-owned snapshot: no cross-project YAML inheritance at runtime.
+# Flattened from arc_attach_alpha_beta_k12_b128_2k -> arc_semantic_fast -> base.
+# Training and algorithm parameters match that experiment; dense CPT disables LogKV.
+# Override relocated assets with CHUNKKV_BASE_CHECKPOINT / CHUNKKV_DATA_DIR.
+# Original SemanticLogKV output paths remain here to guard against overwriting its run.
+arch_name: Qwen/Qwen3-1.7B-Base
+context_length: 32768
+expid: qwen1.7b-32k-attach-alpha-beta_k12_b128_2k
+ckpt_dir: ${CHUNKKV_BASE_CHECKPOINT-/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/}
+global_batch_size: 32
+micro_batch_size: 1
+max_steps: 1200
+learning_rate: 5e-6
+weight_decay: 0.1
+num_devices: 8
+warmup_steps: 100
+min_lr: 3e-6
+entropy_chunk_size: 1024
+dataset_name: prolong
+dataset_dir: data
+data_dir: ${CHUNKKV_DATA_DIR-/home/ma-user/work/bucket-pangu-green/lihourun/longcontext/prolong/data}
+num_workers: 16
+save_ckpt: true
+save_interval: 400
+enable_tensorboard: true
+tensorboard_root: /home/ma-user/work/bucket-pangu-green/lihourun/tb-32k-attach-alpha-beta_k12_b128_2k
+save_path: /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/qwen1.7b-32k-attach-alpha-beta_k12_b128_2k
+merged_state_staging_dir: /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/_fsdp_staging-attach-alpha-beta_k12_b128_2k
+log_kv_B: 128
+log_kv_recent_size: 2048
+log_kv_train_block: 2048
+log_kv_prefill_block: 2048
+log_kv_second_order_scale: 0
+log_kv_second_order_warmup_steps: 100
+log_kv_semantic_clusters: true
+log_kv_cluster_k_max: 12
+log_kv_cluster_lambda_rel: 1.0
+log_kv_seg_eta: 1.0
+log_kv_seg_g0: 2048.0
+log_kv_seg_gap_max: null
+log_kv_seg_block_level: 0
+log_kv_seg_forget: 0.5
+log_kv_semantic_s_h_path: null
+log_kv_semantic_flush_granularity: 2048
+log_kv_semantic_capacity_beta: 0.0
+log_kv_semantic_capacity_hard_cap_mult: 0.0
+log_kv_alpha_exact_tokens: 256
+log_kv_beta_novelty: true
+log_kv_beta_adaptive_merge: true
+auto_resume: true
+log_kv_semantic_cluster_chunk_size: 0
+log_kv_semantic_legacy_route: null
+log_kv_semantic_anchor_mode: mid
+log_kv_semantic_pack_backend: auto
+log_kv_profile_steps: null
+activation_checkpointing: true
+log_kv_semantic_centroid_backend: parallel
+log_kv_semantic_replay_updates: true
+log_kv_semantic_unified_route: false
+log_kv_alpha_span_max_tokens: 64
+resume_dir: null
+run_eval: ''

@@ -1,11 +1,33 @@
 # ChunkKV baseline：实现与 SemanticLogKV 对齐口径
 
-更新：2026-10-13。分支：`chunkKV`（自 `DMS` 创建，DMS 代码原样保留）。论文：
+更新：2026-10-15。分支：`chunkKV`（自 `DMS` 创建，DMS 代码原样保留）。论文：
 [ChunkKV, arXiv:2502.00299v5](https://arxiv.org/html/2502.00299v5)。
 
-ChunkKV 免训练。本实现直接在 SemanticLogKV 评测所用的 **同一 LitGPT 模型、同一份 Base
-`lit_model.pth`** 上运行，不做 HF 转换；评测走私有加载的原版 `litgpt/eval.py`，任务、样本、
-tokenizer、生成、打分和指标都由参考代码完成。参考仓库保持只读。
+ChunkKV 免训练。本项目独立维护实验 YAML 和必要的模型、训练、评测代码，直接读取与
+SemanticLogKV CPT 起点相同的 Base `lit_model.pth`，不做 HF 转换。运行代码快照位于
+`chunkkv/_vendor/semanticlogkv/`，采用项目内限定导入，不依赖相邻 `litgpt` 安装或另一项目的源码与 YAML。
+快照来源、改动与许可证见该目录的 `README.md`、`SOURCE.json`、`LICENSE.md`。
+运行环境要求 Python 3.10–3.13、PyTorch >= 2.7；模型推理和训练仍需相应运行依赖与实际权重、数据。
+
+## 项目与配置边界
+
+| 路径 | 用途 |
+|---|---|
+| `/data/lihourun/baselineForLogKV/chunkKV` | ChunkKV 项目根，以下命令均从此目录执行 |
+| `/data/lihourun/semanticLogKV` | 独立的 SemanticLogKV 对照项目，ChunkKV 运行不要求其存在 |
+| `configs/chunkkv/experiment_qwen1.7b_32k.yaml` | 自有平铺实验配置，保存 Base、数据、32K 上下文与训练/LogKV 参数，不继承外部 `exp/` YAML |
+| `configs/chunkkv/qwen3_1.7b_32k.yaml` | ChunkKV 的选块、预算和层间复用参数 |
+| `configs/chunkkv/dense_cpt_qwen1.7b_32k.yaml` | 可选 dense CPT 配置，`experiment_config` 引用同目录的自有实验配置 |
+| `outputs/` | 本项目评测与 dense CPT 的默认输出 |
+
+评测用 `--experiment-config` 指定实验配置；旧 `--semantic-config` 只保留为这一参数的别名，
+不再定位外部项目。`--litgpt-root` 已移除。实验中的相对资产路径以 ChunkKV 项目根为基准；
+dense 配置中的 `experiment_config` 相对其配置文件目录解析。
+
+项目地址与数据地址分别管理：没有证据表明原始权重、训练数据或缓存已迁移，所以仍保留现有
+`/home/ma-user/...` 默认位置。迁移这些资产后，分别设置 `CHUNKKV_BASE_CHECKPOINT`、
+`CHUNKKV_DATA_DIR`、`CHUNKKV_HF_CACHE`，或修改自有配置。比较 SemanticLogKV 的训练权重时，
+用 `--model` 指定实际 checkpoint，不能直接把其项目根当作权重目录。
 
 ## 算法与论文的对应
 
@@ -35,8 +57,8 @@ tokenizer、生成、打分和指标都由参考代码完成。参考仓库保�
 
 ## 与 SemanticLogKV 对齐的评测接口
 
-`scripts/chunkkv_evaluate.sh` → `chunkkv.evaluate` → 私有模块实例中的原版 `eval.main`。
-`ChunkKVLM` 继承参考 `LogKVLM`：构造时调用参考构造函数（dense 模式）加载 tokenizer、
+`scripts/chunkkv_evaluate.sh` → `chunkkv.evaluate` → 私有模块实例中的本地快照 `eval.main`。
+`ChunkKVLM` 继承快照中的 `LogKVLM`：构造时调用其构造函数（dense 模式）加载 tokenizer、
 `model_config.yaml` 与权重，再把每层 `CausalSelfAttention` 包装为 ChunkKV 缓存；
 `_score_tokens / loglikelihood / loglikelihood_rolling / generate_until` 全部直接继承。
 同一入口也提供 `--backend logkv`（SemanticLogKV 本身）和 `--backend dense`（同模型 Full KV），
@@ -44,10 +66,10 @@ tokenizer、生成、打分和指标都由参考代码完成。参考仓库保�
 
 | 项目 | 对齐方式 |
 |---|---|
-| 权重 | 默认 SemanticLogKV 实验 YAML 的 `ckpt_dir`（原始 Base），与 CPT 起点相同；`--model` 可换为任意 LitGPT checkpoint |
+| 权重 | 默认本项目实验 YAML 的 `ckpt_dir`（原始 Base），与 CPT 起点相同；`--model` 可换为任意兼容的 LitGPT checkpoint |
 | 权重完整性 | 参考加载器是 `strict=False`；本实现另外按 mmap 读取 checkpoint 的键并要求与模型完全一致 |
 | tokenizer、任务、长度、样本 | 与 DMS 分支相同：Base 目录 tokenizer；默认 `niah_single_2,niah_single_3`；`block_size` 和 RULER `max_seq_lengths` 都取实验 `context_length=32768`；同 harness、seed、`--limit` |
-| 生成与停止 | 共用 `litgpt.generate.base.generate`，同截断与 EOS 规则（共享代码不执行 `until` 字符串） |
+| 生成与停止 | 共用本地快照的 `litgpt.generate.base.generate`，同截断与 EOS 规则（共享代码不执行 `until` 字符串） |
 | 选择题打分 | 参考代码一次前向 context+continuation 并用 `lm_head_start` 标出 context 末位；ChunkKV 以此为 prompt 边界：先 prefill 并压缩 context，再让 continuation 读压缩缓存，等价于逐 token 解码 |
 | rolling PPL | 每个窗口只有 1 个 context token，整窗一次 dense 前向，ChunkKV 不改变其结果 |
 | KV 统计 | 请求结束、reset 前快照。所选块计为 `exact_slots`，观察窗与之后追加的 token 计为 `recent_slots`，`hierarchical_slots=0`；比例为 Σretained/Σdense |
@@ -75,28 +97,32 @@ ChunkKV 不需要训练，主表行应为 "Base + ChunkKV"。SemanticLogKV 是�
 模型，为了区分 "CPT 语料/预算" 与 "压缩注意力" 的贡献，提供一个对照训练入口：
 
 ```bash
-# 训练环境：SemanticLogKV 训练所用的 PyTorch/CUDA 环境，另需 litdata 与 tensorboard
-python -m pip install -e '.[chunkkv-train]' && python -m pip install -e ../litgpt
+# 训练环境：兼容的 PyTorch/CUDA 环境，训练依赖由 extra 安装
+cd /data/lihourun/baselineForLogKV/chunkKV
+python -m pip install -e '.[chunkkv-train]'
+python -m chunkkv.train --print-config
 NPROC_PER_NODE=8 bash scripts/chunkkv_train.sh configs/chunkkv/dense_cpt_qwen1.7b_32k.yaml
 bash scripts/chunkkv_evaluate.sh --model outputs/dense_cpt/qwen1.7b-32k-attach-alpha-beta_k12_b128_2k
 ```
 
-它私有加载**原版** `demo.py`，使用同一实验 YAML（Base `ckpt_dir`、数据、batch、步数、优化器、
+它私有加载本项目的 `demo.py` 快照，使用同一份自有实验 YAML（Base `ckpt_dir`、数据、batch、步数、优化器、
 学习率日程、FSDP 与 checkpoint 格式）；仅把模型类换成子类，使 `enable_log_kv_training` 保持标准
 causal attention。固定改动只有：`run_eval: ""`、`save_ckpt: true`、`resume_dir: null`、
 `log_kv_semantic_clusters: false`（避免安装路由重放），输出写到本仓库 `outputs/`，并拒绝写入
-litgpt 或 SemanticLogKV 的 save/tensorboard/staging 目录。`--prepare` 只在首节点运行一次，记录解析后的
+本地运行快照、原始 Base 或配置中 SemanticLogKV 的 save/tensorboard/staging 目录。`--prepare` 只在首节点运行一次，记录解析后的
 配置、YAML 链、训练代码与 Base 权重哈希；之后 torchrun 每个 rank 重新解析并核对未变化才训练。
 `overrides` 中改动数据或预算的键会进入 manifest，但会使对照不再等价。
 
 ## 运行
 
 ```bash
-# 评测环境同 DMS：lm-eval==0.4.9、datasets<4，并安装相邻 litgpt 核心包
-python -m pip install -e '.[eval]' && python -m pip install -e ../litgpt
+# 评测环境：lm-eval==0.4.9、datasets<4；不安装相邻项目
+cd /data/lihourun/baselineForLogKV/chunkKV
+python -m pip install -e '.[eval]'
 
-# 只解析配置，不加载权重
+# 只解析本项目配置，不加载权重或训练/评测依赖
 python -m chunkkv.evaluate --print-config
+python -m chunkkv.train --print-config
 # 先用 4 条样本检查三种后端
 bash scripts/chunkkv_evaluate.sh --limit 4 --output outputs/cmp-chunkkv
 bash scripts/chunkkv_evaluate.sh --backend logkv --model /path/to/semanticlogkv/ckpt --limit 4 --output outputs/cmp-logkv
@@ -112,14 +138,28 @@ python -m chunkkv.compare_results outputs/cmp-chunkkv/eval_results_TIMESTAMP.jso
 
 ## 验证记录
 
-环境：Linux CPU，Python 3.13、PyTorch 2.9.1、lightning 2.6.6、lm-eval 0.4.9、datasets 3.6.0、
+2026-10-15 独立化改动：在 macOS、Python 3.11 下执行配置与隔离测试，结果为 **20 passed，2 deselected**：
+
+```bash
+python -m pytest -q tests/chunkkv/test_standalone.py tests/chunkkv/test_evaluate.py tests/chunkkv/test_train.py \
+  -k 'not dense_control_gpt and not private_trainer'
+```
+
+覆盖本地 YAML 与环境变量展开、相对路径、输出保护、训练 manifest 和续训检查、三种后端的参数传递，
+以及从其他工作目录启动、禁止外部项目与模型库导入时的配置预览。额外核对：平铺配置的 57 个字段与
+原配置链展开结果一致；运行快照的语法、内部导入闭包与来源哈希一致；运行快照及许可证纳入打包文件；
+两个启动脚本的 Bash 语法通过。完整小模型测试未运行：临时环境的 PyTorch 下载过慢，已停止安装；
+这两项被排除的模型/训练器测试和其余模型测试不计入本次通过结果。CUDA 与真实权重验证同样未执行。
+
+以下是 2026-10-13 的历史验证，发生在项目独立化之前，不能作为本次改动的通过记录。
+当时环境：Linux CPU，Python 3.13、PyTorch 2.9.1、lightning 2.6.6、lm-eval 0.4.9、datasets 3.6.0、
 transformers 4.56.2、litdata 0.2.59；SemanticLogKV 参考为 `HourunLi/LogKV@4fd97c7`，editable 安装核心包。
 
 ```bash
 python -m pytest -q tests/chunkkv
 ```
 
-结果：**34 passed**。覆盖：
+历史结果：**34 passed**。覆盖：
 
 - 打分与选块和逐 head、逐 query 的显式 softmax/循环实现一致；窗口保留、尾块截断、比例预算、
   稳定排序、短 prompt 与参数校验。

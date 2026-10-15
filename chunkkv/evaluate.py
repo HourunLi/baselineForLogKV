@@ -1,4 +1,4 @@
-"""ChunkKV, SemanticLogKV and Full-KV through one unmodified SemanticLogKV ``eval.py``."""
+"""ChunkKV, SemanticLogKV and Full-KV through the project-owned evaluation runtime."""
 
 import argparse
 import ast
@@ -12,21 +12,18 @@ import sys
 
 import yaml
 
+from .config import BASELINE_ROOT, RUNTIME_ROOT, DEFAULT_EXPERIMENT_CONFIG, load_experiment_config
 
-BASELINE_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ROOT = BASELINE_ROOT.parent / "litgpt"
-DEFAULT_CONFIG = "exp/qwen1.7b-32k/arc_attach_alpha_beta_k12_b128_2k.yaml"
+DEFAULT_ROOT = RUNTIME_ROOT
+DEFAULT_CONFIG = DEFAULT_EXPERIMENT_CONFIG
 DEFAULT_CHUNKKV_CONFIG = BASELINE_ROOT / "configs/chunkkv/qwen3_1.7b_32k.yaml"
 CHUNKKV_FIELDS = ("chunk_size", "window_size", "budget", "keep_ratio", "reuse_layers")
 BACKENDS = ("chunkkv", "logkv", "dense")
 
 
-def configure_environment(root):
-    # Read only the source cache root; HF libraries capture these values at first import.
-    tree = ast.parse((root / "eval.py").read_text())
-    assignment = next(node for node in tree.body if isinstance(node, ast.Assign)
-                      and any(isinstance(target, ast.Name) and target.id == "BASE" for target in node.targets))
-    base = ast.literal_eval(assignment.value)
+def configure_environment():
+    # HF libraries capture these values at first import. This path is data, not source code.
+    base = os.environ.get("CHUNKKV_HF_CACHE", "/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache")
     os.environ.update(
         HF_HOME=base, HF_DATASETS_CACHE=f"{base}/hf_cache", HF_EVALUATE_CACHE=f"{base}/evaluate",
         HF_MODULES_CACHE=f"{base}/modules", HF_HUB_CACHE=f"{base}/hub",
@@ -37,11 +34,11 @@ def configure_environment(root):
     )
 
 
-def load_evaluator(root):
-    """Private module instance of the reference ``eval.py``; the litgpt checkout stays untouched."""
-    configure_environment(root)
-    sys.path.insert(0, str(root))
-    spec = importlib.util.spec_from_file_location("_chunkkv_semanticlogkv_evaluation", root / "eval.py")
+def load_evaluator(root=RUNTIME_ROOT):
+    """Private evaluator instance with imports confined to the bundled runtime."""
+    configure_environment()
+    spec = importlib.util.spec_from_file_location(
+        "chunkkv._vendor.semanticlogkv._evaluation", root / "eval.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     previous = sys.dont_write_bytecode
@@ -50,11 +47,6 @@ def load_evaluator(root):
         spec.loader.exec_module(module)
     finally:
         sys.dont_write_bytecode = previous
-    import litgpt
-    if Path(litgpt.__file__).resolve().parent != root / "litgpt":
-        raise RuntimeError(f"Wrong LitGPT checkout imported: {litgpt.__file__}")
-    if Path(sys.modules["utils"].__file__).resolve() != root / "utils.py":
-        raise RuntimeError("An unrelated utils module was imported instead of SemanticLogKV utils.py")
     if importlib.metadata.version("lm-eval") != "0.4.9":
         raise RuntimeError("Shared evaluation requires lm-eval==0.4.9")
     if int(importlib.metadata.version("datasets").split(".")[0]) >= 4:
@@ -66,7 +58,7 @@ def load_chunkkv_options(path, overrides):
     """Method settings from YAML, then explicit CLI values; validated before any model load."""
     from dataclasses import fields
 
-    from .core import ChunkKVSettings
+    from .settings import ChunkKVSettings
 
     options = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     unknown = sorted(set(options) - set(CHUNKKV_FIELDS))
@@ -92,7 +84,7 @@ def load_chunkkv_options(path, overrides):
 
 def slot_matched_budget(path):
     """Prompt budget = SemanticLogKV's mean retained KV entries per layer and KV head on generation."""
-    from .semanticlogkv_eval import file_sha256
+    from .train import sha256
 
     result = json.loads(Path(path).read_text(encoding="utf-8"))
     if result.get("model_backend") != "logkv":
@@ -101,26 +93,30 @@ def slot_matched_budget(path):
     if not stats.get("request_count"):
         raise ValueError("The SemanticLogKV result has no generate_until KV snapshots")
     entries = stats["retained_slots_per_layer_group"]
-    return int(entries), {"result": str(Path(path).resolve()), "sha256": file_sha256(path),
+    return int(entries), {"result": str(Path(path).resolve()), "sha256": sha256(path),
                           "retained_slots_per_layer_group": entries, "requests": stats["request_count"]}
 
 
 def build_eval_kwargs(evaluator, source_config, model, backend, tasks, limit, output, options=None):
-    source = evaluator.expand_env_vars(evaluator._load_yaml_config(str(source_config), str(model or "")))
+    source = load_experiment_config(source_config)
     # Preserve the configured spelling (including trailing slash) used by RULER metadata/cache keys.
-    base = os.path.expanduser(str(source["ckpt_dir"]))
-    if not Path(base).is_absolute():
-        base = str((Path(evaluator.__file__).parent / base).resolve())
+    base = source["ckpt_dir"]
     if model is None:
         if backend == "logkv":
             raise ValueError("--model must name the SemanticLogKV checkpoint for the logkv backend")
         model = base  # ChunkKV is training-free: the original Base by default
     context_length = int(source["context_length"])
     if context_length <= 0:
-        raise ValueError("SemanticLogKV context_length must be positive")
+        raise ValueError("Experiment context_length must be positive")
     # LogKV method parameters cross over only for LogKV itself or to size a byte-matched budget.
     needs_logkv = backend == "logkv" or (backend == "chunkkv" and (options or {}).get("budget") == "logkv")
-    supported = inspect.signature(evaluator.main).parameters
+    if evaluator is None:
+        # --print-config must work before installing evaluation/model dependencies.
+        tree = ast.parse((RUNTIME_ROOT / "eval.py").read_text(encoding="utf-8"))
+        main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
+        supported = {arg.arg for arg in main.args.args + main.args.kwonlyargs}
+    else:
+        supported = inspect.signature(evaluator.main).parameters
     kwargs = {k: v for k, v in source.items()
               if needs_logkv and k.startswith("log_kv_")
               and not k.startswith("log_kv_diag_") and k in supported}
@@ -132,9 +128,6 @@ def build_eval_kwargs(evaluator, source_config, model, backend, tasks, limit, ou
         metadata={"pretrained": str(base), "max_seq_lengths": [context_length]},
         output_path=str(output),
     )
-    calibration = kwargs.get("log_kv_semantic_s_h_path")
-    if calibration and not Path(calibration).is_absolute():
-        kwargs["log_kv_semantic_s_h_path"] = str((Path(evaluator.__file__).parent / calibration).resolve())
     return kwargs
 
 
@@ -145,8 +138,7 @@ def comparison_contract(root, source_config, kwargs):
     tokenizer_names = ("tokenizer.json", "tokenizer.model", "tokenizer_config.json", "special_tokens_map.json",
                        "added_tokens.json", "vocab.json", "merges.txt", "chat_template.jinja",
                        "generation_config.json")
-    source_files = ("eval.py", "utils.py", "litgpt/tokenizer.py", "litgpt/generate/base.py",
-                    "litgpt/kv_compression.py", "litgpt/ruler_patch.py", "litgpt/model.py")
+    source_files = sorted(root.rglob("*.py")) + [root / "SOURCE.json"]
     return {
         "source_config": str(source_config),
         "source_checkpoint_dir": str(base),
@@ -155,9 +147,9 @@ def comparison_contract(root, source_config, kwargs):
                                 for name in ("config.json", "model_config.yaml")},
         "tokenizer_files": {name: file_sha256(base / name) for name in tokenizer_names
                             if (base / name).is_file()},
-        "evaluation_code": {name: file_sha256(root / name) for name in source_files},
+        "evaluation_code": {str(path.relative_to(root)): file_sha256(path) for path in source_files},
         "compatibility_code": {name: file_sha256(Path(__file__).parent / name)
-                               for name in ("evaluate.py", "semanticlogkv_eval.py")},
+                               for name in ("evaluate.py", "semanticlogkv_eval.py", "config.py")},
         "versions": {name: importlib.metadata.version(name)
                      for name in ("torch", "transformers", "datasets", "lm-eval", "tokenizers")},
         "cache": {key: os.environ[key] for key in
@@ -203,7 +195,7 @@ def run_evaluation(evaluator, kwargs, backend, contract, options=None, budget_re
     kwargs = {**kwargs, "output_path": str(output)}
     root = Path(evaluator.__file__).parent.resolve()
     if output.is_relative_to(root):
-        raise ValueError("Baseline evaluation outputs must be outside the reference litgpt checkout")
+        raise ValueError("Evaluation outputs must be outside the bundled runtime directory")
     output.mkdir(parents=True, exist_ok=True)
     is_main = int(os.environ.get("RANK", "0")) == 0
     before = set(output.glob("eval_results_[0-9]*.json")) if is_main else set()
@@ -243,8 +235,8 @@ def main():
     parser.add_argument("--backend", choices=BACKENDS, default="chunkkv")
     parser.add_argument("--model", type=Path,
                         help="LitGPT checkpoint dir; default for chunkkv/dense is the experiment's original Base")
-    parser.add_argument("--litgpt-root", type=Path, default=DEFAULT_ROOT)
-    parser.add_argument("--semantic-config", type=Path, default=Path(DEFAULT_CONFIG))
+    parser.add_argument("--experiment-config", "--semantic-config", type=Path, default=DEFAULT_CONFIG,
+                        help="Project-owned experiment YAML (relative CLI paths use the current directory)")
     parser.add_argument("--chunkkv-config", type=Path, default=DEFAULT_CHUNKKV_CONFIG)
     parser.add_argument("--budget", help='prompt KV entries per layer/KV head, or "logkv" for byte matching')
     parser.add_argument("--keep-ratio", type=float, help="fraction of prompt tokens kept instead of --budget")
@@ -272,17 +264,18 @@ def main():
             "budget": args.budget, "keep_ratio": args.keep_ratio, "chunk_size": args.chunk_size,
             "window_size": args.window_size, "reuse_layers": args.reuse_layers,
         })
-    root = args.litgpt_root.resolve(strict=True)
-    source_config = (root / args.semantic_config).resolve(strict=True)
+    root = RUNTIME_ROOT
+    source_config = args.experiment_config.resolve(strict=True)
     model = args.model.resolve() if args.model else None
     output = (args.output or BASELINE_ROOT / "outputs/eval" / args.backend).resolve()
     if output.is_relative_to(root):
-        parser.error("Keep baseline outputs outside the reference litgpt checkout")
-    evaluator = load_evaluator(root)
+        parser.error("Keep evaluation outputs outside the bundled runtime directory")
+    evaluator = None if args.print_config else load_evaluator()
     kwargs = build_eval_kwargs(evaluator, source_config, model, args.backend,
                                args.tasks, args.limit, output, options)
     if args.print_config:
-        print(json.dumps({"backend": args.backend, "chunkkv": options, **kwargs}, ensure_ascii=False, indent=2))
+        print(json.dumps({"experiment_config": str(source_config), "runtime_root": str(root),
+                          "backend": args.backend, "chunkkv": options, **kwargs}, ensure_ascii=False, indent=2))
         return
     contract = None
     if int(os.environ.get("RANK", "0")) == 0:

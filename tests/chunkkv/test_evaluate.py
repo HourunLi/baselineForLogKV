@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from chunkkv import evaluate as runner
 from chunkkv.compare_results import CONTRACT_FIELDS, compare_results
@@ -14,8 +15,8 @@ from chunkkv.compare_results import CONTRACT_FIELDS, compare_results
 def fake_evaluator(tmp_path, config):
     def main(log_kv_B=512, log_kv_semantic_clusters=False, log_kv_dense_mode=False):
         pass
-    return SimpleNamespace(main=main, expand_env_vars=lambda x: x, _load_yaml_config=lambda *args: config,
-                           __file__=str(tmp_path / "litgpt" / "eval.py"))
+    (tmp_path / "train.yaml").write_text(yaml.safe_dump(config))
+    return SimpleNamespace(main=main, __file__=str(tmp_path / "runtime" / "eval.py"))
 
 
 def test_backends_share_task_inputs_and_only_logkv_budget_reads_method_flags(tmp_path):
@@ -78,7 +79,7 @@ def test_outputs_stay_outside_reference_and_results_are_relabelled(tmp_path, mon
     monkeypatch.setenv("RANK", "0")
     installed = []
     monkeypatch.setattr(runner, "install_chunkkv_adapter", lambda evaluator, options: installed.append(options))
-    reference, output = tmp_path / "litgpt", tmp_path / "baseline/results"
+    reference, output = tmp_path / "runtime", tmp_path / "baseline/results"
     reference.mkdir()
     entrypoint = reference / "eval.py"
     entrypoint.write_text("unchanged source")

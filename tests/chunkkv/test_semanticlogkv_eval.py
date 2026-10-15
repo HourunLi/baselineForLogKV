@@ -16,9 +16,9 @@ import yaml
 
 pytest.importorskip("lm_eval")
 
-import litgpt  # noqa: E402
-from litgpt import kv_compression  # noqa: E402
-from litgpt.model import GPT  # noqa: E402
+from chunkkv._vendor.semanticlogkv import litgpt  # noqa: E402
+from chunkkv._vendor.semanticlogkv.litgpt import kv_compression  # noqa: E402
+from chunkkv._vendor.semanticlogkv.litgpt.model import GPT  # noqa: E402
 
 from chunkkv import evaluate  # noqa: E402
 from chunkkv.model import ChunkKVModel  # noqa: E402
