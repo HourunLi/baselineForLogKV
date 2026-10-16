@@ -20,8 +20,8 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
-# Evaluation runs in SemanticLogKV's existing environment (torch218); install this project there with
-# `pip install --no-deps -e .` so nothing in it changes. These are the requirements the code and the shared
+# Evaluation runs in SemanticLogKV's existing environment (torch218) from the project root, without
+# installing this project there, so nothing in it changes. These are the requirements the code and the shared
 # offline cache impose (its IFEval entry uses the Json feature type of datasets>=4.7); each run records the
 # exact versions, and compare_results requires both sides to match. transformers comes with lm-eval.
 eval = ["lm-eval[ruler,longbench,ifeval]>=0.4.9", "datasets>=4.7", "pandas>=1.9", "xlsxwriter>=3"]
