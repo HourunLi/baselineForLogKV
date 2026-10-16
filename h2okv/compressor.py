@@ -26,7 +26,7 @@ import math
 import torch
 import torch.nn.functional as F
 
-GQA_SCORE_AGGS = ("mean", "max", "sum")
+from .options import GQA_SCORE_AGGS, H2OSettings
 
 
 def reduce_group_scores(scores: torch.Tensor, groups: int, agg: str) -> torch.Tensor:
@@ -94,31 +94,8 @@ def keep_heavy_hitters(scores: torch.Tensor, capacity: int, window_size: int, *t
     return out
 
 
-class H2OCompressor:
-    name = "h2o"
-
-    def __init__(self, max_capacity_prompt: int = 2048, window_size: int = 8, gqa_score_agg: str = "mean",
-                 decode_evict: bool = False, score_chunk_size: int = 512):
-        if window_size < 1 or max_capacity_prompt - window_size <= 0:
-            raise ValueError("H2O requires 0 < window_size < max_capacity_prompt")
-        if gqa_score_agg not in GQA_SCORE_AGGS:
-            raise ValueError(f"gqa_score_agg must be one of {GQA_SCORE_AGGS}")
-        if score_chunk_size < 1:
-            raise ValueError("score_chunk_size must be positive")
-        self.max_capacity_prompt = max_capacity_prompt
-        self.window_size = window_size
-        self.gqa_score_agg = gqa_score_agg
-        self.decode_evict = decode_evict
-        self.score_chunk_size = score_chunk_size
-
-    def config(self) -> dict:
-        return dict(method=self.name, max_capacity_prompt=self.max_capacity_prompt, window_size=self.window_size,
-                    gqa_score_agg=self.gqa_score_agg, decode_evict=self.decode_evict,
-                    score_chunk_size=self.score_chunk_size)
-
-    def budget_schedule(self, q_len: int, num_hidden_layers: int) -> list[int]:
-        """H2O uses the same budget in every layer."""
-        return [min(q_len, self.max_capacity_prompt)] * num_hidden_layers
+class H2OCompressor(H2OSettings):
+    """H2O settings (validated in :class:`H2OSettings`) plus prompt compression and decode eviction."""
 
     def compress(self, layer_idx: int, query_states: torch.Tensor, key_states: torch.Tensor,
                  value_states: torch.Tensor):

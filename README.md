@@ -5,7 +5,7 @@
 - H2O 的 prompt 压缩规则移植自 [KVCache-Factory](https://github.com/Zefan-Cai/KVCache-Factory)（MIT），见 [LICENSE](LICENSE)；可选的 decode 期淘汰按 [H2O 原实现](https://github.com/FMInference/H2O) 的 real-drop 策略自行实现。
 - 评测侧的模型、tokenizer、KV cache、生成、打分、指标和结果格式全部在本仓库实现。**不 import、不加载 litgpt / SemanticLogKV 的任何代码**，只依赖 PyTorch、tokenizers、lm-eval 等通用库。
 - 与 SemanticLogKV 对齐的内容是“行为”：同一份原始 Base 权重、同一 tokenizer 规则、同一 lm-eval 任务与缓存、同样的截断/生成/打分规则、同样的 KV 槽位与速度指标定义、同样的结果文件布局。
-- 统一实现规则见 [AGENTS.md](AGENTS.md) 与 [Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md)。正式评测只用 32K 窗口，完整任务为项目内 [configs/eval_suites.yaml](configs/eval_suites.yaml) 维护的 47 个 main 入口和 3 个 NIAH（仅 `[32768]`），由 `majob.sh` 分两阶段运行。
+- 统一实现规则见 [AGENTS.md](AGENTS.md) 与 [Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md)，评测环境、路径、依赖写法与已知坑见 [Baseline 环境与避坑清单](docs/BASELINE_ENVIRONMENT.md)。正式评测只用 32K 窗口，完整任务为项目内 [configs/eval_suites.yaml](configs/eval_suites.yaml) 维护的 47 个 main 入口和 3 个 NIAH（仅 `[32768]`），由 `majob.sh` 分两阶段运行。
 
 ## KVCache-Factory 是怎么比较不同方法的
 
@@ -51,7 +51,7 @@ KVCache-Factory 把多种 KV 压缩方法放在同一个推理入口下，用参
 |---|---|
 | 权重 | 直接读取 SemanticLogKV 实验 `ckpt_dir` 下的原始 `lit_model.pth`（参数名按 LitGPT 布局，无需转换），也支持 HF safetensors；严格加载，缺/多张量即报错 |
 | tokenizer | 自行实现与参考评测相同的规则：BOS/EOS 来自 `tokenizer_config.json` 与 `generation_config.json`，自动去除后端多加的 BOS/EOS，不加 chat template |
-| 任务与数据 | lm-eval 0.4.9；`--suite main` 为参照版本 `eval.sh` / `majob.sh` 的 47 个 main 入口（14 通用、20 LongBench、13 LongBench-E，任务组由 lm-eval 展开），不传 NIAH metadata；`--suite niah` 为 `niah_single_1/2/3`，`metadata.max_seq_lengths=[32768]`，`metadata.pretrained` 原样使用 Base 路径字符串；HF/RULER 离线缓存根目录相同，评测强制离线，不提供联网下载开关 |
+| 任务与数据 | 评测环境中的 lm-eval（torch218 为 0.4.11；任务定义随版本变化，见“环境”一节）；`--suite main` 为参照版本 `eval.sh` / `majob.sh` 的 47 个 main 入口（14 通用、20 LongBench、13 LongBench-E，任务组由 lm-eval 展开），不传 NIAH metadata；`--suite niah` 为 `niah_single_1/2/3`，`metadata.max_seq_lengths=[32768]`，`metadata.pretrained` 原样使用 Base 路径字符串；HF/RULER 离线缓存根目录相同，评测强制离线，不提供联网下载开关 |
 | 截断 | 打分时左截断 context；生成时先预留 `max_gen_toks` 再左截断 prompt；空 context 用 `[bos]` |
 | 生成 | 非采样时 temperature/top_p 置 0 走 argmax；只在 EOS 或长度上限停止，不执行 `until` 字符串（与参考评测一致） |
 | 打分 | continuation `bos=False` 单独编码；fp32 log-softmax，1024 位置分块；rolling 窗口 `max_seq_length-1` |
@@ -63,17 +63,28 @@ KVCache-Factory 把多种 KV 压缩方法放在同一个推理入口下，用参
 
 `cache_budget.persistent_cache_bytes` 为 `null`：cache 按需增长，没有 SemanticLogKV 那样的预分配常驻缓冲；逐请求的 `retained_kv_bytes` 给出保留条目的 K/V 字节数（不含预留空位与临时打分工作区）。
 
-## 安装
+## 环境
 
-建议与 SemanticLogKV 评测使用同一个 CUDA 环境（相同的 torch、lm-eval、datasets 版本）：
+评测在 SemanticLogKV 的评测环境 torch218 中进行，**不安装本项目，也不往其中安装任何包**（包括 `[eval]` extra 和 `pip install -e .`）。
+入口脚本先 `cd` 到项目根目录再用 `python -m` 启动，torchrun 的各个进程也从这里 import `h2okv`，所以只需要把代码放到服务器上：
 
 ```bash
-git clone -b H2O https://github.com/HourunLi/baselineForLogKV.git H2O
-cd H2O
-pip install -e '.[eval,test]'
+source /home/ma-user/anaconda3/bin/activate torch218
+cd /data/lihourun/baselineForLogKV/H2O    # 本分支的检出目录
 ```
 
-`[eval]` 安装 `lm-eval[ruler,longbench,ifeval]==0.4.9`、`datasets>=2.18,<4`；评测入口启动时检查 lm-eval 版本和 datasets 主版本，不满足即报错。lm-eval 0.4.9 与 transformers 5.x 不兼容，`[eval]` 已限制 `transformers<5`。prefill 使用 PyTorch SDPA，不依赖 FlashAttention 包。范围约束不能代替环境记录：每个结果的 `provenance` 写入实际解释器、torch/lm-eval/datasets/pyarrow/transformers 等版本、CUDA 运行时与驱动、各 rank 的主机与 GPU。
+2026-10-16 的 torch218 为 torch 2.11.0+cu128、lm-eval 0.4.11、datasets 4.8.4、transformers 4.51.3、tokenizers 0.21.4、pyarrow 23.0.1，
+完整清单见 [docs/BASELINE_ENVIRONMENT.md](docs/BASELINE_ENVIRONMENT.md) 第 1 节。代码适配这个环境：
+
+- 评测入口在 import 评测框架之前只检查代码和共享缓存的最低要求：`lm-eval>=0.4.9`（本项目用到的 `LM` 请求接口、`simple_evaluate`、`TaskManager` 与 `make_table`）、`datasets>=4.7`（共享缓存中 IFEval 条目的 `Json` 特征类型从 4.7 起可读）。不满足时报错，提示回到 torch218 评测，而不是改动环境。
+- 精确版本写进每个结果的 `provenance.versions`（torch、transformers、datasets、pyarrow、lm-eval、tokenizers、numpy），另有解释器、CUDA 运行时与驱动、各 rank 的主机与 GPU。`compare_results` 要求双方这六个包的版本一致。
+- `pyproject.toml` 只写代码真正 import 的包的下限，torch218 全部满足，也不排除其中任何版本。`[eval]`（`lm-eval[ruler,longbench,ifeval]>=0.4.9`、`datasets>=4.7`、`pandas>=1.5`、`xlsxwriter>=3`）只用于另建环境；transformers 随 lm-eval 而来，不单独声明。prefill 使用 PyTorch SDPA，不需要 FlashAttention、accelerate、sentencepiece 或 openpyxl。
+- 若曾按旧说明在 torch218 中执行过 `pip install -e .`，可用 `python -m pip uninstall semanticlogkv-h2o-baseline` 撤销本项目的 editable 条目。若还装过旧的 `[eval]`（它会把 lm-eval 降到 0.4.9、datasets 降到 3.x），按 [docs/BASELINE_ENVIRONMENT.md](docs/BASELINE_ENVIRONMENT.md) 第 1 节导出环境快照，与其中的版本表核对；有差异时交由环境维护者恢复，不在共享环境里自行重装。
+
+**lm-eval 版本决定任务定义。** 0.4.9 与 0.4.11 的 LongBench / LongBench-E 数据源（`THUDM/LongBench` → `Xnhyacinth/LongBench`）、
+prompt 字段（`{{input}}` → `{{question}}`）和解码方式（`do_sample: True` → `False`）都不同；本项目生成时 `do_sample` 为假即 argmax，
+所以 0.4.11 下 LongBench 是贪心解码。arc、ceval、ifeval 与 RULER（NIAH）任务文件两版无差异。只比较同一 lm-eval 版本下的结果；
+SemanticLogKV 来自其他版本的旧结果须在 torch218 中重跑。详见 [docs/BASELINE_ENVIRONMENT.md](docs/BASELINE_ENVIRONMENT.md) 第 5 节。
 
 ## 运行方式
 
@@ -100,29 +111,34 @@ bash scripts/evaluate.sh configs/qwen3_1.7b_32k_h2o.yaml --suite niah --method f
 BUDGETS="128 512 2048" bash scripts/sweep_budget.sh configs/qwen3_1.7b_32k_h2o.yaml --suite niah --limit 50
 ```
 
-常用覆盖项：`--max-capacity-prompt`、`--window-size`、`--decode-evict`、`--score-chunk-size`（显存紧张时调小）、`--kv-cache-granularity`、`--limit`、`--output`、`--model`（SemanticLogKV 的 `ckpt_dir` 或 HF 目录）、`--hf-cache-base`（已准备好的离线缓存根目录）。评测从不联网下载数据；缺数据或缓存条目与 datasets<4 不兼容时直接报错，需要先修复缓存条目，不能为绕过错误升级 datasets 或换数据。
+常用覆盖项：`--max-capacity-prompt`、`--window-size`、`--decode-evict`、`--score-chunk-size`（显存紧张时调小）、`--kv-cache-granularity`、`--limit`、`--output`、`--model`（SemanticLogKV 的 `ckpt_dir` 或 HF 目录）、`--hf-cache-base`（已准备好的离线缓存根目录）。评测从不联网下载数据；缺数据时直接报错。共享离线缓存只读：报 `Feature type 'List'/'Json' not found` 说明安装的 datasets 比写缓存的版本旧（环境被降级），应回到 torch218，而不是转换缓存；某个条目的 `dataset_info.json` 不是合法 JSON 时报错并停止，不移动、不改写、不删除缓存条目，处理方法见 [docs/BASELINE_ENVIRONMENT.md](docs/BASELINE_ENVIRONMENT.md) 第 4 节。
 
 ### 训练平台作业：majob.sh（完整评测）
 
 `majob.sh` 是正式完整评测入口，**每个节点执行一次**：先 main（47 个入口），再 NIAH（3 个入口，仅 32768）。两个阶段各自一次 `torch.distributed.run`、各用一个端口，输出分别在 `<output>/main/` 与 `<output>/niah/`；main 失败时返回非零并且不启动 NIAH。它不允许 `--suite/--tasks/--eval-suites/--include-path/--ruler-lengths/--ruler-pretrained/--max-seq-length` 等会改变协议的参数，只接受方法、预算、输出目录与调试用 `--limit`。
 
 ```bash
-cd /path/to/H2O
-# 先在目标镜像中安装评测依赖：pip install -e '.[eval]'
+cd /data/lihourun/baselineForLogKV/H2O    # 不安装任何包；默认激活 torch218
 bash majob.sh configs/qwen3_1.7b_32k_h2o.yaml --limit 4 --output outputs/h2o-32k-smoke   # 小样本检查
 bash majob.sh configs/qwen3_1.7b_32k_h2o.yaml --output outputs/h2o-32k-full              # 全量
 ```
 
 | 平台变量 | 用途 |
 |---|---|
-| `MA_NUM_GPUS` | 每节点 GPU 进程数；缺省依次使用 `NPROC_PER_NODE`、`LOCAL_WORLD_SIZE`、8 |
+| `MA_NUM_GPUS` | 每节点 GPU 进程数；缺省依次使用 `NPROC_PER_NODE`、`LOCAL_WORLD_SIZE`、本节点可见的 CUDA 设备数；超过可见设备数时在启动 torchrun 前报错 |
 | `MA_NUM_HOSTS` | 节点数；缺省使用 `GROUP_WORLD_SIZE` 或 1 |
 | `VC_TASK_INDEX` | 节点 rank；缺省使用 `NODE_RANK`、`GROUP_RANK` 或 0 |
 | `MA_VJ_NAME`、`MA_TASK_NAME`、`MA_MASTER_INDEX` | 主节点 DNS（`<作业>-<任务>-<序号>.<作业>`）；无作业名时使用 `MASTER_ADDR`，多节点禁止 localhost |
-| `MASTER_PORT` | 默认 6000；main 用 +1、NIAH 用 +2，可由 `MAIN_MASTER_PORT`、`NIAH_MASTER_PORT` 覆盖 |
+| `MASTER_PORT` | 只用于多节点：默认 6000，main 用 +1、NIAH 用 +2，可由 `EVAL_MASTER_PORT`、`NIAH_MASTER_PORT` 覆盖。单节点每个阶段用 `--standalone`，由 torchrun 绑定空闲端口，不会因固定端口被占用而失败 |
 | `H2O_PYTHON` / `H2O_CONDA_ENV` | 直接指定解释器；否则激活 `/home/ma-user/anaconda3/bin/activate ${H2O_CONDA_ENV:-torch218}`。环境名不代表实际版本，以结果中的 `provenance` 为准 |
 
+激活环境后、任何 CUDA 调用之前，脚本照搬 SemanticLogKV `eval.sh`/`majob.sh` 的运行库设置：把 `/usr/local/cuda-12.8/bin` 加到 `PATH` 前面，
+`/usr/lib/x86_64-linux-gnu` 与 `/usr/local/cuda-12.8/lib64` 加到 `LD_LIBRARY_PATH` 前面，并设置同样的 `CUDA_DEVICE_MAX_CONNECTIONS`、`NCCL_*` 变量
+（训练作业默认的 `LD_LIBRARY_PATH` 会先加载旧 libcuda，报 `driver ... too old (found version 11040)`）。随后用同一解释器执行一次 `torch.cuda.init()`：
+失败时打印加载的 libcuda 路径、驱动 API 版本和 `LD_LIBRARY_PATH` 后退出，不启动 torchrun。`scripts/evaluate.sh` 使用同样的库路径。
+
 脚本导出 `KV_BASELINE_EXPECTED_WORLD_SIZE=节点数×每节点 GPU`，评测入口发现实际进程数不同时报错。所有节点需读到同一路径的代码、Base、离线缓存，并写同一输出目录。
+平台上建议设置 `TMPDIR=/tmp`，让进程内 map/filter 的临时文件落在节点本地盘。
 
 ### 与 SemanticLogKV 横向对比
 
@@ -147,7 +163,7 @@ bash majob.sh configs/qwen3_1.7b_32k_h2o.yaml --output outputs/h2o-32k-full     
      outputs/h2o-matched/niah/eval_results_RUNID.json outputs/fullkv-full/niah/eval_results_RUNID.json
    ```
 
-   协议检查分两层：逐样本 doc/prompt/target 哈希与请求参数（含生成参数）必须一致；lm-eval 记录的 `limit`、各任务样本数、任务版本与任务设置（输出类型、fewshot、生成参数、分隔符）必须一致；本项目结果额外记录的窗口长度、tokenizer 哈希和 lm-eval/datasets/pyarrow 版本若双方都有则必须一致，SemanticLogKV 自身结果缺这些字段时列为“未核对”。任一不一致直接报错。方法字段（后端、预算、权重哈希）单独列出，不参与判定。PyramidKV 分支的结果文件也可以一起传入。
+   协议检查分两层：逐样本 doc/prompt/target 哈希与请求参数（含生成参数）必须一致；lm-eval 记录的 `limit`、各任务样本数、任务版本与任务设置（输出类型、fewshot、生成参数、分隔符）必须一致；本项目结果额外记录的窗口长度、tokenizer 哈希和 torch/transformers/datasets/pyarrow/lm-eval/tokenizers 版本若双方都有则必须一致，SemanticLogKV 自身结果缺这些字段时列为“未核对”。任一不一致直接报错。方法字段（后端、预算、权重哈希）单独列出，不参与判定。PyramidKV 分支的结果文件也可以一起传入。
 
 `--method fullkv` 与 SemanticLogKV 的 `log_kv_dense_mode: true` 应给出几乎相同的 NIAH 分数；两者使用不同的 attention 实现，逐 token logits 可能有 bf16 级别差异。
 
@@ -160,20 +176,21 @@ bash majob.sh configs/qwen3_1.7b_32k_h2o.yaml --output outputs/h2o-32k-full     
 | `resolved_eval_<run_id>.yaml` | 本次运行解析后的全部设置（方法参数、任务、窗口、缓存目录） |
 | `eval_results_<run_id>.json` | 与 SemanticLogKV 相同的主字段，另含 `run_id`、`suite`、`model_backend`、`method_config`、`provenance`（权重/tokenizer/代码 SHA-256、git 提交、依赖版本、解释器、CUDA/驱动、各 rank 主机与 GPU） |
 | `eval_results_<run_id>.kv_compression.csv` | 每次模型调用的 KV 槽位快照 |
-| `eval_results_<run_id>.inference_metrics.xlsx` | 速度汇总、逐请求明细、按 prompt 长度分桶（需 pandas/openpyxl） |
+| `eval_results_<run_id>.inference_metrics.xlsx` | 速度汇总、逐请求明细、按 prompt 长度分桶（需 pandas 与 xlsxwriter，torch218 自带） |
 | `eval_results_<run_id>.csv` | 各任务的全部数值指标（NIAH 的指标名为长度，如 `32768,none`） |
 
 KV 指标分三类分别报告：逻辑 KV 条目（`kv_compression`，ΣS/ΣD）、保留条目的 K/V 字节（逐请求 `retained_kv_bytes`，不含预留空位与打分工作区）、实际 CUDA 峰值显存（`inference_metrics` 的 `peak_memory_*`）。三者不能互相替代。
 
 ## 测试
 
-CPU 即可运行，使用随机小模型，不下载任何权重或数据：
+CPU 即可运行，使用随机小模型，不下载任何权重或数据。在 torch218 或其副本中、项目根目录下运行，不设 `PYTHONPATH`、不安装本项目
+（副本的建法见 [docs/BASELINE_ENVIRONMENT.md](docs/BASELINE_ENVIRONMENT.md) 第 1 节；副本只能证明 Python 层兼容）：
 
 ```bash
-python -m pytest -q
+env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 python -m pytest -q
 ```
 
-覆盖：Qwen3 与 Transformers 参考实现数值一致；LitGPT/HF 两种权重布局加载一致；带 cache 的分段 prefill/续写/逐 token decode 与整段前向一致；分块累计注意力与完整矩阵一致；H2O 保留结果与 KVCache-Factory 原始代码逐元素一致；decode 淘汰保持预算且淘汰最近窗口外分数最低的条目；请求截断、BOS、EOS、rolling 窗口、按 rank 分配；任务清单（47 main、33 LongBench、3 NIAH 仅 32768）、main 阶段不传 NIAH metadata、`majob.sh` 的节点/端口/world size 解析与首阶段失败即停止、协议字段不一致时拒绝比较、运行编号不覆盖历史结果；以及一次经 lm-eval 的端到端运行（生成 + 选择题，H2O、H2O+decode 淘汰与 FullKV 结果通过输入一致性校验）。验证记录见 [docs/VALIDATION.md](docs/VALIDATION.md)。
+覆盖：Qwen3 与 Transformers 参考实现数值一致；LitGPT/HF 两种权重布局加载一致；带 cache 的分段 prefill/续写/逐 token decode 与整段前向一致；分块累计注意力与完整矩阵一致；H2O 保留结果与 KVCache-Factory 原始代码逐元素一致；decode 淘汰保持预算且淘汰最近窗口外分数最低的条目；请求截断、BOS、EOS、rolling 窗口、按 rank 分配；任务清单（47 main、33 LongBench、3 NIAH 仅 32768）、main 阶段不传 NIAH metadata、`--print-config` 在禁止 import torch/lm_eval/litgpt 等的情况下只读项目内 YAML、启动检查放行 torch218 的版本并拒绝过旧版本、`pyproject` 只有 torch218 满足的下限、`majob.sh` 的可见卡数默认值、CUDA 自检与库路径、单节点 `--standalone`、多节点的节点/端口/world size 解析与首阶段失败即停止、协议字段不一致时拒绝比较、运行编号不覆盖历史结果；以及一次经 lm-eval 的端到端运行（生成 + 选择题，H2O、H2O+decode 淘汰与 FullKV 结果通过输入一致性校验）。验证记录见 [docs/VALIDATION.md](docs/VALIDATION.md)。
 
 ## 注意事项
 

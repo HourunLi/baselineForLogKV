@@ -7,6 +7,8 @@ name = "semanticlogkv-h2o-baseline"
 version = "0.1.0"
 description = "H2O (ported from KVCache-Factory) on Qwen3 under SemanticLogKV's evaluation contract"
 requires-python = ">=3.10"
+# Lower bounds of what the code imports; SemanticLogKV's evaluation environment (torch218) satisfies all of
+# them, and none excludes a version it has.
 dependencies = [
     "torch>=2.1",
     "tokenizers>=0.19",
@@ -16,11 +18,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Same harness pins as SemanticLogKV's evaluation environment; lm-eval 0.4.9 needs transformers<5.
-# The ruler/longbench/ifeval extras cover the NIAH, LongBench(-E) and IFEval entries of the full suite.
-# Formal runs additionally record the exact installed versions (datasets, pyarrow, ...) in each result.
-eval = ["lm-eval[ruler,longbench,ifeval]==0.4.9", "datasets>=2.18,<4", "transformers>=4.45,<5",
-        "pandas>=1.5", "openpyxl>=3"]
+# Evaluation runs in SemanticLogKV's existing environment (torch218) from the project root, without
+# installing this project there, so nothing in it changes; this extra is for a separate environment only.
+# These are the requirements the code and the shared offline cache impose (its IFEval entry uses the Json
+# feature type of datasets>=4.7), and h2okv.evaluate checks them at start-up. Each result records the exact
+# versions, and compare_results refuses files whose versions differ. transformers comes with lm-eval; the
+# ruler/longbench/ifeval extras cover the NIAH, LongBench(-E) and IFEval entries of the full suite.
+eval = ["lm-eval[ruler,longbench,ifeval]>=0.4.9", "datasets>=4.7", "pandas>=1.5", "xlsxwriter>=3"]
 test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
