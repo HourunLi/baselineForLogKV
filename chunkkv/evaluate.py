@@ -25,6 +25,8 @@ DEFAULT_CHUNKKV_CONFIG = BASELINE_ROOT / "configs/chunkkv/qwen3_1.7b_32k.yaml"
 DEFAULT_EVALUATION_CONFIG = BASELINE_ROOT / "configs/chunkkv/eval_semantic_default.yaml"
 CHUNKKV_FIELDS = ("chunk_size", "window_size", "budget", "keep_ratio", "reuse_layers")
 BACKENDS = ("chunkkv", "logkv", "dense")
+# SemanticLogKV's evaluation environment (torch218). Its offline cache entries are written by this version.
+EVAL_LM_EVAL_VERSION, EVAL_DATASETS_VERSION = "0.4.9", "4.8.4"
 
 
 def configure_environment():
@@ -42,6 +44,11 @@ def configure_environment():
 
 def load_evaluator(root=RUNTIME_ROOT):
     """Private evaluator instance with imports confined to the bundled runtime."""
+    # Checked before the evaluator imports them: the offline cache must be read by the protocol's version.
+    for name, required in (("lm-eval", EVAL_LM_EVAL_VERSION), ("datasets", EVAL_DATASETS_VERSION)):
+        if importlib.metadata.version(name) != required:
+            raise RuntimeError(f"Shared evaluation requires {name}=={required}, found "
+                               f"{importlib.metadata.version(name)}; use SemanticLogKV's evaluation environment")
     configure_environment()
     spec = importlib.util.spec_from_file_location(
         "chunkkv._vendor.semanticlogkv._evaluation", root / "eval.py")
@@ -53,10 +60,6 @@ def load_evaluator(root=RUNTIME_ROOT):
         spec.loader.exec_module(module)
     finally:
         sys.dont_write_bytecode = previous
-    if importlib.metadata.version("lm-eval") != "0.4.9":
-        raise RuntimeError("Shared evaluation requires lm-eval==0.4.9")
-    if int(importlib.metadata.version("datasets").split(".")[0]) >= 4:
-        raise RuntimeError("Use the evaluation environment (datasets<4)")
     return module
 
 
@@ -268,8 +271,8 @@ def run_evaluation(evaluator, kwargs, backend, contract, options=None, budget_re
             raise
         raise RuntimeError(
             f"An offline cache entry under {os.environ.get('HF_DATASETS_CACHE')} was written by a newer "
-            f"`datasets` than the installed {importlib.metadata.version('datasets')}. Run "
-            "`python -m chunkkv.check_dataset_cache` (then `--quarantine DIR`); see docs/CHUNKKV.md."
+            f"`datasets` than the installed {importlib.metadata.version('datasets')}. List such entries with "
+            "`python -m chunkkv.check_dataset_cache`; see docs/CHUNKKV.md."
         ) from exc
     finally:
         os.chdir(previous_dir)
