@@ -216,7 +216,7 @@ bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml \
 | `MA_NUM_HOSTS` | 节点数；缺省使用 `GROUP_WORLD_SIZE` 或 1 |
 | `VC_TASK_INDEX` | 节点 rank；缺省使用 `NODE_RANK`、`GROUP_RANK` 或 0 |
 | `MA_VJ_NAME`、`MA_TASK_NAME`、`MA_MASTER_INDEX` | 与 Semantic 原入口相同的主节点 DNS；无作业名时使用 `MASTER_ADDR` |
-| `MASTER_PORT` | 默认 6000；main 默认使用其 +1、NIAH 使用 +2，可由 `EVAL_MASTER_PORT`、`NIAH_MASTER_PORT` 分别覆盖 |
+| `MASTER_PORT` | 仅多节点使用：默认 6000；main 默认使用其 +1、NIAH 使用 +2，可由 `EVAL_MASTER_PORT`、`NIAH_MASTER_PORT` 分别覆盖。单节点改用 `torchrun --standalone`，自动绑定空闲端口，忽略这三个变量与 `MASTER_ADDR` |
 
 所有节点需能读取同一路径下的代码、Base checkpoint、完整评测缓存，并使用同一输出路径。
 无需额外共享文件 barrier：每个阶段的 torchrun rendezvous 负责节点汇合；main 失败则不进入 NIAH。
@@ -225,6 +225,19 @@ bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml \
 
 该入口为 CUDA GPU 作业设计；每张卡持有完整模型、分担评测样本。增加 GPU 数能分摊任务，
 不会降低单条 32K 输入的单卡显存需求。LongBench 的 32K 指上下文上限，NIAH 只生成/评测 32768 长度。
+
+### rendezvous 端口占用（EADDRINUSE）
+
+若栈停在 `static_tcp_rendezvous.py → TCPStore`，并报 `port: 6001 ... EADDRINUSE, address already in use`，
+说明主节点上已有其他进程监听该端口（平台服务或上一次未退出的进程），失败发生在加载模型之前。
+单节点作业现已使用 `--standalone`，由 torchrun 自动选择空闲端口，不再受固定端口影响。
+多节点作业的各节点必须事先约定同一端口，仍使用固定端口；在主节点用 `ss -ltnp | grep 6001`
+查看占用者，并为所有节点设置同一组空闲端口：
+
+```bash
+MASTER_PORT=29500 bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml \
+  --output outputs/chunkkv-base-32k-full   # main 使用 29501，NIAH 使用 29502
+```
 
 ### HellaSwag 预处理的 Arrow schema 错误
 
@@ -318,6 +331,13 @@ python -m chunkkv.check_dataset_cache \
 datasets 写的单行 JSON。`--quarantine` 不会移动这类条目，修复方式取决于检查结果，修改共享缓存前需确认没有其他作业在读写。
 
 ## 验证记录
+
+2026-10-16 单节点训练作业在 main 阶段报 `EADDRINUSE`（`static_tcp_rendezvous.py` 的 `TCPStore`，端口 6001），
+尚未加载模型。单节点改用 `torchrun --standalone` 自动绑定空闲端口；多节点仍用固定端口（见“rendezvous 端口占用”）。
+Linux、Python 3.13，仅装 pytest/PyYAML（无 torch、lm-eval、datasets）：`majob.sh` 与 `chunkkv_evaluate_all.sh` 的启动器测试
+**10 passed**，模拟解释器确认单节点两个阶段均为 `--standalone`、不传 `--master_*`，双节点仍为 6001/6002 与主节点 DNS。
+排除需要 torch 的三个文件后 `tests` 为 50 passed、5 skipped、2 failed；两项失败在未改动的 `origin/chunkKV` 上相同，均因缺少
+torch/lm-eval。环境无法下载 PyTorch，未用真实 torchrun 复现端口占用，也未在训练作业中重跑。
 
 2026-10-16 训练作业中加载 mmlu 报 `JSONDecodeError`（见“离线缓存报 `JSONDecodeError`”）。`check_dataset_cache`改为检查每个条目目录（含缺少 `dataset_info.json` 的，如 `*.incomplete`），把 `dataset_info.json` 缺失或不合法的条目报告为阻断整个 config，打印文件事实；新增 `--compare DIR`；`--quarantine` 不移动这类条目。`chunkkv.evaluate`把缓存查找中的 `JSONDecodeError` 改报为指向该工具的 `RuntimeError`。torch218 副本中实测：datasets 4.8.4 写单行 `dataset_info.json`，离线加载不改写它；把模拟的转换副本截到原文件长度后，最新条目完好的 config 也无法加载，工具报出该条目、`the broken file is its first N bytes` 与数据文件“original”。未在服务器上运行。
 

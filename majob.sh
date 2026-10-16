@@ -99,11 +99,16 @@ export NCCL_IB_TIMEOUT=${NCCL_IB_TIMEOUT:-22}
 
 echo "Python=$CHUNKKV_PYTHON node=$NODE_RANK/$NUM_NODES GPUs/node=$GPUS_PER_NODE (visible $VISIBLE_GPUS) world_size=$LITGPT_EXPECTED_WORLD_SIZE"
 for suite in main niah; do
-    port=$EVAL_MASTER_PORT
-    [[ "$suite" != niah ]] || port=$NIAH_MASTER_PORT
-    echo "Evaluating $suite at $MASTER_ADDR:$port using $CONFIG_FILE"
-    "$CHUNKKV_PYTHON" -m torch.distributed.run \
-        --nnodes "$NUM_NODES" --nproc_per_node "$GPUS_PER_NODE" \
-        --node_rank "$NODE_RANK" --master_addr "$MASTER_ADDR" --master_port "$port" \
+    if (( NUM_NODES == 1 )); then
+        # A fixed port may already be taken on the node; standalone rendezvous binds a free one.
+        rendezvous=(--standalone)
+        echo "Evaluating $suite on one node (free local port) using $CONFIG_FILE"
+    else
+        port=$EVAL_MASTER_PORT
+        [[ "$suite" != niah ]] || port=$NIAH_MASTER_PORT
+        rendezvous=(--nnodes "$NUM_NODES" --node_rank "$NODE_RANK" --master_addr "$MASTER_ADDR" --master_port "$port")
+        echo "Evaluating $suite at $MASTER_ADDR:$port using $CONFIG_FILE"
+    fi
+    "$CHUNKKV_PYTHON" -m torch.distributed.run "${rendezvous[@]}" --nproc_per_node "$GPUS_PER_NODE" \
         -m chunkkv.evaluate --experiment-config "$CONFIG_FILE" --suite "$suite" "$@"
 done

@@ -171,14 +171,22 @@ def test_platform_launcher_maps_ranks_ports_and_stops_on_failure(tmp_path, nodes
     assert len(calls) == (1 if fail_main else 2)
     for call in calls:
         assert call.startswith(f"{nodes * 4} | -m torch.distributed.run")
-        assert f"--nnodes {nodes} --nproc_per_node 4 --node_rank {rank}" in call
-        assert "--master_addr job-worker-0.job" in call
+        assert "--nproc_per_node 4" in call
         assert "-m chunkkv.evaluate" in call
         assert "--limit 4 --output outputs/test" in call
-        assert "--standalone" not in call
-    assert "--master_port 6001" in calls[0] and "--suite main" in calls[0]
+        if nodes == 1:  # fixed ports can be taken on the node; torchrun binds a free one
+            assert "--standalone" in call and "--master_" not in call and "--nnodes" not in call
+        else:
+            assert f"--nnodes {nodes} --node_rank {rank}" in call
+            assert "--master_addr job-worker-0.job" in call
+            assert "--standalone" not in call
+    assert "--suite main" in calls[0]
     if not fail_main:
-        assert "--master_port 6002" in calls[1] and "--suite niah" in calls[1]
+        assert "--suite niah" in calls[1]
+    if nodes > 1:
+        assert "--master_port 6001" in calls[0]
+        if not fail_main:
+            assert "--master_port 6002" in calls[1]
     log.unlink()
     for extra in (["--tasks", "boolq"], ["--evaluation-config=other.yaml"], ["--experiment-config", "x.yaml"]):
         result = subprocess.run(command + extra, cwd=tmp_path, env=env, capture_output=True, text=True)
