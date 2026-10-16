@@ -209,7 +209,7 @@ bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml \
 
 | 平台变量 | 用途 |
 |---|---|
-| `MA_NUM_GPUS` | 每节点 GPU 进程数；缺省依次使用 `NPROC_PER_NODE`、`LOCAL_WORLD_SIZE`、8 |
+| `MA_NUM_GPUS` | 每节点 GPU 进程数；缺省依次使用 `NPROC_PER_NODE`、`LOCAL_WORLD_SIZE`、本节点可见的 CUDA 设备数（`torch.cuda.device_count()`，受 `CUDA_VISIBLE_DEVICES` 限制）；超过可见设备数时启动前报错 |
 | `MA_NUM_HOSTS` | 节点数；缺省使用 `GROUP_WORLD_SIZE` 或 1 |
 | `VC_TASK_INDEX` | 节点 rank；缺省使用 `NODE_RANK`、`GROUP_RANK` 或 0 |
 | `MA_VJ_NAME`、`MA_TASK_NAME`、`MA_MASTER_INDEX` | 与 Semantic 原入口相同的主节点 DNS；无作业名时使用 `MASTER_ADDR` |
@@ -282,6 +282,10 @@ python -m chunkkv.check_dataset_cache    # 应报告每个配置都选中可读�
 版本写入。3.x 格式转换（`--convert`）已移除：在 3.x 下得到的读取结果只属于这次排错，不能作为正式对照。
 
 ## 验证记录
+
+2026-10-16 `majob.sh` 的每节点进程数在没有 `MA_NUM_GPUS`/`NPROC_PER_NODE`/`LOCAL_WORLD_SIZE` 时原来固定为 8，GPU 少于 8 张的开发容器会启动多余的 rank，在 `torch.cuda.set_device(local_rank)` 处失败。现改为默认取
+`torch.cuda.device_count()`，请求数超过可见设备数或没有可见设备时在启动 torchrun 前报错退出（exit 2）。实验 YAML 的 `num_devices: 8` 只属于 dense CPT 训练配置，评测不读取。
+torch218 副本（Python 3.10.22，CPU）中 `python -m pytest -q tests`：**74 passed**，新增用例覆盖 3 张可见卡默认启动 3 个进程、`NPROC_PER_NODE=2` 启动 2 个、`MA_NUM_GPUS=8` 超出可见数与无可见卡时拒绝；真实解释器在无 GPU 时按预期以 exit 2 退出。未在 GPU 上运行。
 
 2026-10-16 适配 torch218 的实际依赖（用户提供的环境清单：Python 3.10.20、torch 2.11.0+cu128、lm-eval 0.4.11、
 datasets 4.8.4、transformers 4.51.3、pyarrow 23.0.1、tokenizers 0.21.4、lightning 2.6.1、jsonargparse 4.41.0、

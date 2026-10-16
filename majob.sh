@@ -32,7 +32,10 @@ if [[ -z "${CHUNKKV_PYTHON:-}" ]]; then
     CHUNKKV_PYTHON=$(python -c 'import sys; print(sys.executable)')
 fi
 set -u
-GPUS_PER_NODE=${MA_NUM_GPUS:-${NPROC_PER_NODE:-${LOCAL_WORLD_SIZE:-8}}}
+# Devices this node can use (honours CUDA_VISIBLE_DEVICES); platform variables may ask for fewer.
+VISIBLE_GPUS=$("$CHUNKKV_PYTHON" -c 'import torch; print(torch.cuda.device_count())')
+[[ "$VISIBLE_GPUS" =~ ^[1-9][0-9]*$ ]] || { echo "No CUDA device is visible to $CHUNKKV_PYTHON" >&2; exit 2; }
+GPUS_PER_NODE=${MA_NUM_GPUS:-${NPROC_PER_NODE:-${LOCAL_WORLD_SIZE:-$VISIBLE_GPUS}}}
 NUM_NODES=${MA_NUM_HOSTS:-${GROUP_WORLD_SIZE:-1}}
 NODE_RANK=${VC_TASK_INDEX:-${NODE_RANK:-${GROUP_RANK:-0}}}
 MASTER_ADDR=${MASTER_ADDR:-localhost}
@@ -53,6 +56,10 @@ done
 (( GPUS_PER_NODE > 0 && NUM_NODES > 0 && NODE_RANK < NUM_NODES )) || {
     echo "Invalid GPU count, node count or node rank" >&2; exit 2;
 }
+(( GPUS_PER_NODE <= VISIBLE_GPUS )) || {
+    echo "$GPUS_PER_NODE GPU processes requested but only $VISIBLE_GPUS CUDA devices are visible;" \
+         "set MA_NUM_GPUS or NPROC_PER_NODE to at most $VISIBLE_GPUS" >&2; exit 2;
+}
 if (( NUM_NODES > 1 )) && [[ "$MASTER_ADDR" == localhost || "$MASTER_ADDR" == 127.* || "$MASTER_ADDR" == ::1 ]]; then
     echo "Multi-node evaluation requires a shared, reachable MASTER_ADDR" >&2
     exit 2
@@ -62,7 +69,7 @@ export LITGPT_EXPECTED_WORLD_SIZE=$((NUM_NODES * GPUS_PER_NODE))
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 export NCCL_IB_TIMEOUT=${NCCL_IB_TIMEOUT:-22}
 
-echo "Python=$CHUNKKV_PYTHON node=$NODE_RANK/$NUM_NODES GPUs/node=$GPUS_PER_NODE world_size=$LITGPT_EXPECTED_WORLD_SIZE"
+echo "Python=$CHUNKKV_PYTHON node=$NODE_RANK/$NUM_NODES GPUs/node=$GPUS_PER_NODE (visible $VISIBLE_GPUS) world_size=$LITGPT_EXPECTED_WORLD_SIZE"
 for suite in main niah; do
     port=$EVAL_MASTER_PORT
     [[ "$suite" != niah ]] || port=$NIAH_MASTER_PORT
