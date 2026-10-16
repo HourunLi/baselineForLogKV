@@ -4,8 +4,8 @@ Offline `load_dataset(path, name)` reuses the newest `<config>/<version>/<hash>`
 modification time (`datasets.packaged_modules.cache`). An entry written by a newer `datasets` can use
 feature types an older one lacks (datasets 4 writes `List`, 4.7 adds `Json`), and then offline task
 loading fails with "Feature type ... not found" before any model call. That means the installed
-`datasets` is not the evaluation environment's version (see `EVAL_DATASETS_VERSION`), not that the
-cache is wrong. Reporting changes nothing. `--quarantine DIR` moves unreadable entries aside for
+`datasets` is older than the one that wrote the cache (see `EVAL_DATASETS_MIN`), not that the cache is
+wrong. Reporting changes nothing. `--quarantine DIR` moves unreadable entries aside for
 configs that keep a readable one; `--restore DIR` moves everything in DIR back to where it came from.
 Nothing is ever deleted. Exits with 1 while any dataset config would still fail offline loading.
 """
@@ -18,7 +18,7 @@ from pathlib import Path
 import shutil
 import sys
 
-from .evaluate import EVAL_DATASETS_VERSION, configure_environment
+from .evaluate import EVAL_DATASETS_MIN, configure_environment
 from .train import sha256
 
 # Earlier versions of this tool wrote converted copies of some entries and recorded them here.
@@ -95,7 +95,8 @@ def main():
     target = (args.quarantine or args.restore) and (args.quarantine or args.restore).expanduser().resolve()
     if target and target.is_relative_to(root):
         parser.error("The quarantine directory must be outside the dataset cache")
-    print(f"datasets {datasets.__version__} (evaluation protocol {EVAL_DATASETS_VERSION}), offline cache {root}")
+    minimum = ".".join(map(str, EVAL_DATASETS_MIN))
+    print(f"datasets {datasets.__version__} (the cache needs >={minimum}), offline cache {root}")
     if args.restore:
         if not target.is_dir():
             parser.error(f"No quarantine directory at {target}")
@@ -120,7 +121,7 @@ def main():
             movable += unreadable
         else:
             unresolved += 1
-            print(f"  no readable entry: evaluate with datasets {EVAL_DATASETS_VERSION}, not {datasets.__version__}")
+            print(f"  no readable entry: datasets {datasets.__version__} is older than the version that wrote it")
     if target:
         for entry in movable:
             destination = target / entry.relative_to(root)

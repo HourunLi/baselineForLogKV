@@ -25,8 +25,10 @@ DEFAULT_CHUNKKV_CONFIG = BASELINE_ROOT / "configs/chunkkv/qwen3_1.7b_32k.yaml"
 DEFAULT_EVALUATION_CONFIG = BASELINE_ROOT / "configs/chunkkv/eval_semantic_default.yaml"
 CHUNKKV_FIELDS = ("chunk_size", "window_size", "budget", "keep_ratio", "reuse_layers")
 BACKENDS = ("chunkkv", "logkv", "dense")
-# SemanticLogKV's evaluation environment (torch218). Its offline cache entries are written by this version.
-EVAL_LM_EVAL_VERSION, EVAL_DATASETS_VERSION = "0.4.9", "4.8.4"
+# Requirements of the bundled protocol code and the shared offline cache, not a target environment:
+# evaluation adapts to SemanticLogKV's environment (torch218, datasets 4.8.4 at the time of writing).
+# The cache's IFEval entry uses the Json feature type, which datasets reads from 4.7 on.
+EVAL_LM_EVAL_VERSION, EVAL_DATASETS_MIN = "0.4.9", (4, 7)
 
 
 def configure_environment():
@@ -42,13 +44,21 @@ def configure_environment():
     )
 
 
+def check_environment():
+    """Fail early when the installed packages cannot run the protocol or read the shared cache."""
+    lm_eval, datasets = (importlib.metadata.version(name) for name in ("lm-eval", "datasets"))
+    if lm_eval != EVAL_LM_EVAL_VERSION:
+        raise RuntimeError(f"The bundled evaluation protocol needs lm-eval=={EVAL_LM_EVAL_VERSION}, found {lm_eval}")
+    if tuple(int(part) for part in re.findall(r"\d+", datasets)[:2]) < EVAL_DATASETS_MIN:
+        minimum = ".".join(map(str, EVAL_DATASETS_MIN))
+        raise RuntimeError(f"The shared offline cache needs datasets>={minimum}, found {datasets}; "
+                           "evaluate in SemanticLogKV's environment without changing its packages")
+
+
 def load_evaluator(root=RUNTIME_ROOT):
     """Private evaluator instance with imports confined to the bundled runtime."""
-    # Checked before the evaluator imports them: the offline cache must be read by the protocol's version.
-    for name, required in (("lm-eval", EVAL_LM_EVAL_VERSION), ("datasets", EVAL_DATASETS_VERSION)):
-        if importlib.metadata.version(name) != required:
-            raise RuntimeError(f"Shared evaluation requires {name}=={required}, found "
-                               f"{importlib.metadata.version(name)}; use SemanticLogKV's evaluation environment")
+    # Checked before the evaluator imports them; the exact versions are recorded in every result.
+    check_environment()
     configure_environment()
     spec = importlib.util.spec_from_file_location(
         "chunkkv._vendor.semanticlogkv._evaluation", root / "eval.py")
