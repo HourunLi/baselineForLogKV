@@ -184,6 +184,9 @@ torch218 中为 lm-eval 0.4.11。vendor 的 `eval.py` 只用到 `evaluator.simpl
 Qwen3-1.7B-Base，不执行 CPT。它只调用本项目的 `chunkkv.evaluate`，无需部署 SemanticLogKV。
 默认激活 `/home/ma-user/anaconda3/bin/activate torch218`；环境名称可通过
 `CHUNKKV_CONDA_ENV` 修改，或设置 `CHUNKKV_PYTHON=/absolute/path/to/python` 直接使用已准备的解释器。
+激活后，脚本照 SemanticLogKV 的 `eval.sh`/`majob.sh`（4fd97c7）把 `/usr/local/cuda-12.8/bin` 加到 `PATH`，把
+`/usr/lib/x86_64-linux-gnu:/usr/local/cuda-12.8/lib64` 加到 `LD_LIBRARY_PATH` 最前面，并沿用其 NCCL 设置；随后用同一解释器
+执行一次 `torch.cuda.init()`，驱动库不匹配时在启动 torchrun 前退出，并打印加载的 libcuda 路径、驱动 API 版本与 `LD_LIBRARY_PATH`。
 
 提交前确认目标环境就是 SemanticLogKV 的评测环境 torch218（启动时检查 `lm-eval>=0.4.9`、`datasets>=4.7`），Python 3.10–3.13（torch218 为 3.10）、PyTorch >= 2.7
 且 CUDA 可用。环境名 `torch218` 不代表实际版本，实际版本以结果中的 `comparison_contract.versions`
@@ -282,6 +285,12 @@ python -m chunkkv.check_dataset_cache    # 应报告每个配置都选中可读�
 版本写入。3.x 格式转换（`--convert`）已移除：在 3.x 下得到的读取结果只属于这次排错，不能作为正式对照。
 
 ## 验证记录
+
+2026-10-16 训练作业报 `RuntimeError: The NVIDIA driver on your system is too old (found version 11040)`（`eval.py` 的 `torch.cuda.set_device`），开发容器中同一代码正常。原因：本项目 `majob.sh` 没有像 SemanticLogKV 的
+`eval.sh`/`majob.sh` 那样设置 CUDA 12.8 的 `PATH`/`LD_LIBRARY_PATH`；开发容器的默认 `LD_LIBRARY_PATH` 以
+`/usr/local/cuda-12.8/compat` 开头，训练作业的不同，加载到的 libcuda 只支持 CUDA 11.4。现照搬这些设置及其 NCCL 变量，并在启动 torchrun 前用 `torch.cuda.init()` 自检（原先的 `torch.cuda.device_count()` 走 NVML，不会发现这一问题）。
+torch218 副本（CPU）中：无 GPU 时自检报 `Found no NVIDIA driver` 并以非零状态退出；用只导出 `cuDriverGetVersion=11040`
+的模拟 libcuda 时，自检打印该库路径与 `CUDA driver API 11040`。`majob.sh` 测试新增库路径顺序与自检失败即停的用例。未在训练作业中重跑。
 
 2026-10-16 `majob.sh` 的每节点进程数在没有 `MA_NUM_GPUS`/`NPROC_PER_NODE`/`LOCAL_WORLD_SIZE` 时原来固定为 8，GPU 少于 8 张的开发容器会启动多余的 rank，在 `torch.cuda.set_device(local_rank)` 处失败。现改为默认取
 `torch.cuda.device_count()`，请求数超过可见设备数或没有可见设备时在启动 torchrun 前报错退出（exit 2）。实验 YAML 的 `num_devices: 8` 只属于 dense CPT 训练配置，评测不读取。

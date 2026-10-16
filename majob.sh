@@ -32,8 +32,36 @@ if [[ -z "${CHUNKKV_PYTHON:-}" ]]; then
     CHUNKKV_PYTHON=$(python -c 'import sys; print(sys.executable)')
 fi
 set -u
-# Devices this node can use (honours CUDA_VISIBLE_DEVICES); platform variables may ask for fewer.
-VISIBLE_GPUS=$("$CHUNKKV_PYTHON" -c 'import torch; print(torch.cuda.device_count())')
+# Runtime settings of SemanticLogKV's eval.sh/majob.sh (commit 4fd97c7) on this platform. A training job's
+# default LD_LIBRARY_PATH can reach an older libcuda first; torch218's cu128 build needs these libraries first.
+# Its NVTE_*/CUDNN_PATH settings serve Transformer Engine, which this project does not use.
+export PATH=/usr/local/cuda-12.8/bin:${PATH}
+export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/local/cuda-12.8/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export CUDA_DEVICE_MAX_CONNECTIONS=${CUDA_DEVICE_MAX_CONNECTIONS:-32}
+export CUDNN_LOGERR_DBG=${CUDNN_LOGERR_DBG:-1} CUDNN_LOGDEST_DBG=${CUDNN_LOGDEST_DBG:-stderr}
+export NCCL_NVLS_ENABLE=${NCCL_NVLS_ENABLE:-0} NCCL_NET_PLUGIN=${NCCL_NET_PLUGIN:-none}
+export NCCL_NET_GDR_LEVEL=${NCCL_NET_GDR_LEVEL:-2} NCCL_MIN_NCHANNELS=${NCCL_MIN_NCHANNELS:-4}
+# Initialise CUDA once here (not just count devices through NVML), so a driver/library mismatch stops the job
+# before torchrun starts, naming the libcuda that was loaded. Prints the devices this node can use.
+CUDA_PROBE='
+import ctypes, os, sys
+import torch
+try:
+    torch.cuda.init()
+except Exception as exc:
+    try:
+        version = ctypes.c_int()
+        ctypes.CDLL("libcuda.so.1").cuDriverGetVersion(ctypes.byref(version))
+        path = next((line.split()[-1] for line in open("/proc/self/maps") if "libcuda.so" in line), "?")
+        found = f"loaded {path}, CUDA driver API {version.value}"
+    except OSError as missing:
+        found = f"libcuda.so.1 not loadable ({missing})"
+    paths = os.environ.get("LD_LIBRARY_PATH", "")
+    sys.exit(f"CUDA initialisation failed: {exc}\n{found}; torch needs CUDA {torch.version.cuda}\n"
+             f"LD_LIBRARY_PATH={paths}")
+print(torch.cuda.device_count())
+'
+VISIBLE_GPUS=$("$CHUNKKV_PYTHON" -c "$CUDA_PROBE")
 [[ "$VISIBLE_GPUS" =~ ^[1-9][0-9]*$ ]] || { echo "No CUDA device is visible to $CHUNKKV_PYTHON" >&2; exit 2; }
 GPUS_PER_NODE=${MA_NUM_GPUS:-${NPROC_PER_NODE:-${LOCAL_WORLD_SIZE:-$VISIBLE_GPUS}}}
 NUM_NODES=${MA_NUM_HOSTS:-${GROUP_WORLD_SIZE:-1}}

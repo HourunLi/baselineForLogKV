@@ -37,7 +37,14 @@
 
 需要注意的环境事实：
 
-- **CUDA 版本只认 `torch.version.cuda`（12.8）。** 镜像里的 `CUDA_VERSION=11.7.1`、`CUDA_PKG_VERSION` 是旧值。（推断）驱动 535 原生对应 CUDA 12.2，cu128 依靠 `LD_LIBRARY_PATH` 中的 `/usr/local/cuda-12.8/compat` 运行。需要编译 CUDA 扩展的方法，先确认 `nvcc --version` 与 `torch.version.cuda` 一致，能不编译就不编译。
+- **CUDA 版本只认 `torch.version.cuda`（12.8）。** 镜像里的 `CUDA_VERSION=11.7.1`、`CUDA_PKG_VERSION` 是旧值。需要编译 CUDA 扩展的方法，先确认 `nvcc --version` 与 `torch.version.cuda` 一致，能不编译就不编译。
+- **开发容器与训练作业的 `LD_LIBRARY_PATH` 不同，入口必须自己设置。** 开发容器的默认值以 `/usr/local/cuda-12.8/compat` 开头，所以不设置也能跑。训练作业的默认值不同：2026-10-16 的 ChunkKV 作业在 `torch.cuda.set_device` 报 `The NVIDIA driver on your system is too old (found version 11040)`，即加载到的 libcuda 只支持 CUDA 11.4。SemanticLogKV 的 `eval.sh`/`majob.sh` 在启动前执行下面三行，所有 baseline 入口照做：
+  ```bash
+  export PATH=/usr/local/cuda-12.8/bin:${PATH}
+  export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH}
+  export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}
+  ```
+  （推断）训练作业的默认路径里排在前面的是一份旧 libcuda，`/usr/lib/x86_64-linux-gnu` 中是容器运行时注入的实际驱动库。
 - **`PYTHONPATH=/usr/local/seccomponent/lib:/home/ma-user/infer/model/1`。** 包名和顶层模块名要避开 `utils`、`data`、`model`、`litgpt` 这类通用名字。
 - **`HF_ENDPOINT=https://hf-mirror.com`。** 只在联网准备数据时有用，评测强制离线。
 - **`pip check` 原本就报冲突**（modelarts、msprof-analyze 对 attrs、pandas、numpy 等的约束）。这是环境原状，不要试图“修复”。
@@ -146,8 +153,12 @@ HF_DATASETS_TRUST_REMOTE_CODE=1  TOKENIZERS_PARALLELISM=false  HF_ALLOW_CODE_EVA
 | `<METHOD>_PYTHON` / `<METHOD>_CONDA_ENV` | `majob.sh` 使用的解释器或 conda 环境名，默认 `torch218` |
 | `TMPDIR=/tmp` | 平台上建议设置，让进程内 map/filter 的临时文件落在节点本地盘，不写回桶挂载 |
 
-`majob.sh` 还会设置 `LITGPT_EXPECTED_WORLD_SIZE`（vendor 的 eval 用它核对 rendezvous）、
-`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 和 `NCCL_IB_TIMEOUT=22`。
+`majob.sh` 还会设置：
+
+- 与 SemanticLogKV `eval.sh` 相同的运行库与通信设置：上面的 PATH/`LD_LIBRARY_PATH` 三行，以及 `CUDA_DEVICE_MAX_CONNECTIONS=32`、
+  `CUDNN_LOGERR_DBG=1`、`CUDNN_LOGDEST_DBG=stderr`、`NCCL_NVLS_ENABLE=0`、`NCCL_NET_PLUGIN=none`、`NCCL_NET_GDR_LEVEL=2`、
+  `NCCL_MIN_NCHANNELS=4`、`NCCL_IB_TIMEOUT=22`；它的 `NVTE_*`、`CUDNN_PATH` 只服务 Transformer Engine，不需要；
+- `LITGPT_EXPECTED_WORLD_SIZE`（vendor 的 eval 用它核对 rendezvous）和 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`。
 
 ## 4. 离线数据与缓存
 
@@ -207,6 +218,8 @@ docs/<METHOD>.md             # 方法细节、预算口径、排错与验证记�
 | 阶段 | 先 main 后 NIAH，各起一次 torchrun；main 失败即退出，不进入 NIAH |
 | 拒绝的参数 | `--suite`、`--tasks`、`--evaluation-config`、`--experiment-config`、`--print-config` |
 | 环境 | 默认 `source /home/ma-user/anaconda3/bin/activate torch218`；conda 激活后再 `set -u` |
+| 运行库 | 激活后、任何 CUDA 调用前设置 SemanticLogKV 的 PATH/`LD_LIBRARY_PATH` 与 NCCL 变量（第 3 节） |
+| CUDA 自检 | 启动 torchrun 前用同一解释器执行一次 `torch.cuda.init()`；失败时打印加载的 libcuda 路径、驱动 API 版本和 `LD_LIBRARY_PATH` 后退出。`torch.cuda.device_count()` 走 NVML，驱动库不匹配时照样返回 8，不能代替初始化 |
 
 ## 7. 最低测试与验证顺序
 
@@ -237,6 +250,7 @@ docs/<METHOD>.md             # 方法细节、预算口径、排错与验证记�
 | 启动器拒绝 torch218 | 启动检查写成 `lm-eval==0.4.9`，而 torch218 是 0.4.11 | 检查最低版本，精确版本写进结果 |
 | 安装 extra 会顺带改动其他包（静态检查发现，未实际发生） | 其他分支声明了 `transformers==4.57.3`、`accelerate==1.4.0`，torch218 是 4.51.3、未装 accelerate | 不声明代码不直接 import 的包 |
 | GPU 少于 8 张的开发容器启动失败 | `majob.sh` 在没有平台变量时默认 8 个进程，多出的 rank 在 `set_device` 失败 | 默认取可见设备数，超出时提前报错 |
+| 开发容器能跑，训练作业报 `driver ... too old (found version 11040)` | `majob.sh` 没有像 SemanticLogKV 那样设置 CUDA 12.8 的库路径；开发容器的默认 `LD_LIBRARY_PATH` 恰好可用，训练作业的不行 | 照搬 SemanticLogKV 的 PATH/`LD_LIBRARY_PATH` 设置，并在启动前做 CUDA 自检 |
 | 文档要求 `pip install --no-deps -e .` | 实际不需要：入口先 cd 到项目根再 `python -m` | 不安装，直接从项目根目录运行 |
 | HellaSwag 报 Arrow schema 错误 | （推断）多个 rank 共用 map 转换缓存，且缓存在共享挂载上 | `datasets.disable_caching()`，并设 `TMPDIR=/tmp`；仍报错时查实际文件与挂载，不清缓存 |
 | 0.4.9 与 0.4.11 分数不可比 | LongBench 数据源、字段和解码方式随 lm-eval 版本改变 | 双方在同一环境同一版本下重跑 |
@@ -253,7 +267,8 @@ docs/<METHOD>.md             # 方法细节、预算口径、排错与验证记�
 | 还锁了 transformers 等包 | `==4.57.3` | `==4.57.3`、`accelerate==1.4.0` | `<5` | `<5` |
 | README 要求 `pip install -e '.[eval,...]'`，会改动 torch218 | 是 | 是 | 是 | 是 |
 | `majob.sh` 默认 8 个进程 | 是 | 是 | 是 | 是 |
+| `majob.sh` 没有设置 CUDA 12.8 的 PATH/`LD_LIBRARY_PATH`，训练作业中会遇到同样的驱动报错 | 是 | 是 | 是 | 是 |
 | AGENTS.md 第 7 条和规范 4.1 仍是 `datasets<4` 的旧版 | 是 | 是 | 是 | 是 |
 
-这些分支在 torch218 中运行前需要按 `chunkKV` 分支的做法对齐，对应提交：17e99d3、7de21cb、218eadb、81a8919、5ea70c6。
+这些分支在 torch218 中运行前需要按 `chunkKV` 分支的做法对齐，对应提交：17e99d3、7de21cb、218eadb、81a8919、5ea70c6，以及设置运行库路径的那次提交。
 另外，各分支的 AGENTS.md、实现规范和本文件应保持同一版本。

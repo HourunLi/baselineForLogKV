@@ -117,8 +117,10 @@ def test_full_suite_launcher_runs_separate_processes_and_stops_on_failure(tmp_pa
 def platform_launcher_env(tmp_path, visible_gpus=4):
     """A fake interpreter for majob.sh: answers the CUDA device probe and logs every launch."""
     executable = tmp_path / "python"
-    executable.write_text('#!/bin/bash\nif [[ "$1" = -c ]]; then echo "$CHUNKKV_TEST_GPUS"; exit; fi\n'
-                          'printf "%s | %s\\n" "$LITGPT_EXPECTED_WORLD_SIZE" "$*" >> "$CHUNKKV_TEST_CALLS"\n'
+    executable.write_text('#!/bin/bash\nif [[ "$1" = -c ]]; then\n'
+                          '  [[ "$CHUNKKV_TEST_GPUS" = fail ]] && { echo "CUDA initialisation failed" >&2; exit 1; }\n'
+                          '  echo "$CHUNKKV_TEST_GPUS"; exit\nfi\n'
+                          'printf "%s | %s | %s\\n" "$LITGPT_EXPECTED_WORLD_SIZE" "$*" "$LD_LIBRARY_PATH" >> "$CHUNKKV_TEST_CALLS"\n'
                           'if [[ "$CHUNKKV_TEST_FAIL" = 1 && "$*" = *"--suite main"* ]]; then exit 7; fi\n')
     executable.chmod(0o755)
     env = {key: value for key, value in os.environ.items()
@@ -134,19 +136,25 @@ def platform_launcher_env(tmp_path, visible_gpus=4):
     ({"NPROC_PER_NODE": "2"}, 3, 2),
     ({"MA_NUM_GPUS": "8"}, 3, None),
     ({}, 0, None),
+    ({}, "fail", None),  # e.g. a libcuda older than torch's CUDA: stop before torchrun
 ])
 def test_platform_launcher_defaults_to_the_visible_gpus(tmp_path, requested, visible, launched):
     env = {**platform_launcher_env(tmp_path, visible), **requested}
     command = ["bash", str(runner.BASELINE_ROOT / "majob.sh"), "--limit", "4", "--output", "outputs/test"]
     result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)
     if launched is None:
-        assert result.returncode == 2 and "visible" in result.stderr
+        expected = (1, "CUDA initialisation failed") if visible == "fail" else (2, "visible")
+        assert (result.returncode, expected[1] in result.stderr) == (expected[0], True), result.stderr
         assert not (tmp_path / "calls").exists()
         return
     assert result.returncode == 0, result.stderr
     calls = (tmp_path / "calls").read_text().splitlines()
     assert len(calls) == 2
     assert all(call.startswith(f"{launched} | ") and f"--nproc_per_node {launched} " in call for call in calls)
+    # SemanticLogKV's platform library order, ahead of whatever the job inherited
+    inherited = env.get("LD_LIBRARY_PATH")
+    expected = "/usr/lib/x86_64-linux-gnu:/usr/local/cuda-12.8/lib64" + (f":{inherited}" if inherited else "")
+    assert all(call.endswith(f" | {expected}") for call in calls)
 
 
 @pytest.mark.parametrize("nodes,rank,fail_main", [(1, 0, False), (2, 1, False), (2, 0, True)])
