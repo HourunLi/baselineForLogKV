@@ -26,9 +26,11 @@ DEFAULT_EVALUATION_CONFIG = BASELINE_ROOT / "configs/chunkkv/eval_semantic_defau
 CHUNKKV_FIELDS = ("chunk_size", "window_size", "budget", "keep_ratio", "reuse_layers")
 BACKENDS = ("chunkkv", "logkv", "dense")
 # Requirements of the bundled protocol code and the shared offline cache, not a target environment:
-# evaluation adapts to SemanticLogKV's environment (torch218, datasets 4.8.4 at the time of writing).
-# The cache's IFEval entry uses the Json feature type, which datasets reads from 4.7 on.
-EVAL_LM_EVAL_VERSION, EVAL_DATASETS_MIN = "0.4.9", (4, 7)
+# evaluation adapts to SemanticLogKV's environment (torch218: lm-eval 0.4.11, datasets 4.8.4 at the
+# time of writing). lm-eval 0.4.9 is the oldest release the protocol was checked against; the cache's
+# IFEval entry uses the Json feature type, which datasets reads from 4.7 on. Results record the exact
+# versions and compare_results refuses to compare runs whose versions differ.
+EVAL_LM_EVAL_MIN, EVAL_DATASETS_MIN = (0, 4, 9), (4, 7)
 
 
 def configure_environment():
@@ -46,13 +48,12 @@ def configure_environment():
 
 def check_environment():
     """Fail early when the installed packages cannot run the protocol or read the shared cache."""
-    lm_eval, datasets = (importlib.metadata.version(name) for name in ("lm-eval", "datasets"))
-    if lm_eval != EVAL_LM_EVAL_VERSION:
-        raise RuntimeError(f"The bundled evaluation protocol needs lm-eval=={EVAL_LM_EVAL_VERSION}, found {lm_eval}")
-    if tuple(int(part) for part in re.findall(r"\d+", datasets)[:2]) < EVAL_DATASETS_MIN:
-        minimum = ".".join(map(str, EVAL_DATASETS_MIN))
-        raise RuntimeError(f"The shared offline cache needs datasets>={minimum}, found {datasets}; "
-                           "evaluate in SemanticLogKV's environment without changing its packages")
+    for name, minimum, needed_by in (("lm-eval", EVAL_LM_EVAL_MIN, "The bundled evaluation protocol"),
+                                     ("datasets", EVAL_DATASETS_MIN, "The shared offline cache")):
+        found = importlib.metadata.version(name)
+        if tuple(int(part) for part in re.findall(r"\d+", found)[:len(minimum)]) < minimum:
+            raise RuntimeError(f"{needed_by} needs {name}>={'.'.join(map(str, minimum))}, found {found}; "
+                               "evaluate in SemanticLogKV's environment without changing its packages")
 
 
 def load_evaluator(root=RUNTIME_ROOT):
