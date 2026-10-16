@@ -276,15 +276,50 @@ python -m chunkkv.check_dataset_cache \
 python -m chunkkv.check_dataset_cache    # 应报告每个配置都选中可读条目
 ```
 
-`--restore` 把隔离目录中的条目原样移回原路径。移动是同一挂载内的重命名，保留条目自身的修改时间，所以离线加载
-重新选中 4.8.4 写的条目。旧版 `--convert` 曾在原路径写入转换副本（记录在 `DIR/conversions.json`）；恢复时
+`--restore` 把隔离目录中的条目原样移回原路径。在本地文件系统上，移动是重命名，保留条目自身的修改时间，所以离线加载
+重新选中 4.8.4 写的条目；但在 `bucket-pangu-green` 桶挂载上，这一过程留下了损坏的 `dataset_info.json`，见下一节。旧版 `--convert` 曾在原路径写入转换副本（记录在 `DIR/conversions.json`）；恢复时
 先按哈希确认目标就是记录中的副本，再把它移到 `DIR/_converted_copies/`。任一目标路径存在未记录的内容时，
 工具整体拒绝，不移动任何文件。全程不删除文件，`DIR` 中剩下的空目录和副本可在确认后自行清理。
 
 `check_dataset_cache` 只报告不改动；某配置最新条目不可读，说明安装的 datasets 不是协议版本，或缓存由更新的
 版本写入。3.x 格式转换（`--convert`）已移除：在 3.x 下得到的读取结果只属于这次排错，不能作为正式对照。
 
+### 离线缓存报 `JSONDecodeError`（`dataset_info.json` 不是合法 JSON）
+
+2026-10-16 训练作业中，ChunkKV 与 SemanticLogKV 的评测都在加载 mmlu 时失败：`datasets/packaged_modules/cache/cache.py`
+的 `_find_hash_in_cache` 报 `json.decoder.JSONDecodeError: Expecting property name enclosed in double quotes: line 57
+column 5 (char 1328)`，此前 `cache_alias_followed` 已成功加载 openbookqa。
+
+已确认的事实：
+
+- datasets 离线加载时会解析该 config 下**每个**条目的 `dataset_info.json`，然后才按修改时间选最新的一个。所以任何一个条目
+  的这个文件损坏，整个 config 都无法加载，无论它新旧。旧版本工具只看最新条目，看不出这类问题。
+- datasets 写这个文件时是**一行** JSON（`DatasetInfo._dump_info`，`indent=None`）；离线加载不会改写它，也不会在条目目录里
+  新建文件（datasets 4.8.4 实测）。报错位置在第 57 行，所以这个文件不是 datasets 写的。
+- 本仓库所有分支与 SemanticLogKV 中，唯一会往缓存里写多行 `dataset_info.json` 的，是旧版 `check_dataset_cache --convert`
+  （10c3090、a9e76ea）：它把转换副本写成 `indent=2, sort_keys=True`，写在原条目路径上，写完在临时目录中读回校验过。
+
+推断（需在服务器上确认）：坏文件是某个被转换过、后来又 `--restore` 的 mmlu 条目，内容是转换副本的开头、长度是原文件的
+长度。同一路径先后放过原文件和转换副本，经过几次桶挂载上的移动后，留下了这种组合。用接近真实的 mmlu 元数据模拟：
+把转换副本截到原文件长度（约 1250 字节），报错同样是 `Expecting property name enclosed in double quotes: line 54 column 7`。
+这说明在这个挂载上，“只移动不删除”也不能保证文件内容不变；之前说“没有覆盖原文件”只对文件本身的写入成立，不足以说明
+缓存保持原样。
+
+先在开发容器和训练作业中各运行一次检查（只读），比较两边的输出：
+
+```bash
+python -m chunkkv.check_dataset_cache \
+  --compare /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache/unreadable_by_datasets3
+```
+
+输出会列出每个 `dataset_info.json` 缺失或不合法的条目：路径、字节数、行数、修改时间、SHA-256、出错前的文本，
+以及它与隔离目录同一路径（含 `_converted_copies/`）文件的关系（例如“the broken file is its first N bytes”）。
+它还按 `conversions.json` 记录的 SHA-256 核对每个转换过的条目：数据文件是否仍是原件，`dataset_info.json` 是否为
+datasets 写的单行 JSON。`--quarantine` 不会移动这类条目，修复方式取决于检查结果，修改共享缓存前需确认没有其他作业在读写。
+
 ## 验证记录
+
+2026-10-16 训练作业中加载 mmlu 报 `JSONDecodeError`（见“离线缓存报 `JSONDecodeError`”）。`check_dataset_cache`改为检查每个条目目录（含缺少 `dataset_info.json` 的，如 `*.incomplete`），把 `dataset_info.json` 缺失或不合法的条目报告为阻断整个 config，打印文件事实；新增 `--compare DIR`；`--quarantine` 不移动这类条目。`chunkkv.evaluate`把缓存查找中的 `JSONDecodeError` 改报为指向该工具的 `RuntimeError`。torch218 副本中实测：datasets 4.8.4 写单行 `dataset_info.json`，离线加载不改写它；把模拟的转换副本截到原文件长度后，最新条目完好的 config 也无法加载，工具报出该条目、`the broken file is its first N bytes` 与数据文件“original”。未在服务器上运行。
 
 2026-10-16 训练作业报 `RuntimeError: The NVIDIA driver on your system is too old (found version 11040)`（`eval.py` 的 `torch.cuda.set_device`），开发容器中同一代码正常。原因：本项目 `majob.sh` 没有像 SemanticLogKV 的
 `eval.sh`/`majob.sh` 那样设置 CUDA 12.8 的 `PATH`/`LD_LIBRARY_PATH`；开发容器的默认 `LD_LIBRARY_PATH` 以

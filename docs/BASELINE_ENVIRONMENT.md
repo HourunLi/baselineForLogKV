@@ -165,7 +165,8 @@ HF_DATASETS_TRUST_REMOTE_CODE=1  TOKENIZERS_PARALLELISM=false  HF_ALLOW_CODE_EVA
 - **离线加载怎么选条目。** 缓存目录为 `<命名空间>___<snake_case 名称>/<config>/<version>/<hash>`，例如 `Xnhyacinth___long_bench`、`google___if_eval`、`cais___mmlu`。同一 config 有多条时选修改时间最新的。
 - **lm-eval 0.4.11 下 50 个入口读的数据集：** `aps/super_glue`（boolq）、`baber/piqa`、`allenai/social_i_qa`、`Rowan/hellaswag`、`allenai/winogrande`、`allenai/ai2_arc`、`allenai/openbookqa`、`cais/mmlu`（57 个 config）、`ceval/ceval-exam`（52）、`google/IFEval`、`truthful_qa`（generation）、`truthfulqa/truthful_qa`（multiple_choice）、`Xnhyacinth/LongBench`（33）。NIAH 由 RULER 用 Base tokenizer 和 `ruler_cache` 现场生成。缺失时报 `... is not cached`。
 - **`Feature type 'List'/'Json' not found` 的含义。** 安装的 datasets 比写缓存的版本旧：4.x 写 `List`，4.7 起写 `Json`。这说明环境被降级了，不是缓存坏了。正确做法是回到 torch218，而不是改缓存。
-- **不得修改共享缓存。** 确需处理时：只移动、不删除，移出缓存目录并记录来源与哈希，提供原样恢复的命令，执行前确认没有其他作业在用。
+- **不得修改共享缓存，桶挂载上的“移动”也算修改。** 2026-10-16 发现：同一路径经过“移走原件 → 写入副本 → 移走副本 → 移回原件”后，训练作业读到的 `dataset_info.json` 是副本的开头、原件的长度。确需处理时：先在开发容器和训练作业两边做只读检查，记录全部文件的 SHA-256，处理后再在两边核对；不删除，执行前确认没有其他作业在用。
+- **datasets 会解析一个 config 下每个条目的 `dataset_info.json`**，再按修改时间选最新的；任何一个条目的这个文件缺失或不是合法 JSON，整个 config 都加载失败。datasets 自己把它写成一行，多行的一定是别的工具写的。
 - **进程内预处理缓存。** 评测期间调用 `datasets.disable_caching()`，map/filter 改用各进程自己的临时文件。否则多个 rank 共用转换缓存，可能报 `Tried reading schema message, was null or length 0`（HellaSwag 遇到过）。原始 `load_dataset` 缓存照常使用。
 - **NIAH 样本的身份。** `metadata.pretrained` 统一用原始 Base tokenizer 路径。SemanticLogKV 原脚本用的是其 checkpoint 路径，因此任务名相同不代表样本相同，要核对逐样本 prompt。
 
@@ -255,6 +256,7 @@ docs/<METHOD>.md             # 方法细节、预算口径、排错与验证记�
 | HellaSwag 报 Arrow schema 错误 | （推断）多个 rank 共用 map 转换缓存，且缓存在共享挂载上 | `datasets.disable_caching()`，并设 `TMPDIR=/tmp`；仍报错时查实际文件与挂载，不清缓存 |
 | 0.4.9 与 0.4.11 分数不可比 | LongBench 数据源、字段和解码方式随 lm-eval 版本改变 | 双方在同一环境同一版本下重跑 |
 | NIAH 样本不一致 | 参考脚本用 checkpoint 路径作 `metadata.pretrained` | 统一用 Base tokenizer 路径，核对逐样本 prompt |
+| 训练作业中 ChunkKV 与 SemanticLogKV 加载 mmlu 都报 `JSONDecodeError`（第 57 行） | （推断）旧 `--convert` 的多行副本与原件在桶挂载上经多次移动后混成损坏文件 | `check_dataset_cache --compare <隔离目录>` 在开发容器与训练作业各查一次，按结果修复；以后不在桶挂载上移动缓存条目 |
 
 ## 9. 现有 baseline 分支的已知差距（2026-10-16 静态检查）
 

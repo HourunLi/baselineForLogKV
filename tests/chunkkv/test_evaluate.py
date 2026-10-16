@@ -289,6 +289,18 @@ def test_cache_entries_from_newer_datasets_point_to_the_cache_check(tmp_path, mo
     with pytest.raises(ValueError, match="unrelated"):
         runner.run_evaluation(evaluator, {"output_path": str(tmp_path / "output")}, "logkv", {})
 
+    # datasets parses dataset_info.json of every cached entry; a malformed one fails there, unnamed.
+    namespace = {}
+    exec(compile("import json\ndef find_hash_in_cache():\n    json.loads('{\\n  \"a\": 1,\\n    ')\n",
+                 "/site-packages/datasets/packaged_modules/cache/cache.py", "exec"), namespace)
+    evaluator.main = lambda **kwargs: namespace["find_hash_in_cache"]()
+    with pytest.raises(RuntimeError, match="not valid JSON.*chunkkv.check_dataset_cache") as raised:
+        runner.run_evaluation(evaluator, {"output_path": str(tmp_path / "output")}, "logkv", {})
+    assert isinstance(raised.value.__cause__, json.JSONDecodeError)
+    evaluator.main = lambda **kwargs: json.loads("{")  # not the cache lookup: unchanged
+    with pytest.raises(json.JSONDecodeError):
+        runner.run_evaluation(evaluator, {"output_path": str(tmp_path / "output")}, "logkv", {})
+
 
 def test_result_check_rejects_different_prompts_or_runtime_but_not_answers():
     result = {"comparison_contract": dict.fromkeys(CONTRACT_FIELDS, "same"), "results": {"samples": {"niah": [
