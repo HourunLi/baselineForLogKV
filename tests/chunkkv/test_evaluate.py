@@ -271,8 +271,25 @@ def test_result_check_rejects_different_prompts_or_runtime_but_not_answers():
         compare_results(result, other)
 
 
-def test_eval_extra_pins_the_versions_the_launcher_requires():
+def test_eval_extra_declares_the_requirements_the_launcher_checks():
     pyproject = (Path(runner.__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
     extra = next(line for line in pyproject.splitlines() if line.startswith("eval = "))
-    assert f'"datasets=={runner.EVAL_DATASETS_VERSION}"' in extra
+    assert f'"datasets>={".".join(map(str, runner.EVAL_DATASETS_MIN))}"' in extra
     assert f']=={runner.EVAL_LM_EVAL_VERSION}"' in extra
+    assert "\"transformers" not in pyproject  # comes with lm-eval at whatever version the environment has
+
+
+@pytest.mark.parametrize("versions,message", [
+    ({"lm-eval": "0.4.9", "datasets": "4.8.4"}, None),
+    ({"lm-eval": "0.4.9", "datasets": "5.1.0"}, None),
+    ({"lm-eval": "0.4.9", "datasets": "3.6.0"}, "datasets>=4.7"),
+    ({"lm-eval": "0.4.9", "datasets": "4.6.1"}, "datasets>=4.7"),
+    ({"lm-eval": "0.4.10", "datasets": "4.8.4"}, "lm-eval==0.4.9"),
+])
+def test_environment_check_follows_code_and_cache_requirements(monkeypatch, versions, message):
+    monkeypatch.setattr(runner.importlib.metadata, "version", versions.__getitem__)
+    if message is None:
+        runner.check_environment()
+    else:
+        with pytest.raises(RuntimeError, match=message.replace(".", r"\.")):
+            runner.check_environment()

@@ -8,9 +8,6 @@ version = "0.1.0"
 description = "Training-free ChunkKV on Qwen3-1.7B-Base under SemanticLogKV's evaluation protocol"
 requires-python = ">=3.10,<3.14"
 dependencies = [
-    # Kept at the version this project's evaluation environment has used so far;
-    # changing it can change NIAH tokenization and needs re-validation of both sides.
-    "transformers==4.57.3",
     "PyYAML>=6.0",
     "torch>=2.7",
     "lightning>=2.6.1",
@@ -24,9 +21,11 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
-# Shared evaluation protocol: SemanticLogKV's evaluation environment (torch218). Formal runs also record
-# the exact installed versions (pyarrow, ...). chunkkv.evaluate refuses other lm-eval/datasets versions.
-eval = ["lm-eval[ruler,longbench,ifeval]==0.4.9", "datasets==4.8.4", "pandas>=1.9", "openpyxl>=3"]
+# Evaluation runs in SemanticLogKV's existing environment (torch218); install this project there with
+# `pip install --no-deps -e .` so nothing in it changes. These are the requirements the code and the shared
+# offline cache impose (its IFEval entry uses the Json feature type of datasets>=4.7); each run records the
+# exact versions, and compare_results requires both sides to match. transformers comes with lm-eval.
+eval = ["lm-eval[ruler,longbench,ifeval]==0.4.9", "datasets>=4.7", "pandas>=1.9", "openpyxl>=3"]
 # Optional dense-CPT control only; install it in a separate training environment.
 chunkkv-train = ["litdata==0.2.59", "tensorboard>=2.14", "datasets>=2.18", "pandas>=1.9", "pyarrow>=15.0.2"]
 

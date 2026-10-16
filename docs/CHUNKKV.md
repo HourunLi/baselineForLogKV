@@ -129,7 +129,7 @@ LongBench 等真实数据任务使用 32K 模型上下文上限，保留原始�
 安装 `[eval]` 会包含 [lm-eval 0.4.9 的 ruler、longbench、ifeval 依赖](https://github.com/EleutherAI/lm-evaluation-harness/blob/v0.4.9/pyproject.toml)。
 
 ```bash
-# 评测环境：SemanticLogKV 的 torch218（lm-eval==0.4.9、datasets==4.8.4）；只登记本项目，不改动其依赖
+# 评测环境：SemanticLogKV 的 torch218（代码适配它：需 lm-eval==0.4.9、datasets>=4.7）；只登记本项目，不改动其依赖
 cd /data/lihourun/baselineForLogKV/chunkKV
 python -m pip install --no-deps -e .
 
@@ -165,7 +165,7 @@ Qwen3-1.7B-Base，不执行 CPT。它只调用本项目的 `chunkkv.evaluate`，
 默认激活 `/home/ma-user/anaconda3/bin/activate torch218`；环境名称可通过
 `CHUNKKV_CONDA_ENV` 修改，或设置 `CHUNKKV_PYTHON=/absolute/path/to/python` 直接使用已准备的解释器。
 
-提交前确认目标环境就是 SemanticLogKV 的评测环境（`lm-eval==0.4.9`、`datasets==4.8.4`），Python 3.10–3.13、PyTorch >= 2.7
+提交前确认目标环境就是 SemanticLogKV 的评测环境 torch218（启动时检查 `lm-eval==0.4.9`、`datasets>=4.7`），Python 3.10–3.13、PyTorch >= 2.7
 且 CUDA 可用。环境名 `torch218` 不代表实际版本，实际版本以结果中的 `comparison_contract.versions`
 与 `resolved_eval.environment` 为准。可选 dense CPT 的 `[chunkkv-train]` 依赖放在单独的训练环境，不与评测环境混装。
 `majob.sh` 拒绝 `--suite/--tasks/--evaluation-config/--experiment-config/--print-config`，保证正式作业使用固定任务清单和实验配置。
@@ -237,11 +237,12 @@ extra 写的是 `datasets>=2.18,<4`，在 torch218 中安装后 datasets 被降�
 `ConfigurableTask.download → datasets.load_dataset → packaged_modules/cache/cache.py →
 DatasetInfo.from_directory` 读取条目时报错，尚未进入模型推理或 ChunkKV 代码。
 
-当前协议改为 SemanticLogKV 实际使用的 `lm-eval==0.4.9`、`datasets==4.8.4`（`EVAL_DATASETS_VERSION`）。
-`chunkkv.evaluate` 在导入评测代码之前核对这两个版本，不一致直接报错；若仍遇到该错误（缓存由更新的版本
-写入），会改报 `RuntimeError` 并指向下面的检查工具，原始异常保留在 `__cause__`。不要向 torch218 安装本项目的
-extra，`pip install --no-deps -e .` 只登记本项目、不改动其中任何第三方包；`[eval]` 只用于另建一个复现
-该协议的环境。
+评测环境以 SemanticLogKV 已有的 torch218 为准，代码适配它，不为本项目改动其中任何包（写作时为
+lm-eval 0.4.9、datasets 4.8.4）。`chunkkv.evaluate` 在导入评测代码前只检查代码与数据真正需要的条件：
+vendor 的评测协议需要 `lm-eval==0.4.9`；共享缓存中的 IFEval 条目使用 `Json` 特征类型，需要 `datasets>=4.7`。
+每次结果在 `comparison_contract.versions` 记录实际版本，`compare_results` 要求比较双方一致。若仍遇到该错误
+（缓存由更新的版本写入），会改报 `RuntimeError` 并指向下面的检查工具，原始异常保留在 `__cause__`。
+在 torch218 中用 `pip install --no-deps -e .` 只登记本项目；`[eval]` 只用于另建一个满足上述条件的环境。
 
 若曾按旧说明在 3.x 下执行过 `check_dataset_cache --quarantine DIR`（或带 `--convert`），用 `--restore`
 撤销，使缓存回到 SemanticLogKV 读取的状态。请在没有其他作业读写该缓存时执行：
@@ -264,11 +265,11 @@ python -m chunkkv.check_dataset_cache    # 应报告每个配置都选中可读�
 
 ## 验证记录
 
-2026-10-16 评测协议更正为 datasets 4.8.4：torch218 原为 datasets 4.8.4，旧 `[eval]` 的 `<4` 约束将其降级。
-`chunkkv.evaluate` 改为核对 `lm-eval==0.4.9`、`datasets==4.8.4`，`[eval]` 同步锁定；`check_dataset_cache`
-新增 `--restore`、移除 `--convert`。Linux CPU、Python 3.13、torch 2.9.1（CPU）、lm-eval 0.4.9、datasets 4.8.4、
+2026-10-16 评测环境以 torch218 为准：其原为 datasets 4.8.4，旧 `[eval]` 的 `<4` 约束将其降级。
+`chunkkv.evaluate` 改为只检查 `lm-eval==0.4.9` 与 `datasets>=4.7`（缓存中 IFEval 的 `Json` 类型自 4.7 起可读），
+`[eval]` 同步，并去掉代码不直接使用的 `transformers==4.57.3`；`check_dataset_cache` 新增 `--restore`、移除 `--convert`。Linux CPU、Python 3.13、torch 2.9.1（CPU）、lm-eval 0.4.9、datasets 4.8.4、
 pyarrow 26.0.0、transformers 4.56.2（与 `transformers==4.57.3` 不同，仅本地测试环境）下 `python -m pytest -q`：
-**64 passed**，含经私有 `eval.py` 的生成、打分、rolling 与 KV 统计测试，以及恢复与拒绝测试。端到端复现服务器
+**69 passed**，含经私有 `eval.py` 的生成、打分、rolling 与 KV 统计测试，恢复与拒绝测试，以及环境检查（datasets 4.8.4/5.1.0 通过，3.6.0/4.6.1 与非 0.4.9 的 lm-eval 被拒绝）。端到端复现服务器
 操作：datasets 4.8.4 写入 truthful_qa（仅新条目）与 mmlu（新旧两条）→ 10c3090 版工具在 3.6.0 下
 `--quarantine --convert` → 新工具在 4.8.4 下 `--restore`：全部文件 SHA-256 与条目修改时间和操作前一致，4.8.4
 离线加载重新选中 4.8.4 写的条目。未接触服务器上的真实缓存，也未执行真实模型任务。
