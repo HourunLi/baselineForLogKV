@@ -32,7 +32,7 @@ bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml --output outputs/chun
 ```
 
 每个节点执行一次，先 main（47 个入口）再 NIAH（3 个入口，仅 32768），main 失败即停止；`chunkkv.evaluate` 必须显式给出
-`--suite` 或 `--tasks`。评测环境为 SemanticLogKV 的 torch218，代码适配它（启动时只检查 `lm-eval==0.4.9`、`datasets>=4.7`），
+`--suite` 或 `--tasks`。评测环境为 SemanticLogKV 的 torch218，代码适配它（当前 lm-eval 0.4.11、datasets 4.8.4；启动时只检查 `lm-eval>=0.4.9`、`datasets>=4.7`），
 不要向其中安装本项目的 extra；可用 `python -m chunkkv.check_dataset_cache` 检查共享离线缓存是否都能被该版本读取。环境选择、多节点参数、实现细节、
 预算口径与验证记录见 [docs/CHUNKKV.md](docs/CHUNKKV.md)。尚未在 CUDA 上用真实权重运行。
 

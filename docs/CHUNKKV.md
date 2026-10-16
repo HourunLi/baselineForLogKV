@@ -126,10 +126,11 @@ causal attention。固定改动只有：`run_eval: ""`、`save_ckpt: true`、`re
 两个阶段各启动一次 torchrun，输出分别进入 `--output` 根目录下的 `main/` 和 `niah/`；
 main 阶段失败时立即停止，不继续启动 NIAH。任务名与顺序保持和本地 Semantic 源码快照一致；NIAH 长度按本次实验要求固定为 32K。
 LongBench 等真实数据任务使用 32K 模型上下文上限，保留原始样本，不把较短样本补齐到 32K。
-安装 `[eval]` 会包含 [lm-eval 0.4.9 的 ruler、longbench、ifeval 依赖](https://github.com/EleutherAI/lm-evaluation-harness/blob/v0.4.9/pyproject.toml)。
+任务的 prompt、数据集仓库与评分来自评测环境中的 lm-eval（torch218 为 0.4.11，与 0.4.9 的差异见下文“lm-eval 版本与任务定义”）；
+`[eval]` 声明 [lm-eval 的 ruler、longbench、ifeval extra](https://github.com/EleutherAI/lm-evaluation-harness/blob/v0.4.11/pyproject.toml)，只用于另建环境，不装进 torch218。
 
 ```bash
-# 评测环境：SemanticLogKV 的 torch218（代码适配它：需 lm-eval==0.4.9、datasets>=4.7）；只登记本项目，不改动其依赖
+# 评测环境：SemanticLogKV 的 torch218（当前 lm-eval 0.4.11、datasets 4.8.4；代码需 lm-eval>=0.4.9、datasets>=4.7）；只登记本项目，不改动其依赖
 cd /data/lihourun/baselineForLogKV/chunkKV
 python -m pip install --no-deps -e .
 
@@ -158,6 +159,26 @@ bash scripts/chunkkv_evaluate.sh --suite longbench --output outputs/chunkkv-long
 层间复用：`--reuse-layers 2`。在同一 SemanticLogKV CPT 权重上换成 ChunkKV（`--model` 指向它）只是
 缓存机制诊断，不是各方法各自适配后的公平比较。
 
+### lm-eval 版本与任务定义
+
+torch218 中为 lm-eval 0.4.11。vendor 的 `eval.py` 只用到 `evaluator.simple_evaluate`（`metadata`、`limit`、
+`log_samples`、`confirm_run_unsafe_code`）、`LM` 的三个请求接口和 `utils.make_table`，两版一致，因此启动检查只要求
+`lm-eval>=0.4.9`。任务的 prompt、数据源和评分却随 lm-eval 版本变化。逐文件比较 0.4.9 与 0.4.11 的 wheel，本项目
+50 个入口的差异如下（源码事实）：
+
+- LongBench / LongBench-E（33 个入口）：数据集 `THUDM/LongBench` → `Xnhyacinth/LongBench`，prompt 中问题字段
+  `{{input}}` → `{{question}}`，`do_sample: True` → `False`，新增与原指标同值的 `score`，任务版本 3.0 → 5.0。
+  vendor 生成在 `do_sample` 为假时走 argmax，所以 0.4.11 下是贪心解码，0.4.9 下是温度 1 的采样。
+- 数据集仓库改为带命名空间：boolq `aps/super_glue`、social_iqa `allenai/social_i_qa`、hellaswag `Rowan/hellaswag`、
+  winogrande `allenai/winogrande`、openbookqa `allenai/openbookqa`、truthfulqa_mc1/mc2 `truthfulqa/truthful_qa`
+  （truthfulqa_gen 仍为 `truthful_qa`）；piqa、hellaswag、winogrande、mmlu 去掉 `trust_remote_code`。prompt 与评分未变。
+- arc、ceval、ifeval 与 RULER（NIAH）任务文件无差异。
+
+离线加载按 `命名空间___名称` 查找缓存目录（如 `Xnhyacinth___long_bench`、`truthfulqa___truthful_qa`、
+`truthful_qa`），所以共享缓存必须按评测环境的 lm-eval 版本准备；缺失时 harness 报 `... is not cached`，不会换数据。
+0.4.9 与 0.4.11 的分数不能混比：`comparison_contract.versions` 记录 lm-eval 版本，`compare_results` 拒绝版本不同的
+两份结果；在其他 lm-eval 版本下得到的 SemanticLogKV 旧结果须在 torch218 中重跑后再比较。
+
 ### 训练平台作业：majob.sh
 
 项目根目录的 `majob.sh` 是纯评测入口：激活环境 → main → 32K NIAH，默认加载原始
@@ -165,7 +186,7 @@ Qwen3-1.7B-Base，不执行 CPT。它只调用本项目的 `chunkkv.evaluate`，
 默认激活 `/home/ma-user/anaconda3/bin/activate torch218`；环境名称可通过
 `CHUNKKV_CONDA_ENV` 修改，或设置 `CHUNKKV_PYTHON=/absolute/path/to/python` 直接使用已准备的解释器。
 
-提交前确认目标环境就是 SemanticLogKV 的评测环境 torch218（启动时检查 `lm-eval==0.4.9`、`datasets>=4.7`），Python 3.10–3.13、PyTorch >= 2.7
+提交前确认目标环境就是 SemanticLogKV 的评测环境 torch218（启动时检查 `lm-eval>=0.4.9`、`datasets>=4.7`），Python 3.10–3.13（torch218 为 3.10）、PyTorch >= 2.7
 且 CUDA 可用。环境名 `torch218` 不代表实际版本，实际版本以结果中的 `comparison_contract.versions`
 与 `resolved_eval.environment` 为准。可选 dense CPT 的 `[chunkkv-train]` 依赖放在单独的训练环境，不与评测环境混装。
 `majob.sh` 拒绝 `--suite/--tasks/--evaluation-config/--experiment-config/--print-config`，保证正式作业使用固定任务清单和实验配置。
@@ -238,8 +259,8 @@ extra 写的是 `datasets>=2.18,<4`，在 torch218 中安装后 datasets 被降�
 DatasetInfo.from_directory` 读取条目时报错，尚未进入模型推理或 ChunkKV 代码。
 
 评测环境以 SemanticLogKV 已有的 torch218 为准，代码适配它，不为本项目改动其中任何包（写作时为
-lm-eval 0.4.9、datasets 4.8.4）。`chunkkv.evaluate` 在导入评测代码前只检查代码与数据真正需要的条件：
-vendor 的评测协议需要 `lm-eval==0.4.9`；共享缓存中的 IFEval 条目使用 `Json` 特征类型，需要 `datasets>=4.7`。
+lm-eval 0.4.11、datasets 4.8.4）。`chunkkv.evaluate` 在导入评测代码前只检查代码与数据真正需要的条件：
+vendor 的评测代码需要 `lm-eval>=0.4.9`；共享缓存中的 IFEval 条目使用 `Json` 特征类型，需要 `datasets>=4.7`。
 每次结果在 `comparison_contract.versions` 记录实际版本，`compare_results` 要求比较双方一致。若仍遇到该错误
 （缓存由更新的版本写入），会改报 `RuntimeError` 并指向下面的检查工具，原始异常保留在 `__cause__`。
 在 torch218 中用 `pip install --no-deps -e .` 只登记本项目；`[eval]` 只用于另建一个满足上述条件的环境。
@@ -264,6 +285,16 @@ python -m chunkkv.check_dataset_cache    # 应报告每个配置都选中可读�
 版本写入。3.x 格式转换（`--convert`）已移除：在 3.x 下得到的读取结果只属于这次排错，不能作为正式对照。
 
 ## 验证记录
+
+2026-10-16 适配 torch218 的实际依赖（用户提供的环境清单：Python 3.10.20、torch 2.11.0+cu128、lm-eval 0.4.11、
+datasets 4.8.4、transformers 4.51.3、pyarrow 23.0.1、tokenizers 0.21.4、lightning 2.6.1、jsonargparse 4.41.0、
+litdata 0.2.61、pandas 2.3.3、xlsxwriter 3.2.9，无 sentencepiece/openpyxl/accelerate）。启动检查由 `lm-eval==0.4.9`
+改为 `>=0.4.9`；`[eval]` 改为 `lm-eval>=0.4.9` 并以 xlsxwriter 代替 openpyxl（pandas 写 xlsx 时优先用它），
+核心依赖去掉 sentencepiece（仅 `tokenizer.model` 才惰性导入，Qwen3 用 `tokenizer.json`），`[chunkkv-train]` 的
+litdata 改为 `>=0.2.59`。按该清单在 Linux CPU 上用 uv 建立 Python 3.10.22 副本（torch 取 PyPI 的 2.11.0+cu130；
+未装平台专用包与 editable litgpt、flash-attn），`python -m pytest -q tests`：**70 passed**；同一副本中
+`check_environment()` 通过、pandas 选中 xlsxwriter、50 个任务名均在 0.4.11 的 TaskManager 中。lm-eval 两版的任务差异
+见上文“lm-eval 版本与任务定义”。未在服务器、真实缓存或 CUDA 上运行。
 
 2026-10-16 评测环境以 torch218 为准：其原为 datasets 4.8.4，旧 `[eval]` 的 `<4` 约束将其降级。
 `chunkkv.evaluate` 改为只检查 `lm-eval==0.4.9` 与 `datasets>=4.7`（缓存中 IFEval 的 `Json` 类型自 4.7 起可读），
