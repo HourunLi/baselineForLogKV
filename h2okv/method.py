@@ -13,10 +13,8 @@ import json
 from functools import partial
 from pathlib import Path
 
-from .compressor import GQA_SCORE_AGGS, H2OCompressor
-from .kv_cache import GRANULARITIES, CompressedKVCache
+from .options import GQA_SCORE_AGGS, GRANULARITIES, METHODS, H2OSettings
 
-METHODS = ("h2o", "fullkv")
 DEFAULT_METHOD = "h2o"
 
 
@@ -53,29 +51,31 @@ def resolve_method_args(args) -> None:
     if args.budget_from_result is not None:
         args.max_capacity_prompt = budget_from_result(args.budget_from_result)
     if args.method != "fullkv":
-        build_compressor(args)  # validate before any weights or task data are loaded
+        h2o_settings(args)  # validate before any weights or task data are loaded
 
 
-def build_compressor(args, num_hidden_layers: int | None = None):
-    if args.method == "fullkv":
-        return None
-    return H2OCompressor(max_capacity_prompt=args.max_capacity_prompt, window_size=args.window_size,
-                         gqa_score_agg=args.gqa_score_agg, decode_evict=bool(args.decode_evict),
-                         score_chunk_size=args.score_chunk_size)
+def h2o_settings(args, settings_class=H2OSettings):
+    return settings_class(max_capacity_prompt=args.max_capacity_prompt, window_size=args.window_size,
+                          gqa_score_agg=args.gqa_score_agg, decode_evict=bool(args.decode_evict),
+                          score_chunk_size=args.score_chunk_size)
 
 
 def method_config(args, num_hidden_layers: int | None = None, max_seq_length: int | None = None) -> dict:
     if args.method == "fullkv":
         return {"method": "fullkv", "kv_cache_granularity": args.kv_cache_granularity}
-    compressor = build_compressor(args)
-    config = {**compressor.config(), "kv_cache_granularity": args.kv_cache_granularity,
+    settings = h2o_settings(args)
+    config = {**settings.config(), "kv_cache_granularity": args.kv_cache_granularity,
               "budget_from_result": None if args.budget_from_result is None else str(args.budget_from_result)}
     if num_hidden_layers and max_seq_length:
-        config["entries_per_layer_for_full_window_prompt"] = compressor.budget_schedule(max_seq_length,
-                                                                                         num_hidden_layers)
+        config["entries_per_layer_for_full_window_prompt"] = settings.budget_schedule(max_seq_length,
+                                                                                       num_hidden_layers)
     return config
 
 
 def build_cache_factory(args, num_hidden_layers: int):
-    compressor = build_compressor(args, num_hidden_layers)
+    # Imported here so that resolving and printing the configuration does not import torch.
+    from .compressor import H2OCompressor
+    from .kv_cache import CompressedKVCache
+
+    compressor = None if args.method == "fullkv" else h2o_settings(args, H2OCompressor)
     return partial(CompressedKVCache, compressor=compressor, granularity=args.kv_cache_granularity)

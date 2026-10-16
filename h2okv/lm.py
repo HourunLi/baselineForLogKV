@@ -26,8 +26,8 @@ import tqdm
 
 from . import dist_utils as du
 from .generate import generate
-from .kv_cache import LOGLIKELIHOOD_MODES
 from .metrics import cache_compression_snapshot
+from .options import LOGLIKELIHOOD_MODES
 from .qwen3 import load_qwen3
 from .tokenizer import Tokenizer
 
