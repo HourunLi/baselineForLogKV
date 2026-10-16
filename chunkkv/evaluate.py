@@ -14,6 +14,7 @@ import re
 import socket
 import subprocess
 import sys
+import traceback
 
 import yaml
 
@@ -278,6 +279,14 @@ def run_evaluation(evaluator, kwargs, backend, contract, options=None, budget_re
         evaluator.main(**kwargs)
     except ValueError as exc:
         # Raised while task data loads from the offline cache, before any model call.
+        in_cache_lookup = any("packaged_modules/cache" in frame.filename.replace(os.sep, "/")
+                              for frame in traceback.extract_tb(exc.__traceback__))
+        if isinstance(exc, json.JSONDecodeError) and in_cache_lookup:
+            raise RuntimeError(
+                f"A dataset_info.json in the offline cache under {os.environ.get('HF_DATASETS_CACHE')} is not "
+                "valid JSON (datasets parses it for every entry of the config it loads). Find it with "
+                "`python -m chunkkv.check_dataset_cache`; see docs/CHUNKKV.md."
+            ) from exc
         if not re.match(r"Feature type '\w+' not found", str(exc)):
             raise
         raise RuntimeError(
