@@ -1,6 +1,6 @@
 # Baseline 实现规则
 
-本文件适用于所有 baseline。完整要求见 [Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md)。
+本文件适用于所有 baseline。完整要求见 [Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md)；评测环境、路径、环境变量、依赖写法与已知坑的当前取值见 [Baseline 环境与避坑清单](docs/BASELINE_ENVIRONMENT.md)。
 
 1. 默认中文交流，先结论后依据；区分源码事实、实验结果与推断。目标或口径有实质歧义时先问一个问题；已明确的低风险工作直接推进。
 2. 每个项目必须自带模型适配、评测代码、配置和启动器。禁止运行时读取其他实验项目的源码、实验 YAML 或脚本，也禁止用软链接、路径注入或外部 editable 安装绕过边界。
