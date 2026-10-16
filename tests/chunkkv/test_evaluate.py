@@ -114,17 +114,46 @@ def test_full_suite_launcher_runs_separate_processes_and_stops_on_failure(tmp_pa
     assert all("--backend dense --limit 4 --output" in call for call in calls)
 
 
-@pytest.mark.parametrize("nodes,rank,fail_main", [(1, 0, False), (2, 1, False), (2, 0, True)])
-def test_platform_launcher_maps_ranks_ports_and_stops_on_failure(tmp_path, nodes, rank, fail_main):
+def platform_launcher_env(tmp_path, visible_gpus=4):
+    """A fake interpreter for majob.sh: answers the CUDA device probe and logs every launch."""
     executable = tmp_path / "python"
-    log = tmp_path / "calls"
-    executable.write_text('#!/bin/bash\nprintf "%s | %s\\n" "$LITGPT_EXPECTED_WORLD_SIZE" "$*" >> "$CHUNKKV_TEST_CALLS"\n'
+    executable.write_text('#!/bin/bash\nif [[ "$1" = -c ]]; then echo "$CHUNKKV_TEST_GPUS"; exit; fi\n'
+                          'printf "%s | %s\\n" "$LITGPT_EXPECTED_WORLD_SIZE" "$*" >> "$CHUNKKV_TEST_CALLS"\n'
                           'if [[ "$CHUNKKV_TEST_FAIL" = 1 && "$*" = *"--suite main"* ]]; then exit 7; fi\n')
     executable.chmod(0o755)
     env = {key: value for key, value in os.environ.items()
-           if not key.startswith(("MA_", "MASTER_", "EVAL_MASTER_", "NIAH_MASTER_"))}
-    env.update(CHUNKKV_PYTHON=str(executable), CHUNKKV_TEST_CALLS=str(log),
-               CHUNKKV_TEST_FAIL=str(int(fail_main)), MA_NUM_GPUS="4", MA_NUM_HOSTS=str(nodes),
+           if not key.startswith(("MA_", "MASTER_", "EVAL_MASTER_", "NIAH_MASTER_", "VC_", "GROUP_"))
+           and key not in {"NPROC_PER_NODE", "LOCAL_WORLD_SIZE", "NODE_RANK"}}
+    env.update(CHUNKKV_PYTHON=str(executable), CHUNKKV_TEST_CALLS=str(tmp_path / "calls"),
+               CHUNKKV_TEST_GPUS=str(visible_gpus), CHUNKKV_TEST_FAIL="0")
+    return env
+
+
+@pytest.mark.parametrize("requested,visible,launched", [
+    ({}, 3, 3),  # a development container without platform variables uses what it has
+    ({"NPROC_PER_NODE": "2"}, 3, 2),
+    ({"MA_NUM_GPUS": "8"}, 3, None),
+    ({}, 0, None),
+])
+def test_platform_launcher_defaults_to_the_visible_gpus(tmp_path, requested, visible, launched):
+    env = {**platform_launcher_env(tmp_path, visible), **requested}
+    command = ["bash", str(runner.BASELINE_ROOT / "majob.sh"), "--limit", "4", "--output", "outputs/test"]
+    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)
+    if launched is None:
+        assert result.returncode == 2 and "visible" in result.stderr
+        assert not (tmp_path / "calls").exists()
+        return
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls").read_text().splitlines()
+    assert len(calls) == 2
+    assert all(call.startswith(f"{launched} | ") and f"--nproc_per_node {launched} " in call for call in calls)
+
+
+@pytest.mark.parametrize("nodes,rank,fail_main", [(1, 0, False), (2, 1, False), (2, 0, True)])
+def test_platform_launcher_maps_ranks_ports_and_stops_on_failure(tmp_path, nodes, rank, fail_main):
+    env = platform_launcher_env(tmp_path)
+    log = tmp_path / "calls"
+    env.update(CHUNKKV_TEST_FAIL=str(int(fail_main)), MA_NUM_GPUS="4", MA_NUM_HOSTS=str(nodes),
                VC_TASK_INDEX=str(rank), MA_VJ_NAME="job", MA_TASK_NAME="worker", MA_MASTER_INDEX="0")
     command = ["bash", str(runner.BASELINE_ROOT / "majob.sh"),
                "configs/chunkkv/experiment_qwen1.7b_32k.yaml", "--limit", "4", "--output", "outputs/test"]
