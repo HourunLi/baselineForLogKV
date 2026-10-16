@@ -12,7 +12,8 @@ ChunkKV 使用 Python 3.10–3.13、PyTorch >= 2.7。
 
 ```bash
 cd /data/lihourun/baselineForLogKV/chunkKV
-python -m pip install -e '.[eval,test]'
+# 在 SemanticLogKV 的评测环境 torch218 中只登记本项目，不改动其 lm-eval 0.4.9 / datasets 4.8.4 等依赖
+python -m pip install --no-deps -e .
 python -m chunkkv.evaluate --suite main --print-config
 python -m chunkkv.evaluate --suite niah --print-config
 python -m chunkkv.train --print-config
@@ -31,7 +32,7 @@ bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml --output outputs/chun
 ```
 
 每个节点执行一次，先 main（47 个入口）再 NIAH（3 个入口，仅 32768），main 失败即停止；`chunkkv.evaluate` 必须显式给出
-`--suite` 或 `--tasks`。提交前在目标环境安装 `.[eval]`，并可用 `python -m chunkkv.check_dataset_cache`
-检查共享离线缓存中是否有评测环境（datasets<4）读不了的条目。环境选择、多节点参数、实现细节、
+`--suite` 或 `--tasks`。评测环境为 SemanticLogKV 的 torch218（`lm-eval==0.4.9`、`datasets==4.8.4`，启动时核对），
+不要向其中安装本项目的 extra；可用 `python -m chunkkv.check_dataset_cache` 检查共享离线缓存是否都能被该版本读取。环境选择、多节点参数、实现细节、
 预算口径与验证记录见 [docs/CHUNKKV.md](docs/CHUNKKV.md)。尚未在 CUDA 上用真实权重运行。
 

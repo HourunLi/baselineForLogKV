@@ -24,8 +24,9 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
-# Shared evaluation protocol. Formal runs record the exact installed versions (datasets, pyarrow, ...).
-eval = ["lm-eval[ruler,longbench,ifeval]==0.4.9", "datasets>=2.18,<4", "pandas>=1.9", "openpyxl>=3"]
+# Shared evaluation protocol: SemanticLogKV's evaluation environment (torch218). Formal runs also record
+# the exact installed versions (pyarrow, ...). chunkkv.evaluate refuses other lm-eval/datasets versions.
+eval = ["lm-eval[ruler,longbench,ifeval]==0.4.9", "datasets==4.8.4", "pandas>=1.9", "openpyxl>=3"]
 # Optional dense-CPT control only; install it in a separate training environment.
 chunkkv-train = ["litdata==0.2.59", "tensorboard>=2.14", "datasets>=2.18", "pandas>=1.9", "pyarrow>=15.0.2"]
 

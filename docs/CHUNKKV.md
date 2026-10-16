@@ -129,9 +129,9 @@ LongBench 等真实数据任务使用 32K 模型上下文上限，保留原始�
 安装 `[eval]` 会包含 [lm-eval 0.4.9 的 ruler、longbench、ifeval 依赖](https://github.com/EleutherAI/lm-evaluation-harness/blob/v0.4.9/pyproject.toml)。
 
 ```bash
-# 评测环境：lm-eval==0.4.9、datasets<4；不安装相邻项目
+# 评测环境：SemanticLogKV 的 torch218（lm-eval==0.4.9、datasets==4.8.4）；只登记本项目，不改动其依赖
 cd /data/lihourun/baselineForLogKV/chunkKV
-python -m pip install -e '.[eval]'
+python -m pip install --no-deps -e .
 
 # 只解析本项目配置，不加载权重或训练/评测依赖
 python -m chunkkv.evaluate --suite main --print-config
@@ -165,7 +165,7 @@ Qwen3-1.7B-Base，不执行 CPT。它只调用本项目的 `chunkkv.evaluate`，
 默认激活 `/home/ma-user/anaconda3/bin/activate torch218`；环境名称可通过
 `CHUNKKV_CONDA_ENV` 修改，或设置 `CHUNKKV_PYTHON=/absolute/path/to/python` 直接使用已准备的解释器。
 
-提交前在目标镜像/环境中一次性安装评测依赖，确保 Python 3.10–3.13、PyTorch >= 2.7
+提交前确认目标环境就是 SemanticLogKV 的评测环境（`lm-eval==0.4.9`、`datasets==4.8.4`），Python 3.10–3.13、PyTorch >= 2.7
 且 CUDA 可用。环境名 `torch218` 不代表实际版本，实际版本以结果中的 `comparison_contract.versions`
 与 `resolved_eval.environment` 为准。可选 dense CPT 的 `[chunkkv-train]` 依赖放在单独的训练环境，不与评测环境混装。
 `majob.sh` 拒绝 `--suite/--tasks/--evaluation-config/--experiment-config/--print-config`，保证正式作业使用固定任务清单和实验配置。
@@ -173,7 +173,7 @@ Qwen3-1.7B-Base，不执行 CPT。它只调用本项目的 `chunkkv.evaluate`，
 ```bash
 source /home/ma-user/anaconda3/bin/activate torch218
 cd /data/lihourun/baselineForLogKV/chunkKV
-python -m pip install -e '.[eval]'
+python -m pip install --no-deps -e .
 ```
 
 训练平台的启动命令设为以下内容，**每个节点执行一次**，由脚本启动该节点的 GPU 进程。
@@ -230,80 +230,48 @@ TMPDIR=/tmp bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml \
 
 ### 离线缓存报 `Feature type 'List' not found` / `'Json' not found`
 
-若栈为 `ConfigurableTask.download → datasets.load_dataset → packaged_modules/cache/cache.py →
-DatasetInfo.from_directory`，失败点是读取离线缓存条目的 `dataset_info.json`，而非缓存路径找不到；
-此时尚未开始该任务的模型推理，也没有进入 ChunkKV 代码。栈中嵌套两层任务组的是 `mmlu`
-（`mmlu → mmlu_humanities 等 → 各学科`），对应缓存目录 `cais___mmlu/<学科>/`；排在它前面的 boolq、
-hellaswag、arc、openbookqa 等已正常读取。
+结论：这是评测环境的 datasets 被降级所致，缓存本身没有问题。SemanticLogKV 的评测环境 torch218 原本是
+datasets 4.8.4，共享离线缓存中 2026-09-23 写入的 mmlu、truthful_qa、IFEval 等条目就是它准备的：4.x 把
+列表写成 `List`，4.7 起把键不统一的 dict 列（IFEval 的 `kwargs`）写成 `List(Json())`。本项目旧版 `[eval]`
+extra 写的是 `datasets>=2.18,<4`，在 torch218 中安装后 datasets 被降到 3.x，3.x 不认识这些类型，在
+`ConfigurableTask.download → datasets.load_dataset → packaged_modules/cache/cache.py →
+DatasetInfo.from_directory` 读取条目时报错，尚未进入模型推理或 ChunkKV 代码。
 
-离线模式下，`datasets` 对每个数据集配置选用目录修改时间最新的 `<config>/<version>/<hash>` 条目。
-特征类型 `List` 只由 `datasets>=4` 写出；从 datasets 4.7 起，键不统一的 dict 列（如 IFEval 的
-`kwargs`）还会存成 `List(Json())`。评测环境的 datasets 3.x（traceback 行号与 3.5.1/3.6.0 一致）
-不认识这些类型。也就是说，某个使用新版 datasets 的作业在共享缓存里重新准备了这些数据集，新条目盖过了
-此前可读的条目。离线的 `datasets>=4` 读取已有条目时不会写新条目，所以写入者通常是联网（或经镜像）
-重新准备数据的作业，也可能是从别处拷入的缓存。
+当前协议改为 SemanticLogKV 实际使用的 `lm-eval==0.4.9`、`datasets==4.8.4`（`EVAL_DATASETS_VERSION`）。
+`chunkkv.evaluate` 在导入评测代码之前核对这两个版本，不一致直接报错；若仍遇到该错误（缓存由更新的版本
+写入），会改报 `RuntimeError` 并指向下面的检查工具，原始异常保留在 `__cause__`。不要向 torch218 安装本项目的
+extra，`pip install --no-deps -e .` 只登记本项目、不改动其中任何第三方包；`[eval]` 只用于另建一个复现
+该协议的环境。
 
-这并非 ChunkKV 与 Semantic 评测方式不同所致。数据仍由本地快照中同一个 `eval.main → simple_evaluate`
-加载，缓存根目录、离线变量和 `load_dataset` 包装都与 Semantic `eval.py` 相同。本入口只有两处不同：
-`disable_caching()` 和把工作目录切到输出目录。两者只决定 map/filter 结果放在哪里、相对路径怎样解析，
-不参与缓存条目的选择。用 datasets 3.6.0 复现时，两种方式在同一缓存状态下报同样的错误，移走新条目后
-都能恢复。按代码推断，在 torch218 中用 Semantic 自己的 `eval.py` 只跑 `mmlu`、`--limit 1`，
-也会得到同一错误，可用来交叉确认。
-
-曾尝试在评测作用域内把 `List` 元数据翻译成旧类型（提交 3144672）：mmlu 能读了，但加载到 IFEval 时改报
-`Feature type 'Json' not found`。`Json` 在 datasets 3.x 中没有等价类型：4.7 把这些 dict 存成 JSON
-字符串、读取时再解码，3.x 则存成包含全部键的 struct，缺失键为 `None`，无法无损翻译。该补丁还让本入口
-读取 Semantic 原脚本读不了的条目，数据来源与 Semantic 不同。因此已移除，评测路径恢复为与 Semantic
-`eval.py` 一致，改为修复缓存本身，使双方读取同一批旧条目。
-
-评测入口遇到这一错误时会改报 `RuntimeError`，指向下面的检查工具，原始 traceback 保留在 `__cause__` 中。
-
-检查和处理如下。报告模式不改动缓存；`--quarantine` 只移动、不删除，需要时可原样移回。
-请在没有其他作业读取该缓存时执行：
+若曾按旧说明在 3.x 下执行过 `check_dataset_cache --quarantine DIR`（或带 `--convert`），用 `--restore`
+撤销，使缓存回到 SemanticLogKV 读取的状态。请在没有其他作业读写该缓存时执行：
 
 ```bash
-cd /data/lihourun/baselineForLogKV/chunkKV
 source /home/ma-user/anaconda3/bin/activate torch218
-python -m chunkkv.check_dataset_cache
+cd /data/lihourun/baselineForLogKV/chunkKV
 python -m chunkkv.check_dataset_cache \
-  --quarantine /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache/unreadable_by_datasets3
+  --restore /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache/unreadable_by_datasets3
+python -m chunkkv.check_dataset_cache    # 应报告每个配置都选中可读条目
 ```
 
-报告一次列出所有"最新条目不可读"的数据集配置（不论是 `List`、`Json` 还是其他新类型），以及该条目的
-修改时间（可据此找到写入它的作业）和隔离后将重新被选中的可读条目。隔离后，离线加载回到这些可读条目，
-通常也就是此前 Semantic 评测读取的版本；新版 datasets 同样能读这些旧条目。
+`--restore` 把隔离目录中的条目原样移回原路径。移动是同一挂载内的重命名，保留条目自身的修改时间，所以离线加载
+重新选中 4.8.4 写的条目。旧版 `--convert` 曾在原路径写入转换副本（记录在 `DIR/conversions.json`）；恢复时
+先按哈希确认目标就是记录中的副本，再把它移到 `DIR/_converted_copies/`。任一目标路径存在未记录的内容时，
+工具整体拒绝，不移动任何文件。全程不删除文件，`DIR` 中剩下的空目录和副本可在确认后自行清理。
 
-报告为"no readable entry"的配置没有旧条目可退回，Semantic 原脚本同样读不了（例如 2026-09-23 写入的
-`truthfulqa___truthful_qa/generation`、`multiple_choice`，main 的 `truthfulqa_gen/mc1/mc2` 依赖它们）。
-报告会逐个注明能否离线转换。`List` 只是 datasets 4 对列表的新写法：`List(x)` 与 3.x 的 `Sequence(x)`、
-`List({...})` 与 3.x 的 `[{...}]` 对应完全相同的 Arrow 类型，所以可以不联网、不改数据地转换：
-
-```bash
-python -m chunkkv.check_dataset_cache \
-  --quarantine /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache/unreadable_by_datasets3 --convert
-```
-
-`--convert` 先把这些配置的条目（连同其他不可读条目）移入隔离目录，再在原路径写出一份副本：不含 `Json`
-的列逐批原样复制 Arrow 数据，只把 `dataset_info.json` 与 Arrow schema 里的特征描述改成 3.x 写法；
-`cache-*.arrow`（map/filter 结果）不复制，需要时自动重算。写入前核对翻译后的特征与 Arrow 物理类型
-一致，写入后核对 datasets 能按该特征读回且每列与原文件相同；原文件、副本哈希与特征记录在隔离目录的
-`conversions.json`。datasets 4.4.2/5.1.0 读取副本得到与原条目相同的特征和行。
-
-`google___if_eval/default`（IFEval）的 `kwargs` 由 datasets>=4.7 存成 `List(Json())`：每个 dict 是一段
-JSON 文本（Arrow 扩展类型 `arrow.json`），3.x 没有对应类型。3.x 对同一份数据的存法是"所有键的并集组成的
-struct 列表"，缺失的键为 `null`。`--convert` 把这一列的 JSON 解码后按 3.x 的规则重建，其余列原样复制；
-写入后逐行核对：去掉 `null` 键后与原 JSON 内容完全一致。lm-eval 0.4.9 的 IFEval 在使用 kwargs 前会
-用 `if v` 去掉空值，所以两种存法评分相同。验证：同一份 IFEval 形状的 jsonl（200 行、15 种键），
-datasets 3.6.0 直接准备的条目，与 5.1.0 准备后经 `--convert` 得到的条目，特征和全部行完全相同。
-转换后，共用缓存的新版 datasets 读到的 kwargs 也是这种 struct 形式。
-
-仍无法转换的情况（例如解码后同一字段类型冲突、定长的 struct 列表）会在报告中注明原因，需要在评测环境
-中联网或经镜像对该数据集执行一次 `load_dataset` 重新生成旧格式条目。报告中与评测任务无关的条目（例如 `ucinlp___drop`、本地
-json/parquet 构建器缓存）可以不处理。
-不要为此升级评测环境的 datasets，lm-eval 0.4.9 + datasets<4 是双方共同的评测口径。今后使用新版
-datasets 的作业应设置独立的 `HF_DATASETS_CACHE`，否则还会写入新的条目。
+`check_dataset_cache` 只报告不改动；某配置最新条目不可读，说明安装的 datasets 不是协议版本，或缓存由更新的
+版本写入。3.x 格式转换（`--convert`）已移除：在 3.x 下得到的读取结果只属于这次排错，不能作为正式对照。
 
 ## 验证记录
+
+2026-10-16 评测协议更正为 datasets 4.8.4：torch218 原为 datasets 4.8.4，旧 `[eval]` 的 `<4` 约束将其降级。
+`chunkkv.evaluate` 改为核对 `lm-eval==0.4.9`、`datasets==4.8.4`，`[eval]` 同步锁定；`check_dataset_cache`
+新增 `--restore`、移除 `--convert`。Linux CPU、Python 3.13、torch 2.9.1（CPU）、lm-eval 0.4.9、datasets 4.8.4、
+pyarrow 26.0.0、transformers 4.56.2（与 `transformers==4.57.3` 不同，仅本地测试环境）下 `python -m pytest -q`：
+**64 passed**，含经私有 `eval.py` 的生成、打分、rolling 与 KV 统计测试，以及恢复与拒绝测试。端到端复现服务器
+操作：datasets 4.8.4 写入 truthful_qa（仅新条目）与 mmlu（新旧两条）→ 10c3090 版工具在 3.6.0 下
+`--quarantine --convert` → 新工具在 4.8.4 下 `--restore`：全部文件 SHA-256 与条目修改时间和操作前一致，4.8.4
+离线加载重新选中 4.8.4 写的条目。未接触服务器上的真实缓存，也未执行真实模型任务。
 
 2026-10-15 统一规则对齐：移除分支内与 ChunkKV 无关、且运行时依赖相邻 `../litgpt` 的 DMS 代码/配置/测试/文档；
 评测必须显式选择 `--suite` 或 `--tasks`；`majob.sh` 拒绝改动任务清单或实验配置的参数；结果记录 pyarrow 版本、

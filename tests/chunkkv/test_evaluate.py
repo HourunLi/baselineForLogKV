@@ -269,3 +269,10 @@ def test_result_check_rejects_different_prompts_or_runtime_but_not_answers():
     other["comparison_contract"]["versions"] = "different"
     with pytest.raises(ValueError, match="versions"):
         compare_results(result, other)
+
+
+def test_eval_extra_pins_the_versions_the_launcher_requires():
+    pyproject = (Path(runner.__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    extra = next(line for line in pyproject.splitlines() if line.startswith("eval = "))
+    assert f'"datasets=={runner.EVAL_DATASETS_VERSION}"' in extra
+    assert f']=={runner.EVAL_LM_EVAL_VERSION}"' in extra
