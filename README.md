@@ -1,6 +1,6 @@
 # ChunkKV baseline（`chunkKV` 分支）
 
-本分支是 [ChunkKV](https://arxiv.org/html/2502.00299v5) 的独立项目，作为 SemanticLogKV 的对比 baseline（DMS 在 `DMS` 分支单独维护，本项目不含其代码）。统一规则见 [AGENTS.md](AGENTS.md) 与 [Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md)。ChunkKV 免训练：prompt 先完整 prefill，再按观察窗注意力选出整块（默认 10 token）原始 K/V 加观察窗保留，生成 token 直接追加；支持论文的层间索引复用。**ChunkKV 的配置、模型和训练/评测运行代码均在本项目内，不需要相邻 `litgpt` 或 SemanticLogKV checkout。**
+本分支是 [ChunkKV](https://arxiv.org/html/2502.00299v5) 的独立项目，作为 SemanticLogKV 的对比 baseline（DMS 在 `DMS` 分支单独维护，本项目不含其代码）。统一规则见 [AGENTS.md](AGENTS.md)、[Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md) 与 [环境与避坑清单](docs/BASELINE_ENVIRONMENT.md)。ChunkKV 免训练：prompt 先完整 prefill，再按观察窗注意力选出整块（默认 10 token）原始 K/V 加观察窗保留，生成 token 直接追加；支持论文的层间索引复用。**ChunkKV 的配置、模型和训练/评测运行代码均在本项目内，不需要相邻 `litgpt` 或 SemanticLogKV checkout。**
 
 - **配置与模型**：自有平铺实验配置在 `configs/chunkkv/experiment_qwen1.7b_32k.yaml`，直接加载其中原始 Base 的 `lit_model.pth`（兼容 LitGPT 权重格式，不转换），即 CPT 的同一起点。
 - **评测**：本地运行快照在 `chunkkv/_vendor/semanticlogkv/`，`ChunkKVLM` 继承其中 `LogKVLM` 的请求、生成、打分与 KV/速度指标；同一入口还可跑 `--backend logkv`（SemanticLogKV）与 `--backend dense`（Full KV），结果带 `comparison_contract`。`scripts/chunkkv_evaluate_all.sh` 按 Semantic 当前默认脚本分两阶段跑：47 个主任务入口（含 33 个 LongBench/LongBench-E）及三种 NIAH；按本次实验要求仅评测 32K；任务配置独立保存在本项目内。
