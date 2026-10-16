@@ -12,8 +12,7 @@ ChunkKV 使用 Python 3.10–3.13、PyTorch >= 2.7。
 
 ```bash
 cd /data/lihourun/baselineForLogKV/chunkKV
-# 在 SemanticLogKV 的评测环境 torch218 中只登记本项目，不改动其中任何包
-python -m pip install --no-deps -e .
+# 在 SemanticLogKV 的评测环境 torch218 中直接运行，无需安装本项目，不改动其中任何包
 python -m chunkkv.evaluate --suite main --print-config
 python -m chunkkv.evaluate --suite niah --print-config
 python -m chunkkv.train --print-config

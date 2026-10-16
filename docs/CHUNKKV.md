@@ -130,9 +130,8 @@ LongBench 等真实数据任务使用 32K 模型上下文上限，保留原始�
 `[eval]` 声明 [lm-eval 的 ruler、longbench、ifeval extra](https://github.com/EleutherAI/lm-evaluation-harness/blob/v0.4.11/pyproject.toml)，只用于另建环境，不装进 torch218。
 
 ```bash
-# 评测环境：SemanticLogKV 的 torch218（当前 lm-eval 0.4.11、datasets 4.8.4；代码需 lm-eval>=0.4.9、datasets>=4.7）；只登记本项目，不改动其依赖
+# 评测环境：SemanticLogKV 的 torch218（当前 lm-eval 0.4.11、datasets 4.8.4；代码需 lm-eval>=0.4.9、datasets>=4.7）；无需安装本项目，不改动其依赖
 cd /data/lihourun/baselineForLogKV/chunkKV
-python -m pip install --no-deps -e .
 
 # 只解析本项目配置，不加载权重或训练/评测依赖
 python -m chunkkv.evaluate --suite main --print-config
@@ -191,11 +190,9 @@ Qwen3-1.7B-Base，不执行 CPT。它只调用本项目的 `chunkkv.evaluate`，
 与 `resolved_eval.environment` 为准。可选 dense CPT 的 `[chunkkv-train]` 依赖放在单独的训练环境，不与评测环境混装。
 `majob.sh` 拒绝 `--suite/--tasks/--evaluation-config/--experiment-config/--print-config`，保证正式作业使用固定任务清单和实验配置。
 
-```bash
-source /home/ma-user/anaconda3/bin/activate torch218
-cd /data/lihourun/baselineForLogKV/chunkKV
-python -m pip install --no-deps -e .
-```
+`majob.sh` 与 `scripts/*.sh` 先切到项目根目录再用 `python -m` 启动，torchrun 的各进程也从这里导入 `chunkkv`，
+所以不需要把本项目安装进 torch218。若曾按旧说明执行过 `pip install --no-deps -e .`，可用
+`python -m pip uninstall semanticlogkv-chunkkv-baseline` 撤销，其他包不受影响。
 
 训练平台的启动命令设为以下内容，**每个节点执行一次**，由脚本启动该节点的 GPU 进程。
 先用 `--limit 4` 检查路径、缓存和分布式流程，通过后删除该参数进行全量评测。
@@ -263,7 +260,7 @@ lm-eval 0.4.11、datasets 4.8.4）。`chunkkv.evaluate` 在导入评测代码前
 vendor 的评测代码需要 `lm-eval>=0.4.9`；共享缓存中的 IFEval 条目使用 `Json` 特征类型，需要 `datasets>=4.7`。
 每次结果在 `comparison_contract.versions` 记录实际版本，`compare_results` 要求比较双方一致。若仍遇到该错误
 （缓存由更新的版本写入），会改报 `RuntimeError` 并指向下面的检查工具，原始异常保留在 `__cause__`。
-在 torch218 中用 `pip install --no-deps -e .` 只登记本项目；`[eval]` 只用于另建一个满足上述条件的环境。
+在 torch218 中直接从项目根目录运行，不安装本项目；`[eval]` 只用于另建一个满足上述条件的环境。
 
 若曾按旧说明在 3.x 下执行过 `check_dataset_cache --quarantine DIR`（或带 `--convert`），用 `--restore`
 撤销，使缓存回到 SemanticLogKV 读取的状态。请在没有其他作业读写该缓存时执行：
