@@ -2,6 +2,40 @@
 
 只记录本分支实际执行过的检查。配置检查、CPU 局部测试与真实模型/全量评测分开表述。
 
+## 2026-10-17：适配 torch218（lm-eval 0.4.11、datasets 4.8.4），不改动共享环境
+
+按 [docs/BASELINE_ENVIRONMENT.md](BASELINE_ENVIRONMENT.md) 与 `chunkKV` 分支的做法对齐（与 H2O 分支 11ffdb3 相同的改动）：启动检查只要求 `lm-eval>=0.4.9`、
+`datasets>=4.7`；`pyproject.toml` 只写下限，去掉 `lm-eval==0.4.9`、`datasets<4`、`transformers<5`、openpyxl；不安装本项目；
+`majob.sh` 默认取可见卡数、设置 SemanticLogKV 的 CUDA 12.8 库路径并在 torchrun 前做 CUDA 自检、单节点用 `--standalone`；
+`--print-config` 不再 import torch；`compare_results` 核对 torch、transformers、datasets、pyarrow、lm-eval、tokenizers 六个版本。
+方法参数校验与逐层预算公式（`layer_capacity`/`budget_schedule`）原样移到不依赖 torch 的 `pyramidkv/options.py`，逐字未改；PyramidKV 的算法、请求语义、打分与结果格式未改。
+
+环境：开发容器（CPU）中的 torch218 Python 副本：Python 3.10.20、torch 2.11.0（PyPI 默认 CUDA 版，只在 CPU 上执行）、
+lm-eval 0.4.11、datasets 4.8.4、transformers 4.51.3、tokenizers 0.21.4、huggingface-hub 0.36.2、evaluate 0.4.6、fsspec 2023.10.0、
+pyarrow 23.0.1、numpy 2.2.6、pandas 2.3.3、xlsxwriter 3.2.9、safetensors 0.7.0、PyYAML 6.0.3、nltk 3.9.4、pytest 9.1.1；
+与 torch218 一样没有 accelerate、openpyxl、sentencepiece。副本按环境清单第 1 节的版本表逐个安装（没有完整 freeze），
+只能证明 Python 层兼容。
+
+| 检查 | 结果 |
+|---|---|
+| 改动前的 `origin/PyramidKV`（7cf7f3d）在副本中 `python -m pytest -q` | **59 passed、1 failed**：端到端测试在启动检查处报 `requires lm-eval==0.4.9, found 0.4.11`，即在 torch218 中会拒绝运行；同一版本的 `--print-config` 在没有 torch 的 Python 中报 `No module named 'torch'` |
+| 改动后 `env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 python -m pytest -q` | **80 passed**，无 skip；含与 transformers 4.51.3 `Qwen3ForCausalLM` 的数值对照、金字塔预算与选择结果与 KVCache-Factory 原始代码逐元素一致，以及经 lm-eval 0.4.11 `simple_evaluate` 的端到端运行（生成 + 选择题，PyramidKV 与 FullKV 通过输入一致性校验） |
+| 任务名解析：`configs/eval_suites.yaml` 的 47 个 main 与 3 个 NIAH 交给 lm-eval 0.4.11 `TaskManager` | 50 个全部可解析，`mmlu`、`ceval-valid` 为任务组；LongBench 任务文件为 `Xnhyacinth/LongBench` 与 `{{question}}`。只检查注册与任务文件，没有读取数据 |
+| `--print-config` 不依赖 torch | 在只有 PyYAML、没有 torch 的 Python 3.13 中 `--suite niah --print-config` 正常输出；给一份 Qwen3-1.7B 形状的 `config.json`（28 层）时，逐层预算为 3986 递减到 125、均值 2055.5（预算 2048，差值来自整数步长）。测试另在禁止 import torch/lm_eval/datasets/transformers/tokenizers/litgpt 等的情况下运行，并检查只读项目内 YAML |
+| `scripts/evaluate.sh configs/qwen3_1.7b_32k_pyramidkv.yaml --suite main --print-config`（副本解释器，从项目外目录调用） | 经 `python -m torch.distributed.run --standalone` 正常输出 |
+| `majob.sh` 模拟解释器测试 | 无平台变量时取可见卡数；请求数超过可见卡数、没有可见设备或 CUDA 初始化失败时在 torchrun 前退出；`LD_LIBRARY_PATH` 以 `/usr/lib/x86_64-linux-gnu:/usr/local/cuda-12.8/lib64` 开头；单节点用 `--standalone`、不传固定端口；多节点的 rank、主节点 DNS、6001/6002 端口；main 失败即停止；拒绝协议参数与多节点 localhost |
+
+新增测试：启动检查放行 torch218 的版本（及 lm-eval 0.4.9、datasets 5.x）、拒绝 datasets 3.6.0/4.6.1 与 lm-eval 0.4.8；
+`pyproject` 中所有依赖都是 torch218 满足的下限，没有 `==`、上限，也没有 transformers/accelerate/openpyxl/sentencepiece；
+离线缓存的 `Feature type ... not found` 与 `dataset_info.json` 解析失败给出指向环境而非缓存的报错；比较工具在任一版本不同时拒绝；
+包内没有 `litgpt/utils/data/model` 顶层 import 和 `sys.path` 操作。
+
+### 未验证
+
+- 服务器上的 torch218 本身（真实 `PYTHONPATH`、editable litgpt 共存、conda 激活）。
+- `majob.sh` 的 CUDA 自检与 CUDA 12.8 库路径在训练作业中的实际效果；GPU、NCCL/Gloo 多节点作业。
+- 真实 Qwen3-1.7B-Base 权重、服务器上的离线 HF/RULER 缓存；`majob.sh --limit 4` 小样本、全量评测、与 SemanticLogKV 的真实样本对照均未执行。
+
 ## 2026-10-15：统一规则对齐（任务套件、majob.sh、离线与可追溯性）
 
 环境：Linux CPU、Python 3.13.16、torch 2.14.1+cu130（仅 CPU 执行）、lm-eval 0.4.9、datasets 3.6.0、
@@ -21,7 +55,7 @@ transformers 4.57.6、tokenizers 0.22.2、pyarrow 26.0.0。
 端到端测试仍是随机小模型 + 本地合成任务，经真实 lm-eval 0.4.9 `simple_evaluate` 跑通生成与选择题请求；
 它验证请求语义与结果格式，不代表真实任务数据可读。
 
-## 未验证
+### 未验证（2026-10-15 记录）
 
 - 真实 Qwen3-1.7B-Base 权重、服务器上的离线 HF/RULER 缓存（含各任务数据实际读取）。
 - CUDA/SDPA 上的数值、显存与速度；NCCL/Gloo 多节点作业；`majob.sh` 在训练平台的真实执行。

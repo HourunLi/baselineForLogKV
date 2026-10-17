@@ -1,12 +1,14 @@
 """Evaluate this KV-compression baseline under SemanticLogKV's evaluation contract.
 
-Same tasks (lm-eval 0.4.9; the project-owned ``configs/eval_suites.yaml`` lists
-the reference's 47 main entries and 3 NIAH entries at 32K), same offline HF/RULER
-caches, same prompt/scoring/generation rules, same KV-entry and speed metrics and
-the same result-file layout, so results line up with SemanticLogKV runs. Single
-GPU or one model per GPU with torchrun; ``majob.sh`` runs both suites:
+Same tasks (the project-owned ``configs/eval_suites.yaml`` lists the reference's
+47 main entries and 3 NIAH entries at 32K, defined by the installed lm-eval), same
+offline HF/RULER caches, same prompt/scoring/generation rules, same KV-entry and
+speed metrics and the same result-file layout, so results line up with
+SemanticLogKV runs in the same environment. Run from the project root in
+SemanticLogKV's evaluation environment (torch218), without installing anything
+there. Single GPU or one model per GPU with torchrun; ``majob.sh`` runs both suites:
 
-    torchrun --standalone --nproc_per_node 1 -m pyramidkv.evaluate \\
+    python -m torch.distributed.run --standalone --nproc_per_node 1 -m pyramidkv.evaluate \\
         --config configs/qwen3_1.7b_32k_pyramidkv.yaml --suite niah --limit 4
 """
 
@@ -23,23 +25,29 @@ import re
 import socket
 import subprocess
 import sys
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import yaml
 
-from . import dist_utils as du
+# Only torch-free modules at import time, so --print-config runs without torch or lm-eval.
 from . import method
 from .data_env import DEFAULT_HF_CACHE_BASE, configure_hf_environment
-from .kv_cache import LOGLIKELIHOOD_MODES
-from .qwen3 import detect_weights_format, load_config
+from .options import LOGLIKELIHOOD_MODES
+from .qwen3_config import detect_weights_format, load_config
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_DIR.parent
 DEFAULT_BASE = "/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/"
 DEFAULT_EVAL_SUITES = REPO_ROOT / "configs" / "eval_suites.yaml"
 SUITES = ("main", "longbench", "niah")
-LM_EVAL_VERSION = "0.4.9"
+# Requirements of this code and the shared offline cache, not a target environment: evaluation adapts to
+# SemanticLogKV's environment (torch218: lm-eval 0.4.11, datasets 4.8.4 on 2026-10-16). lm-eval 0.4.9 is the
+# oldest release whose LM interface and simple_evaluate this evaluator was checked against; the cache's IFEval
+# entry uses the Json feature type, which datasets reads from 4.7 on. Each result records the exact versions
+# and compare_results refuses files whose versions differ.
+EVAL_REQUIREMENTS = (("lm-eval", (0, 4, 9), "This evaluator"), ("datasets", (4, 7), "The shared offline cache"))
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer.model", "tokenizer_config.json", "special_tokens_map.json",
                    "added_tokens.json", "vocab.json", "merges.txt", "generation_config.json")
 
@@ -189,13 +197,33 @@ def _versions() -> dict:
 
 
 def check_evaluation_environment() -> None:
-    """The shared protocol pins lm-eval 0.4.9 and datasets<4; refuse other environments."""
+    """Fail before importing the harness when the installed packages cannot run it or read the shared cache."""
     versions = _versions()
-    if versions["lm-eval"] != LM_EVAL_VERSION:
-        raise RuntimeError(f"The shared evaluation protocol requires lm-eval=={LM_EVAL_VERSION}, "
-                           f"found {versions['lm-eval']}")
-    if versions["datasets"] is None or int(versions["datasets"].split(".")[0]) >= 4:
-        raise RuntimeError(f"The shared evaluation protocol requires datasets<4, found {versions['datasets']}")
+    for name, minimum, needed_by in EVAL_REQUIREMENTS:
+        found = versions[name]
+        if found is None or tuple(int(part) for part in re.findall(r"\d+", found)[:len(minimum)]) < minimum:
+            raise RuntimeError(f"{needed_by} needs {name}>={'.'.join(map(str, minimum))}, found "
+                               f"{found or 'none'}; evaluate in SemanticLogKV's environment (torch218) "
+                               "without changing its packages")
+
+
+def offline_cache_error(error: ValueError) -> RuntimeError | None:
+    """Explain a task-data failure of the shared offline cache (raised before any model call), else None."""
+    cache = os.environ.get("HF_DATASETS_CACHE")
+    in_cache_lookup = any("packaged_modules/cache" in frame.filename.replace(os.sep, "/")
+                          for frame in traceback.extract_tb(error.__traceback__))
+    if isinstance(error, json.JSONDecodeError) and in_cache_lookup:
+        return RuntimeError(
+            f"A dataset_info.json in the offline cache under {cache} is not valid JSON (datasets parses it for "
+            "every entry of the config it loads). The shared cache is read-only: report the entry instead of "
+            "moving or rewriting it; see docs/BASELINE_ENVIRONMENT.md section 4.")
+    if re.match(r"Feature type '\w+' not found", str(error)):
+        return RuntimeError(
+            f"An offline dataset entry under {cache} was written by a newer `datasets` than the installed "
+            f"{importlib.metadata.version('datasets')}, so this environment has been downgraded. Evaluate in "
+            "SemanticLogKV's environment (torch218) instead of converting the cache or switching data; see "
+            "docs/BASELINE_ENVIRONMENT.md section 4.")
+    return None
 
 
 def runtime_environment() -> dict:
@@ -216,6 +244,8 @@ def runtime_environment() -> dict:
 
 def rank_topology(device: str) -> dict:
     import torch
+
+    from . import dist_utils as du
 
     return {"rank": du.global_rank(), "local_rank": du.local_rank(), "host": socket.gethostname(),
             "device": device, "gpu": torch.cuda.get_device_name(device) if device.startswith("cuda") else None}
@@ -430,6 +460,7 @@ def main(argv=None) -> None:
     from lm_eval import evaluator
     from lm_eval.tasks import TaskManager
 
+    from . import dist_utils as du
     from .data_env import install_dataset_alias_fallback, install_ruler_cache
     from .lm import CompressedKVLM
 
@@ -478,15 +509,10 @@ def main(argv=None) -> None:
                               if args.include_path else None),
             )
         except ValueError as error:
-            # Raised while reading dataset_info.json of an offline entry, before any model call.
-            if not re.match(r"Feature type '\w+' not found", str(error)):
+            explained = offline_cache_error(error)
+            if explained is None:
                 raise
-            raise RuntimeError(
-                f"An offline dataset entry under {os.environ.get('HF_DATASETS_CACHE')} was written by a newer "
-                f"`datasets` than the installed {importlib.metadata.version('datasets')}. The shared protocol "
-                "reads entries readable by datasets<4; repair or restore that entry instead of upgrading "
-                "datasets or switching data."
-            ) from error
+            raise explained from error
         compression = lm.all_gather_results(lm.compression_metrics, tag="KV compression")
         speed = lm.all_gather_results([{"generation": lm.gen_metrics, "scoring": lm.ppl_metrics}],
                                       tag="inference speed")

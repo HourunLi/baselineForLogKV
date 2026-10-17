@@ -4,7 +4,7 @@ Works on this baseline's results and on SemanticLogKV ``eval_results_*.json``
 files alike: both keep lm-eval's per-sample log (doc/prompt/target hashes and
 the exact request arguments) plus ``kv_compression`` and ``inference_metrics``.
 Protocol fields (samples, task versions and settings, limit, window, tokenizer,
-harness versions) must agree; method fields (backend, budget, weights) are
+package versions) must agree; method fields (backend, budget, weights) are
 reported separately and are expected to differ.
 
     python -m pyramidkv.compare_results semantic.json pyramidkv.json [h2o.json ...]
@@ -21,13 +21,20 @@ SAMPLE_KEYS = ("doc_id", "doc_hash", "prompt_hash", "target_hash", "arguments")
 # Task settings that change prompts, generation or scoring; ``metadata`` only names caches.
 TASK_CONFIG_KEYS = ("output_type", "num_fewshot", "generation_kwargs", "target_delimiter",
                     "fewshot_delimiter", "repeats")
+# Package versions that define tasks, data, tokenization or numerics; lm-eval's version decides the task
+# definitions (e.g. LongBench differs between 0.4.9 and 0.4.11), so results from different versions never compare.
+VERSION_FIELDS = ("torch", "transformers", "datasets", "pyarrow", "lm-eval", "tokenizers")
+
+
+def _recorded_version(name: str):
+    return lambda result: ((result.get("provenance") or {}).get("versions") or {}).get(name)
+
+
 # Recorded by this project's results only; SemanticLogKV's own files leave them unverified.
 PROVENANCE_FIELDS = {
     "max_seq_length": lambda result: result.get("max_seq_length"),
     "tokenizer_files": lambda result: (result.get("provenance") or {}).get("tokenizer_files"),
-    "lm-eval": lambda result: ((result.get("provenance") or {}).get("versions") or {}).get("lm-eval"),
-    "datasets": lambda result: ((result.get("provenance") or {}).get("versions") or {}).get("datasets"),
-    "pyarrow": lambda result: ((result.get("provenance") or {}).get("versions") or {}).get("pyarrow"),
+    **{name: _recorded_version(name) for name in VERSION_FIELDS},
 }
 
 
