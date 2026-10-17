@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import textwrap
 
@@ -58,17 +59,55 @@ def test_run_ids_never_reuse_existing_result_names(tmp_path):
     assert second != first and second.startswith(first)
 
 
-@pytest.mark.parametrize("nodes,rank,fail_main", [(1, 0, False), (2, 1, False), (2, 0, True)])
-def test_platform_launcher_runs_both_suites_and_stops_on_failure(tmp_path, nodes, rank, fail_main):
+def platform_launcher_env(tmp_path, visible_gpus=4):
+    """A fake interpreter for majob.sh: answers the CUDA device probe and logs every launch."""
     executable = tmp_path / "python"
-    log = tmp_path / "calls"
-    executable.write_text('#!/bin/bash\nprintf "%s | %s\\n" "$KV_BASELINE_EXPECTED_WORLD_SIZE" "$*" >> "$TEST_CALLS"\n'
+    executable.write_text('#!/bin/bash\nif [[ "$1" = -c ]]; then\n'
+                          '  [[ "$TEST_GPUS" = fail ]] && { echo "CUDA initialisation failed" >&2; exit 1; }\n'
+                          '  echo "$TEST_GPUS"; exit\nfi\n'
+                          'printf "%s | %s | %s\\n" "$KV_BASELINE_EXPECTED_WORLD_SIZE" "$*" "$LD_LIBRARY_PATH" '
+                          '>> "$TEST_CALLS"\n'
                           'if [[ "$TEST_FAIL" = 1 && "$*" = *"--suite main"* ]]; then exit 7; fi\n')
     executable.chmod(0o755)
     env = {key: value for key, value in os.environ.items()
-           if not key.startswith(("MA_", "MASTER_", "MAIN_MASTER_", "NIAH_MASTER_"))}
-    env.update(PYRAMIDKV_PYTHON=str(executable), TEST_CALLS=str(log), TEST_FAIL=str(int(fail_main)),
-               MA_NUM_GPUS="4", MA_NUM_HOSTS=str(nodes), VC_TASK_INDEX=str(rank),
+           if not key.startswith(("MA_", "MASTER_", "EVAL_MASTER_", "NIAH_MASTER_", "VC_", "GROUP_"))
+           and key not in {"NPROC_PER_NODE", "LOCAL_WORLD_SIZE", "NODE_RANK"}}
+    env.update(PYRAMIDKV_PYTHON=str(executable), TEST_CALLS=str(tmp_path / "calls"), TEST_GPUS=str(visible_gpus),
+               TEST_FAIL="0")
+    return env
+
+
+@pytest.mark.parametrize("requested,visible,launched", [
+    ({}, 3, 3),  # a development container without platform variables uses what it has
+    ({"NPROC_PER_NODE": "2"}, 3, 2),
+    ({"MA_NUM_GPUS": "8"}, 3, None),
+    ({}, 0, None),
+    ({}, "fail", None),  # e.g. a libcuda older than torch's CUDA: stop before torchrun
+])
+def test_platform_launcher_defaults_to_the_visible_gpus(tmp_path, requested, visible, launched):
+    env = {**platform_launcher_env(tmp_path, visible), **requested}
+    command = ["bash", str(REPO_ROOT / "majob.sh"), "--limit", "4", "--output", "outputs/test"]
+    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)
+    if launched is None:
+        expected = (1, "CUDA initialisation failed") if visible == "fail" else (2, "visible")
+        assert (result.returncode, expected[1] in result.stderr) == (expected[0], True), result.stderr
+        assert not (tmp_path / "calls").exists()
+        return
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls").read_text().splitlines()
+    assert len(calls) == 2
+    assert all(call.startswith(f"{launched} | ") and f"--nproc_per_node {launched} " in call for call in calls)
+    # SemanticLogKV's platform library order, ahead of whatever the job inherited
+    inherited = env.get("LD_LIBRARY_PATH")
+    expected = "/usr/lib/x86_64-linux-gnu:/usr/local/cuda-12.8/lib64" + (f":{inherited}" if inherited else "")
+    assert all(call.endswith(f" | {expected}") for call in calls)
+
+
+@pytest.mark.parametrize("nodes,rank,fail_main", [(1, 0, False), (2, 1, False), (2, 0, True)])
+def test_platform_launcher_runs_both_suites_and_stops_on_failure(tmp_path, nodes, rank, fail_main):
+    env = platform_launcher_env(tmp_path)
+    log = tmp_path / "calls"
+    env.update(TEST_FAIL=str(int(fail_main)), MA_NUM_GPUS="4", MA_NUM_HOSTS=str(nodes), VC_TASK_INDEX=str(rank),
                MA_VJ_NAME="job", MA_TASK_NAME="worker", MA_MASTER_INDEX="0")
     command = ["bash", str(REPO_ROOT / "majob.sh"), "configs/qwen3_1.7b_32k_pyramidkv.yaml",
                "--limit", "4", "--output", "outputs/test"]
@@ -78,13 +117,22 @@ def test_platform_launcher_runs_both_suites_and_stops_on_failure(tmp_path, nodes
     assert len(calls) == (1 if fail_main else 2)
     for call in calls:
         assert call.startswith(f"{nodes * 4} | -m torch.distributed.run")
-        assert f"--nnodes {nodes} --nproc_per_node 4 --node_rank {rank}" in call
-        assert "--master_addr job-worker-0.job" in call
+        assert "--nproc_per_node 4" in call
         assert "-m pyramidkv.evaluate --config configs/qwen3_1.7b_32k_pyramidkv.yaml" in call
-        assert call.endswith("--limit 4 --output outputs/test")
-    assert "--master_port 6001" in calls[0] and "--suite main" in calls[0]
+        assert "--limit 4 --output outputs/test | " in call
+        if nodes == 1:  # fixed ports can be taken on the node; torchrun binds a free one
+            assert "--standalone" in call and "--master_" not in call and "--nnodes" not in call
+        else:
+            assert f"--nnodes {nodes} --node_rank {rank}" in call
+            assert "--master_addr job-worker-0.job" in call
+            assert "--standalone" not in call
+    assert "--suite main" in calls[0]
     if not fail_main:
-        assert "--master_port 6002" in calls[1] and "--suite niah" in calls[1]
+        assert "--suite niah" in calls[1]
+    if nodes > 1:
+        assert "--master_port 6001" in calls[0]
+        if not fail_main:
+            assert "--master_port 6002" in calls[1]
     log.unlink()
     for extra in (["--tasks", "boolq"], ["--max-seq-length=65536"], ["--ruler-lengths", "4096"]):
         result = subprocess.run(command + extra, cwd=tmp_path, env=env, capture_output=True, text=True)
@@ -105,11 +153,14 @@ def test_budget_can_be_matched_to_a_reference_result(tmp_path):
     assert args.max_capacity_prompt == 2732
 
 
+TORCH218_VERSIONS = {"torch": "2.11.0+cu128", "transformers": "4.51.3", "datasets": "4.8.4", "pyarrow": "23.0.1",
+                     "lm-eval": "0.4.11", "tokenizers": "0.21.4", "numpy": "2.2.6"}
+
+
 def test_compare_rejects_different_prompts_or_protocol_but_ignores_answers():
-    def result(prompt, answer, limit=4, window=32768):
+    def result(prompt, answer, limit=4, window=32768, **versions):
         return {"max_seq_length": window, "provenance": {"tokenizer_files": {"tokenizer.json": "t"},
-                                                         "versions": {"lm-eval": "0.4.9", "datasets": "3.6.0",
-                                                                      "pyarrow": "17.0.0"}},
+                                                         "versions": {**TORCH218_VERSIONS, **versions}},
                 "results": {"config": {"limit": limit}, "versions": {"niah": 1.0},
                             "configs": {"niah": {"output_type": "generate_until", "metadata": {"x": answer}}},
                             "samples": {"niah": [dict(doc_id=0, doc_hash="d", prompt_hash=prompt, target_hash="t",
@@ -121,9 +172,76 @@ def test_compare_rejects_different_prompts_or_protocol_but_ignores_answers():
         compare_results.verify_same_inputs([result("a", "x"), result("a", "x", limit=8)])
     with pytest.raises(ValueError, match="max_seq_length"):
         compare_results.verify_same_inputs([result("a", "x"), result("a", "x", window=16384)])
+    for name in compare_results.VERSION_FIELDS:  # e.g. lm-eval 0.4.9 and 0.4.11 define LongBench differently
+        with pytest.raises(ValueError, match=name):
+            compare_results.verify_same_inputs([result("a", "x"), result("a", "x", **{name: "0.0.1"})])
     semantic = result("a", "x")
     del semantic["max_seq_length"], semantic["provenance"]  # SemanticLogKV's own files lack these
     assert compare_results.verify_same_inputs([semantic, result("a", "y")]) == {"niah": 1}
+
+
+def declared_requirements() -> list[str]:
+    """Quoted requirement strings of [project] dependencies and optional-dependencies (comments dropped)."""
+    project = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8").split("[project]")[1].split("[tool.")[0]
+    code = "\n".join(line.split("#")[0] for line in project.splitlines())
+    return re.findall(r'"([A-Za-z][\w.\-]*(?:\[[^\]]*\])?(?:[<>=!~][^"]*)?)"', code.split("dependencies = [", 1)[1])
+
+
+def test_declared_requirements_are_lower_bounds_that_torch218_meets():
+    requirements = declared_requirements()
+    minimum = {name: ".".join(map(str, version)) for name, version, _ in evaluate.EVAL_REQUIREMENTS}
+    assert f"datasets>={minimum['datasets']}" in requirements
+    assert f"lm-eval[ruler,longbench,ifeval]>={minimum['lm-eval']}" in requirements
+    for requirement in requirements:
+        # an upper bound or pin would change torch218's packages if this project were installed there
+        assert "==" not in requirement and "<" not in requirement and "!=" not in requirement, requirement
+        # transformers comes with lm-eval; accelerate, openpyxl and sentencepiece are not in torch218
+        assert re.split(r"[\[<>=!~]", requirement)[0] not in {"transformers", "accelerate", "openpyxl",
+                                                               "sentencepiece"}, requirement
+    installed = {**TORCH218_VERSIONS, "tokenizers": "0.21.4", "safetensors": "0.7.0", "PyYAML": "6.0.3",
+                 "pandas": "2.3.3", "xlsxwriter": "3.2.9", "pytest": "9.1.1"}
+    for requirement in requirements:
+        name, _, bound = re.sub(r"\[[^\]]*\]", "", requirement).partition(">=")
+        if bound:
+            found = tuple(int(part) for part in re.findall(r"\d+", installed[name])[:3])
+            assert found >= tuple(int(part) for part in bound.split(".")), requirement
+
+
+@pytest.mark.parametrize("versions,message", [
+    ({"lm-eval": "0.4.11", "datasets": "4.8.4"}, None),  # torch218
+    ({"lm-eval": "0.4.9", "datasets": "4.8.4"}, None),
+    ({"lm-eval": "0.4.11", "datasets": "5.1.0"}, None),
+    ({"lm-eval": "0.4.11", "datasets": "3.6.0"}, "datasets>=4.7"),
+    ({"lm-eval": "0.4.11", "datasets": "4.6.1"}, "datasets>=4.7"),
+    ({"lm-eval": "0.4.8", "datasets": "4.8.4"}, "lm-eval>=0.4.9"),
+    ({"lm-eval": None, "datasets": "4.8.4"}, "lm-eval>=0.4.9"),
+])
+def test_environment_check_follows_code_and_cache_requirements(monkeypatch, versions, message):
+    monkeypatch.setattr(evaluate, "_versions", lambda: versions)
+    if message is None:
+        evaluate.check_evaluation_environment()
+    else:
+        with pytest.raises(RuntimeError, match=message.replace(".", r"\.") + ".*torch218"):
+            evaluate.check_evaluation_environment()
+
+
+def test_offline_cache_failures_point_to_the_environment_not_the_cache():
+    def raised(function):
+        try:
+            function()
+        except ValueError as error:
+            return error
+
+    newer = raised(lambda: (_ for _ in ()).throw(ValueError("Feature type 'Json' not found. Available: ['Value']")))
+    assert "torch218" in str(evaluate.offline_cache_error(newer))
+    # datasets parses dataset_info.json of every cached entry; a malformed one fails there, unnamed.
+    namespace = {}
+    exec(compile("import json\ndef find_hash_in_cache():\n    json.loads('{\\n  \"a\": 1,\\n    ')\n",
+                 "/site-packages/datasets/packaged_modules/cache/cache.py", "exec"), namespace)
+    malformed = raised(namespace["find_hash_in_cache"])
+    assert "not valid JSON" in str(evaluate.offline_cache_error(malformed))
+    assert evaluate.offline_cache_error(raised(lambda: json.loads("{"))) is None  # not the cache lookup
+    assert evaluate.offline_cache_error(ValueError("unrelated")) is None
 
 
 @pytest.fixture

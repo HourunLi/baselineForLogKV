@@ -20,11 +20,8 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+from .options import GRANULARITIES
 from .qwen3 import repeat_kv
-
-GRANULARITIES = ("kv_head", "query_head")
-# How a scored continuation meets the cache: after the compressed context, or inside one prefill.
-LOGLIKELIHOOD_MODES = ("compress_context", "single_forward")
 
 
 def causal_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:

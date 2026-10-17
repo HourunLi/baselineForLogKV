@@ -56,7 +56,12 @@ class Tokenizer:
                 if self.eos_id is None:
                     self.eos_id = config.get("eos_token_id")
         elif (vocabulary_path := checkpoint_dir / "tokenizer.model").is_file():
-            from sentencepiece import SentencePieceProcessor
+            try:  # not a declared dependency: Qwen3 ships tokenizer.json
+                from sentencepiece import SentencePieceProcessor
+            except ImportError as error:
+                raise ImportError(f"{checkpoint_dir} has only tokenizer.model, which needs sentencepiece; the "
+                                  "evaluation environment does not provide it. Use a checkpoint with "
+                                  "tokenizer.json.") from error
 
             self.processor = SentencePieceProcessor(model_file=str(vocabulary_path))
             self.backend = "sentencepiece"

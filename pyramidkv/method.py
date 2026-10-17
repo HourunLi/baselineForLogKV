@@ -12,10 +12,8 @@ import json
 from functools import partial
 from pathlib import Path
 
-from .compressor import GQA_SCORE_AGGS, POOLINGS, PyramidKVCompressor
-from .kv_cache import GRANULARITIES, CompressedKVCache
+from .options import GQA_SCORE_AGGS, GRANULARITIES, METHODS, POOLINGS, PyramidKVSettings
 
-METHODS = ("pyramidkv", "fullkv")
 DEFAULT_METHOD = "pyramidkv"
 
 
@@ -51,13 +49,11 @@ def resolve_method_args(args) -> None:
         args.max_capacity_prompt = budget_from_result(args.budget_from_result)
     if args.method != "fullkv":
         # Validate eagerly, before any weights or task data are loaded.
-        build_compressor(args, num_hidden_layers=2)
+        pyramidkv_settings(args, num_hidden_layers=2)
 
 
-def build_compressor(args, num_hidden_layers: int):
-    if args.method == "fullkv":
-        return None
-    return PyramidKVCompressor(
+def pyramidkv_settings(args, num_hidden_layers: int, settings_class=PyramidKVSettings):
+    return settings_class(
         num_hidden_layers=num_hidden_layers, max_capacity_prompt=args.max_capacity_prompt,
         window_size=args.window_size, kernel_size=args.kernel_size, pooling=args.pooling,
         beta=args.beta, gqa_score_agg=args.gqa_score_agg,
@@ -67,14 +63,19 @@ def build_compressor(args, num_hidden_layers: int):
 def method_config(args, num_hidden_layers: int | None = None, max_seq_length: int | None = None) -> dict:
     if args.method == "fullkv":
         return {"method": "fullkv", "kv_cache_granularity": args.kv_cache_granularity}
-    compressor = build_compressor(args, num_hidden_layers or 2)
-    config = {**compressor.config(), "kv_cache_granularity": args.kv_cache_granularity,
+    settings = pyramidkv_settings(args, num_hidden_layers or 2)
+    config = {**settings.config(), "kv_cache_granularity": args.kv_cache_granularity,
               "budget_from_result": None if args.budget_from_result is None else str(args.budget_from_result)}
     if num_hidden_layers and max_seq_length:
-        config["entries_per_layer_for_full_window_prompt"] = compressor.budget_schedule(max_seq_length)
+        config["entries_per_layer_for_full_window_prompt"] = settings.budget_schedule(max_seq_length)
     return config
 
 
 def build_cache_factory(args, num_hidden_layers: int):
-    compressor = build_compressor(args, num_hidden_layers)
+    # Imported here so that resolving and printing the configuration does not import torch.
+    from .compressor import PyramidKVCompressor
+    from .kv_cache import CompressedKVCache
+
+    compressor = (None if args.method == "fullkv"
+                  else pyramidkv_settings(args, num_hidden_layers, PyramidKVCompressor))
     return partial(CompressedKVCache, compressor=compressor, granularity=args.kv_cache_granularity)
