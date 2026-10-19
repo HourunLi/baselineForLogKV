@@ -29,7 +29,9 @@ data:
     chat_template: '{{ messages | map(attribute=''content'') | join(''\n\n'') }}{{
       eos_token }}'
   train_file: tests/fixtures/smoke.jsonl
-hf_trainer:
+# dms.training.loop.TrainerSettings: HF TrainingArguments names and meanings; values it does not
+# implement are refused.
+trainer:
   output_dir: outputs/qwen3_1.7b_base_smoke
   run_name: dms_qwen3_1.7b_base_smoke
   max_steps: 2
@@ -47,7 +49,6 @@ hf_trainer:
   gradient_checkpointing: false
   tf32: false
   bf16: true
-  save_safetensors: false
   adam_beta1: 0.9
   adam_beta2: 0.95
   max_grad_norm: 1.0

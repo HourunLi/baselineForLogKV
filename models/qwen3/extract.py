@@ -17,20 +17,23 @@ r"""Extract a trained DMS student model from an intermediate checkpoint.
 
 Usage:
     python -m models.qwen3.extract \
-        --config outputs/qwen3_8b/config.yaml \
-        --checkpoint outputs/qwen3_8b/checkpoint-238 \
-        --output outputs/qwen3_8b/student_model_step238
+        --config outputs/qwen3_1.7b_base/config.yaml \
+        --checkpoint outputs/qwen3_1.7b_base/checkpoint-238 \
+        --output outputs/qwen3_1.7b_base/student_model_step238
 """
 
-# Modified for the SemanticLogKV baseline: load checkpoint tensors on CPU.
+# Modified for the SemanticLogKV baseline: checkpoints of dms.training.loop hold the trained adapter weights;
+# the rest of the student is the verified prepared Base.
 import argparse
 from pathlib import Path
 
 import torch
 from dms.logging import get_logger
 from dms.training.engine import DistillationModelArguments, DMSTrainerState, ModelArguments
-from transformers import AutoTokenizer, TrainingArguments
+from dms.training.loop import TrainerSettings
+from transformers import AutoTokenizer
 
+from .prepare_base import verify_prepared_base
 from .train import build_combined_model, extract_student_model, load_config
 
 logger = get_logger("Extract")
@@ -61,13 +64,16 @@ def main() -> None:
     data_cfg = cfg["data"]
 
     checkpoint_dir = Path(cli_args.checkpoint)
-    model_path = checkpoint_dir / "pytorch_model.bin"
+    adapters_path = checkpoint_dir / "adapters.pt"
     save_path = cli_args.output or str(checkpoint_dir / "student_model")
 
-    logger.info(f"Loading model from: {model_path}")
+    logger.info(f"Loading adapters from: {adapters_path}")
     logger.info(f"Saving model to: {save_path}")
 
-    tokenizer = AutoTokenizer.from_pretrained(str(checkpoint_dir))
+    verify_prepared_base(model_cfg["name"])
+    tokenizer = AutoTokenizer.from_pretrained(model_cfg["name"])
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     model_args = DistillationModelArguments(
         student=ModelArguments(
@@ -80,7 +86,7 @@ def main() -> None:
         ),
     )
 
-    training_args = TrainingArguments(output_dir=".")
+    training_args = TrainerSettings.from_config(cfg["trainer"])
     trainer_state = DMSTrainerState()
 
     logger.info("Creating combined model...")
@@ -94,7 +100,11 @@ def main() -> None:
     )
 
     logger.info("Loading checkpoint weights...")
-    combined_model.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=True))
+    adapters = torch.load(adapters_path, map_location="cpu", weights_only=True)
+    trainable = sorted(name for name, param in combined_model.named_parameters() if param.requires_grad)
+    if sorted(adapters) != trainable:
+        raise ValueError(f"{adapters_path} does not hold exactly this model's trainable weights")
+    combined_model.load_state_dict(adapters, strict=False)
 
     extract_student_model(combined_model, tokenizer, save_path)
 

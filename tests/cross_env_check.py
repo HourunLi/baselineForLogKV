@@ -40,6 +40,7 @@ def tiny_student():
         bos_token_id=0, eos_token_id=1, pad_token_id=0, dms_separate_alpha=True, dms_window_size=32,
         dms_paged_attention_block_size=16, dms_preallocate_for_tokens=256)
     model = Qwen3ForCausalLMDMS(config)
+    torch.manual_seed(0)  # default initialization draws differently in each transformers release
     with torch.no_grad():
         for parameter in model.parameters():
             parameter.normal_(0.0, 0.2)
