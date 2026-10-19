@@ -14,7 +14,8 @@
 # limitations under the License.
 
 # Added for this baseline: `CacheLayerMixin` and `Cache` are copied from transformers 4.57.3
-# (src/transformers/cache_utils.py, Cache docstring shortened); the other fallbacks are new.
+# (src/transformers/cache_utils.py; Cache docstring shortened and, with an older transformers, Cache
+# subclassing the installed Cache); the other fallbacks are new.
 """transformers APIs the DMS code was written against (4.57.3) that older releases lack.
 
 Evaluation runs in SemanticLogKV's environment (torch218, transformers 4.51.3); DMS training keeps the
@@ -22,11 +23,14 @@ upstream transformers 4.57.3 in its own environment. Every name below comes from
 transformers when it provides it, so the training environment runs the upstream classes unchanged.
 Otherwise:
 
-* ``CacheLayerMixin`` and ``Cache``: the transformers 4.57.3 classes, copied verbatim. They are used as a
-  pair; the ``Cache`` of older releases has a different interface and is never mixed in.
-* ``create_causal_mask``: DMS inference reads only the last mask row, as a key padding mask, which is
-  all ones for the unpadded single sequences SemanticLogKV's evaluator sends. Without masking_utils
-  (transformers>=4.53) it returns ``None`` for them, which DMS treats as all ones, and refuses padding.
+* ``CacheLayerMixin`` and ``Cache``: the transformers 4.57.3 classes, copied verbatim, used as a pair. The
+  copied ``Cache`` subclasses the installed one only so transformers' own ``isinstance`` checks (e.g. in
+  ``generate``) accept a DMS cache; it overrides every member the older class defines except
+  ``get_usable_length`` and ``seen_tokens``, which DMS does not use.
+* ``create_causal_mask``: without masking_utils (transformers>=4.53) it returns ``None`` for an input
+  without padding (no mask, or a 2D mask of ones as from ``generate`` or the training collator), which is
+  also what 4.57.3 returns there with SDPA. DMS training ignores mask values and DMS inference reads only
+  the last mask row as a key padding mask, so both see all ones; padded inputs are refused.
 * ``GradientCheckpointingLayer``: a plain module; checkpointing is a training feature.
 * ``TransformersKwargs``: the same TypedDict, used in type hints only.
 * The generic task heads are ``None``; only the causal LM is used here.
@@ -41,6 +45,8 @@ from torch import nn
 try:
     from transformers.cache_utils import Cache, CacheLayerMixin
 except ImportError:  # transformers<4.56
+    from transformers.cache_utils import Cache as _InstalledCache
+
     _is_torch_greater_or_equal_than_2_7 = tuple(int(part) for part in torch.__version__.split(".")[:2]) >= (2, 7)
 
     class CacheLayerMixin(ABC):
@@ -100,7 +106,7 @@ except ImportError:  # transformers<4.56
                 self.keys = self.keys.index_select(0, beam_idx.to(self.keys.device))
                 self.values = self.values.index_select(0, beam_idx.to(self.values.device))
 
-    class Cache:
+    class Cache(_InstalledCache):
         """Container of one `CacheLayerMixin` per model layer (transformers 4.57.3)."""
 
         def __init__(
@@ -331,8 +337,8 @@ try:
 except ImportError:  # transformers<4.53
 
     def create_causal_mask(config, input_embeds, attention_mask, cache_position, past_key_values, *args, **kwargs):
-        """``None`` (no padding) for an unpadded input; DMS then attends to every key of the request."""
-        if attention_mask is not None:
+        """``None`` for an input without padding; DMS then attends to every key of the request."""
+        if attention_mask is not None and not (attention_mask.ndim == 2 and bool(attention_mask.all())):
             raise NotImplementedError("Padded DMS inputs need transformers>=4.53 (masking_utils)")
         return None
 

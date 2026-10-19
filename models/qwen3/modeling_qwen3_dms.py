@@ -244,6 +244,8 @@ class Qwen3PreTrainedModelDMS(PreTrainedModel):
     _supports_flash_attn = True
     _supports_sdpa = True
     _supports_flex_attn = True
+    # transformers<4.53 generate() accepts a Cache object (DMSCache) only with this flag; 4.57.3 ignores it.
+    _supports_cache_class = True
 
     _can_compile_fullgraph = True
     _supports_attention_backend = True

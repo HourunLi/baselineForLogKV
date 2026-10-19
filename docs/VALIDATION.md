@@ -1,5 +1,32 @@
 # 本地验证记录
 
+## 2026-10-19（续）：服务器 torch218 首次运行与修复
+
+服务器 torch218（GPU 机器，`/data/lihourun/baselineForLogKV/DMS`，`2a3c18c`）上
+`env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 python -m pytest -q`：**98 passed、2 skipped、1 failed**（用户运行）。
+
+- 通过的包括上游 10 项 CUDA 测试（分块 prefill 与 prefill 后生成，对照参考实现）：编译的 FlexAttention prefill 与
+  `flash_attn_with_kvcache` 分页 decode 在 torch218 中可运行。这是 GPU 推理路径的第一次实测。
+- 跳过的 2 项是依赖训练引擎的测试（training environment）。
+- 失败的是 `tests/test_qwen3_cuda.py`（一步蒸馏后用 HF `generate()` 做 prefill/decode）：训练前向传入全 1 的 `attention_mask`，
+  兼容层的 `create_causal_mask` 替代把任何非 `None` 的 mask 都当作 padding 拒绝。
+
+修复：替代实现对没有 padding 的输入（没有 mask 或全 1 二维 mask）返回 `None`，与 4.57.3 在 SDPA 下的返回值相同，只拒绝真正的 padding；
+复制的 `Cache` 在旧版 transformers 中继承已安装的 `Cache`，模型类加 `_supports_cache_class`，否则 4.51 的 `generate()` 不接受 `DMSCache`
+（这两处在修完 mask 后依次暴露）。正式评测走 vendor 评测器自己的生成循环，不经过 HF `generate()`；受影响的是这个测试和 `infer.py`。
+
+验证（开发容器 CPU 副本，环境同上一节）：
+
+| 检查 | 结果 |
+|---|---|
+| `test_qwen3_cuda.py` 的 CPU 镜像（同样的蒸馏一步与两次 `generate()`；CUDA kernel 换成上游测试的参考实现、未编译的 FlexAttention，训练噪声的 `fork_rng` 不涉及 CUDA） | 修复前在 torch218 副本中依次失败于 mask、`isinstance` 与 `_supports_cache_class`；修复后两个副本都通过 |
+| 同上，两个副本从同一组初始权重出发 | loss、生成 token 与压缩比**完全相同**。若各自用 `Qwen3ForCausalLMDMS(config)` 的默认初始化则不同：4.57.3 的 `PreTrainedModel` 有默认 `_init_weights`，4.51.3 没有。正式流程不依赖随机初始化（训练在训练环境从准备好的 Base 加载，评测加载完整 checkpoint） |
+| torch218 副本 `python -m pytest -q` | **90 passed、13 skipped**（训练引擎 2 项、CUDA 11 项） |
+| 训练环境副本 | **90 passed、13 skipped**（lm-eval 1 项、CUDA 11 项、已有 masking_utils 时跳过的旧版 mask 测试 1 项） |
+| `tests/cross_env_check.py` | 仍逐元素相同 |
+
+修复后尚未在服务器上重跑；`test_qwen3_cuda.py` 在真实 CUDA kernel 上的结果以服务器重跑为准。
+
 ## 2026-10-19：评测适配 torch218（transformers 4.51.3、lm-eval 0.4.11、datasets 4.8.4），训练环境分开
 
 改动：评测在 SemanticLogKV 的 torch218 中运行，不安装任何包；训练沿用上游固定的 transformers 4.57.3、accelerate 1.4.0、
