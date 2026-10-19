@@ -1,6 +1,5 @@
 """Offline checks using tiny random weights; no model download or CUDA kernels."""
 
-from importlib.metadata import version
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,17 +19,11 @@ from dms.training.engine import (
     DistillationModelArguments, ModelArguments, _configure_gradients, dms_schedule,
     get_student_model,
 )
-from models.qwen3.check_env import TRAINING_TRANSFORMERS
 from models.qwen3.configuration_qwen3_dms import Qwen3ConfigDMS
 from models.qwen3.modeling_qwen3_dms import Qwen3ForCausalLMDMS
 from models.qwen3.train import (
     _create_train_dataset, export_trained_student, extract_student_model, resolve_checkpoint,
 )
-
-# DMS training code (dms.training.engine) targets the training environment's transformers release.
-requires_training_env = pytest.mark.skipif(
-    version("transformers") != TRAINING_TRANSFORMERS,
-    reason=f"DMS training code runs in the training environment (transformers=={TRAINING_TRANSFORMERS})")
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -80,7 +73,6 @@ def test_full_base_adapter_dimensions_without_allocating_weights():
     assert model.lm_head.weight is model.model.embed_tokens.weight
 
 
-@requires_training_env
 def test_load_base_weights_and_freeze(tmp_path):
     base = Qwen3ForCausalLM(tiny_config())
     base.save_pretrained(tmp_path)
@@ -89,8 +81,11 @@ def test_load_base_weights_and_freeze(tmp_path):
     assert model.lm_head.weight is model.model.embed_tokens.weight
     for name, param in model.named_parameters():
         assert param.requires_grad == ("dms_proj_alpha" in name)
+        assert param.dtype == torch.float32
         if "dms_proj_alpha" in name and "norm" not in name:
             assert torch.count_nonzero(param) == 0
+        elif "dms_proj_alpha_norm" in name:  # transformers 4.51 alone would leave it uninitialized
+            assert torch.equal(param, torch.ones_like(param))
     torch.testing.assert_close(model.model.embed_tokens.weight, base.model.embed_tokens.weight)
 
 
@@ -113,19 +108,22 @@ def test_export_gathers_all_ranks_but_writes_only_on_main(tmp_path, tokenizer):
     model = Qwen3ForCausalLMDMS(tiny_config())
     combined = SimpleNamespace(student_model=model)
     calls = []
-    accelerator = SimpleNamespace(
-        wait_for_everyone=lambda: calls.append("barrier"),
-        get_state_dict=lambda _: {f"student_model.{k}": v for k, v in model.state_dict().items()},
-        state=SimpleNamespace(fsdp_plugin=SimpleNamespace(set_state_dict_type=lambda t: calls.append(t))),
-    )
-    trainer = SimpleNamespace(accelerator=accelerator, model_wrapped=combined,
-                              is_fsdp_enabled=True, is_world_process_zero=lambda: False)
+    runtime = SimpleNamespace(is_main=False, barrier=lambda: calls.append("barrier"))
+    def gather():
+        calls.append("gather")
+        return {f"student_model.{k}": v for k, v in model.state_dict().items()}
+    trainer = SimpleNamespace(runtime=runtime, full_state_dict=gather)
     export_trained_student(trainer, combined, tokenizer, str(tmp_path / "model"))
-    assert calls == ["barrier", "FULL_STATE_DICT", "barrier"]
+    assert calls == ["barrier", "gather", "barrier"]
     assert not (tmp_path / "model").exists()
-    trainer.is_world_process_zero = lambda: True
-    export_trained_student(trainer, combined, tokenizer, str(tmp_path / "model"))
+    runtime.is_main = True
+    (tmp_path / "model").mkdir()
+    (tmp_path / "model/model-00001-of-00002.safetensors").write_bytes(b"earlier export")
+    export_trained_student(trainer, combined, tokenizer, str(tmp_path / "model"), {"global_step": 3})
     assert (tmp_path / "model/config.json").is_file()
+    assert json.loads((tmp_path / "model/training_record.json").read_text()) == {"global_step": 3}
+    assert not (tmp_path / "model/model-00001-of-00002.safetensors").exists()
+    assert not (tmp_path / "model.tmp").exists()
 
 
 def test_local_text_pipeline_and_empty_input(tmp_path, tokenizer, monkeypatch):
@@ -146,12 +144,12 @@ def test_local_text_pipeline_and_empty_input(tmp_path, tokenizer, monkeypatch):
 
 
 def test_resume_never_silently_ignores_a_bad_path(tmp_path):
-    cfg = {"hf_trainer": {"output_dir": str(tmp_path), "resume_from_checkpoint": "auto"}}
+    cfg = {"trainer": {"output_dir": str(tmp_path), "resume_from_checkpoint": "auto"}}
     assert resolve_checkpoint(cfg) is None
-    for step in (2, 10):
-        (tmp_path / f"checkpoint-{step}").mkdir()
+    for name in ("checkpoint-2", "checkpoint-10", "checkpoint-12.tmp"):  # .tmp: a save that did not finish
+        (tmp_path / name).mkdir()
     assert resolve_checkpoint(cfg).endswith("checkpoint-10")
-    cfg["hf_trainer"]["resume_from_checkpoint"] = str(tmp_path / "missing")
+    cfg["trainer"]["resume_from_checkpoint"] = str(tmp_path / "missing")
     with pytest.raises(FileNotFoundError):
         resolve_checkpoint(cfg)
 

@@ -8,11 +8,15 @@ version = "0.1.0"
 description = "Qwen3-1.7B-Base with NVIDIA Dynamic Memory Sparsification"
 requires-python = ">=3.10,<3.14"
 # PyTorch/CUDA (and FlashAttention for inference) come from the environment. Lower bounds of what the code
-# imports: SemanticLogKV's evaluation environment (torch218) meets all of them and none excludes a version it
-# has, because evaluation runs there without installing this project. transformers>=4.51 is the first release
-# with Qwen3; the newer APIs DMS uses come from dms.transformers_compat when the installed release lacks them.
+# imports: SemanticLogKV's environment (torch218) meets all of them and none excludes a version it has, because
+# training and evaluation both run there without installing this project. transformers>=4.51 is the first
+# release with Qwen3; the newer APIs DMS uses come from dms.transformers_compat when the installed release lacks
+# them, and dms.training.loop trains without HF Trainer/accelerate.
 dependencies = [
     "transformers>=4.51",
+    # Training data pipeline (dms.training.data); the evaluation cache needs 4.7 too (eval extra).
+    "datasets>=4.7",
+    "numpy>=1.26",
     "PyYAML>=6.0",
     # Bundled SemanticLogKV/LitGPT runtime (models/_vendor/semanticlogkv).
     "lightning>=2.6.1",
@@ -29,9 +33,6 @@ test = ["pytest>=8"]
 # entry uses the Json feature type of datasets>=4.7); each run records the exact versions, and compare_results
 # requires both sides to match. transformers comes with lm-eval as well.
 eval = ["lm-eval[ruler,longbench,ifeval]>=0.4.9", "datasets>=4.7", "pandas>=1.9", "xlsxwriter>=3"]
-# DMS training only, in its own environment and never in torch218: the upstream recipe's pinned releases
-# (models.qwen3.check_env --training-only requires them). Training and evaluation extras are never combined.
-dms-train = ["transformers==4.57.3", "accelerate==1.4.0", "datasets==4.4.2"]
 
 [tool.setuptools.packages.find]
 include = ["dms*", "models*"]

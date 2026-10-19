@@ -13,15 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Modified for the SemanticLogKV baseline: Base text data, safe resume and distributed export.
+# Modified for the SemanticLogKV baseline: Base text data, safe resume, distributed export, and
+# dms.training.loop instead of HF Trainer/accelerate so training runs in SemanticLogKV's torch218.
 """Training entry point for Qwen3 model with DMS.
 
 Usage:
     # First run prepares the dataset (single process):
-    python -m models.qwen3.train --config configs/qwen3_8b.yaml --prepare-dataset-only
+    python -m models.qwen3.train --config configs/qwen3_1.7b_base.yaml --prepare-dataset-only
 
-    # Then launch distributed training:
-    accelerate launch -m models.qwen3.train --config configs/qwen3_8b.yaml
+    # Then launch training (one or more processes):
+    torchrun --standalone --nproc_per_node 8 -m models.qwen3.train --config configs/qwen3_1.7b_base.yaml
 """
 
 import argparse
@@ -41,19 +42,14 @@ from dms.training.engine import (
     DistillationModelArguments,
     DMSTrainerState,
     ModelArguments,
-    ModifiedTrainer,
     distillation_forward,
     dms_schedule,
     get_student_model,
     get_teacher_model,
     get_tokenizer,
 )
-from transformers import (
-    DataCollatorWithPadding,
-    PreTrainedTokenizer,
-    Qwen3ForCausalLM,
-    TrainingArguments,
-)
+from dms.training.loop import DMSTrainer, TrainerSettings, checkpoints, init_runtime
+from transformers import PreTrainedTokenizer, Qwen3ForCausalLM
 
 from .modeling_qwen3_dms import Qwen3ForCausalLMDMS
 
@@ -82,16 +78,12 @@ def save_config(cfg: dict, output_dir: str) -> None:
 
 def resolve_checkpoint(cfg: dict) -> str | None:
     """Resolve the checkpoint path for resume, supporting 'auto' detection."""
-    resume = cfg["hf_trainer"].get("resume_from_checkpoint")
+    resume = cfg["trainer"].get("resume_from_checkpoint")
     if resume == "auto":
-        output_dir = Path(cfg["hf_trainer"]["output_dir"])
-        checkpoints = sorted(
-            output_dir.glob("checkpoint-*"),
-            key=lambda p: int(p.name.split("-")[1]),
-        )
-        if checkpoints:
-            logger.info(f"Auto-detected latest checkpoint: {checkpoints[-1]}")
-            return str(checkpoints[-1])
+        found = checkpoints(Path(cfg["trainer"]["output_dir"]))
+        if found:
+            logger.info(f"Auto-detected latest checkpoint: {found[-1]}")
+            return str(found[-1])
         else:
             logger.info("No checkpoints found, starting fresh.")
             return None
@@ -174,7 +166,7 @@ def _create_train_dataset(
 
 def build_combined_model(
     model_args: DistillationModelArguments,
-    training_args: TrainingArguments,
+    training_args: TrainerSettings,
     dms_cfg: dict,
     data_cfg: dict,
     tokenizer: PreTrainedTokenizer,
@@ -289,21 +281,26 @@ def extract_student_model(
     logger.info(f"Successfully saved student model to: {save_path}")
 
 
-def export_trained_student(trainer, combined_model, tokenizer, save_path):
+def export_trained_student(trainer, combined_model, tokenizer, save_path, training_record=None):
     """Gather FSDP weights on all ranks, then write one complete student on rank zero."""
-    accelerator = trainer.accelerator
-    accelerator.wait_for_everyone()
-    if trainer.is_fsdp_enabled:
-        accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
-    full_state = accelerator.get_state_dict(trainer.model_wrapped)
-    if trainer.is_world_process_zero():
+    trainer.runtime.barrier()
+    full_state = trainer.full_state_dict()
+    if trainer.runtime.is_main:
         prefix = "student_model."
         student_state = {key[len(prefix):]: value for key, value in full_state.items()
                          if key.startswith(prefix)}
         if not student_state:
             raise RuntimeError("No student weights found in gathered checkpoint")
-        extract_student_model(combined_model, tokenizer, save_path, student_state)
-    accelerator.wait_for_everyone()
+        # Write beside the target and swap, so no file of an earlier export survives in it.
+        staging = Path(f"{save_path}.tmp")
+        shutil.rmtree(staging, ignore_errors=True)
+        extract_student_model(combined_model, tokenizer, str(staging), student_state)
+        if training_record is not None:
+            with open(staging / "training_record.json", "w") as f:
+                json.dump(training_record, f, indent=2)
+        shutil.rmtree(save_path, ignore_errors=True)
+        staging.rename(save_path)
+    trainer.runtime.barrier()
 
 
 # =============================================================================
@@ -323,13 +320,13 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    settings = TrainerSettings.from_config(cfg["trainer"])
     from .prepare_base import verify_prepared_base
     verify_prepared_base(cfg["model"]["name"])
 
     model_cfg = cfg["model"]
     dms_cfg = cfg["dms"]
     data_cfg = cfg["data"]
-    hf_trainer_cfg = cfg["hf_trainer"]
 
     # Build model arguments
     model_args = DistillationModelArguments(
@@ -349,8 +346,6 @@ def main() -> None:
 
     # Resolve checkpoint resume
     checkpoint_path = resolve_checkpoint(cfg)
-    if checkpoint_path:
-        hf_trainer_cfg["resume_from_checkpoint"] = checkpoint_path
 
     logger.info(f"\n--- Config ---\n{yaml.dump(cfg, default_flow_style=False)}")
 
@@ -374,56 +369,39 @@ def main() -> None:
 
     from .check_env import check_environment
     check_environment(training_only=True)
-    training_args = TrainingArguments(**hf_trainer_cfg)
+    runtime = init_runtime()
 
     # Save config for reproducibility
-    if training_args.process_index == 0:
-        save_config(cfg, training_args.output_dir)
+    if runtime.is_main:
+        save_config(cfg, settings.output_dir)
 
     # Build model
     trainer_state = DMSTrainerState()
     combined_model = build_combined_model(
         model_args=model_args,
-        training_args=training_args,
+        training_args=settings,
         dms_cfg=dms_cfg,
         data_cfg=data_cfg,
         tokenizer=tokenizer,
         trainer_state=trainer_state,
     )
 
-    data_collator = DataCollatorWithPadding(
-        tokenizer=tokenizer,
-        padding="max_length",
-        max_length=data_cfg["max_length"],
-        return_tensors="pt",
+    trainer = DMSTrainer(
+        combined_model, train_dataset, settings, runtime, data_cfg["max_length"], trainer_state,
+        resume_from=checkpoint_path,
     )
-
-    trainer = ModifiedTrainer(
-        trainer_state=trainer_state,
-        model=combined_model,
-        args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=None,
-        data_collator=data_collator,
-        processing_class=tokenizer,
-    )
-
-    trainer_state.set_trainer(trainer)
-    if trainer.is_fsdp_enabled:
-        trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
 
     # Train
-    if checkpoint_path:
-        logger.info(f"Resuming from checkpoint: {checkpoint_path}")
-        trainer.train(resume_from_checkpoint=checkpoint_path)
-    else:
-        trainer.train()
+    runtime_seconds = trainer.train()
 
     # Auto-save student model at end of training
-    student_model_path = os.path.join(training_args.output_dir, "student_model")
-    export_trained_student(trainer, combined_model, tokenizer, student_model_path)
+    student_model_path = os.path.join(settings.output_dir, "student_model")
+    export_trained_student(trainer, combined_model, tokenizer, student_model_path,
+                           {**trainer.training_record(runtime_seconds), "config": cfg})
 
     logger.info("Training complete.")
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":

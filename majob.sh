@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# Training-platform entry point for evaluating an exported DMS student; it never trains.
-# Run once per node: main suite (47 entries), then NIAH (3 entries, 32768 only); a failed stage stops the job.
+# Training-platform entry point. Run once per node; a failed stage stops the job.
+# --model DIR evaluates an exported DMS student: main suite (47 entries), then NIAH (3 entries, 32768 only).
+# --train YAML (one node) first prepares the shared Base if it is missing, prepares the data and trains, all in
+# the same environment, then evaluates the student it exported. Without --train, nothing is trained.
 set -eo pipefail
 cd "$(dirname "$0")"
 
-usage="Usage: bash majob.sh [configs/experiment_qwen1.7b_32k.yaml] --model DIR [--backend dms|logkv] [--limit N] [--output DIR]"
+usage="Usage: bash majob.sh [configs/experiment_qwen1.7b_32k.yaml] (--model DIR | --train TRAIN_YAML) [--backend dms|logkv] [--limit N] [--output DIR]"
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
     echo "$usage"
-    echo "Evaluates configs/eval_suites.yaml in two stages. Default environment: conda torch218;"
-    echo "set DMS_PYTHON to use an existing interpreter. Train first with scripts/train.sh."
+    echo "Evaluates configs/eval_suites.yaml in two stages, after training with TRAIN_YAML when --train is given"
+    echo "(e.g. configs/qwen3_1.7b_base.yaml). Default environment: conda torch218;"
+    echo "set DMS_PYTHON to use an existing interpreter."
     exit 0
 fi
 CONFIG_FILE=configs/experiment_qwen1.7b_32k.yaml
@@ -18,17 +21,29 @@ if [[ $# -gt 0 && "$1" != -* ]]; then
 fi
 [[ -f "$CONFIG_FILE" ]] || { echo "Missing experiment YAML: $CONFIG_FILE" >&2; exit 2; }
 has_model=0
+TRAIN_CONFIG=
+eval_args=()
 # The task lists, NIAH lengths and experiment YAML are fixed for a formal run.
-for arg in "$@"; do
-    case "$arg" in
+while (( $# )); do
+    case "$1" in
+        --train) [[ $# -ge 2 ]] || { echo "--train needs a training YAML" >&2; exit 2; }
+                 TRAIN_CONFIG=$2; shift 2; continue ;;
+        --train=*) TRAIN_CONFIG=${1#--train=}; shift; continue ;;
         --model|--model=*) has_model=1 ;;
         --suite|--suite=*|--tasks|--tasks=*|--evaluation-config|--evaluation-config=*|\
         --experiment-config|--experiment-config=*|--print-config)
-            echo "majob.sh runs both full suites; $arg is not allowed here (use models.qwen3.evaluate)." >&2
+            echo "majob.sh runs both full suites; $1 is not allowed here (use models.qwen3.evaluate)." >&2
             exit 2 ;;
     esac
+    eval_args+=("$1")
+    shift
 done
-(( has_model )) || { echo "--model is required: pass the exported DMS student (majob.sh never trains)." >&2; exit 2; }
+if [[ -n "$TRAIN_CONFIG" ]]; then
+    (( ! has_model )) || { echo "--train evaluates the student it trains; do not also pass --model." >&2; exit 2; }
+    [[ -f "$TRAIN_CONFIG" ]] || { echo "Missing training YAML: $TRAIN_CONFIG" >&2; exit 2; }
+else
+    (( has_model )) || { echo "--model is required: pass the exported DMS student, or --train TRAIN_YAML." >&2; exit 2; }
+fi
 
 # Conda activation scripts may read unset variables; enable nounset afterwards.
 if [[ -z "${DMS_PYTHON:-}" ]]; then
@@ -97,12 +112,36 @@ if (( NUM_NODES > 1 )) && [[ "$MASTER_ADDR" == localhost || "$MASTER_ADDR" == 12
     exit 2
 fi
 [[ "$EVAL_MASTER_PORT" != "$NIAH_MASTER_PORT" ]] || { echo "Evaluation stages need distinct ports" >&2; exit 2; }
+if [[ -n "$TRAIN_CONFIG" ]] && (( NUM_NODES > 1 )); then
+    echo "--train runs on one node; train first, then evaluate on several nodes with --model" >&2
+    exit 2
+fi
 # The bundled evaluator checks the rendezvous against this expected world size.
 export LITGPT_EXPECTED_WORLD_SIZE=$((NUM_NODES * GPUS_PER_NODE))
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 export NCCL_IB_TIMEOUT=${NCCL_IB_TIMEOUT:-22}
 
 echo "Python=$DMS_PYTHON node=$NODE_RANK/$NUM_NODES GPUs/node=$GPUS_PER_NODE (visible $VISIBLE_GPUS) world_size=$LITGPT_EXPECTED_WORLD_SIZE"
+if [[ -n "$TRAIN_CONFIG" ]]; then
+    # Base path and output directory as the training code reads them (relative to the project root).
+    mapfile -t train_paths < <("$DMS_PYTHON" -c 'import sys, yaml
+config = yaml.safe_load(open(sys.argv[1]))
+print(config["model"]["name"]); print(config["trainer"]["output_dir"])' "$TRAIN_CONFIG")
+    (( ${#train_paths[@]} == 2 )) || { echo "Cannot read model.name and trainer.output_dir from $TRAIN_CONFIG" >&2; exit 2; }
+    base_dir=${train_paths[0]}
+    student_dir=${train_paths[1]}/student_model
+    if [[ ! -e "$base_dir" ]]; then
+        echo "Preparing the shared Base in $base_dir from $CONFIG_FILE"
+        "$DMS_PYTHON" -m models.qwen3.prepare_base --experiment-config "$CONFIG_FILE" --output "$base_dir"
+    fi
+    echo "Preparing training data for $TRAIN_CONFIG"
+    "$DMS_PYTHON" -m models.qwen3.train --config "$TRAIN_CONFIG" --prepare-dataset-only
+    echo "Training $TRAIN_CONFIG on $GPUS_PER_NODE GPUs (free local port)"
+    "$DMS_PYTHON" -m torch.distributed.run --standalone --nproc_per_node "$GPUS_PER_NODE" \
+        -m models.qwen3.train --config "$TRAIN_CONFIG"
+    [[ -f "$student_dir/config.json" ]] || { echo "Training exported no student in $student_dir" >&2; exit 1; }
+    eval_args+=(--model "$student_dir")
+fi
 for suite in main niah; do
     if (( NUM_NODES == 1 )); then
         # A fixed port may already be taken on the node; standalone rendezvous binds a free one.
@@ -116,5 +155,5 @@ for suite in main niah; do
     fi
     # set -e stops here when a stage fails, so NIAH never runs after a failed main stage.
     "$DMS_PYTHON" -m torch.distributed.run "${rendezvous[@]}" --nproc_per_node "$GPUS_PER_NODE" \
-        -m models.qwen3.evaluate --experiment-config "$CONFIG_FILE" --suite "$suite" "$@"
+        -m models.qwen3.evaluate --experiment-config "$CONFIG_FILE" --suite "$suite" "${eval_args[@]}"
 done

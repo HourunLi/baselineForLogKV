@@ -13,6 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Modified for the SemanticLogKV baseline: load with torch_dtype and initialize the new adapter weights as
+# transformers 4.57.3 does (4.51 leaves them uninitialized); the HF Trainer subclass and callback are replaced
+# by dms.training.loop, so training needs no accelerate.
 """DMS training engine: model configuration, distillation, noise, trainer state, and combined model."""
 
 import hashlib
@@ -22,14 +25,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import torch
-import torch.distributed as dist
 from transformers import (
     AutoTokenizer,
     PreTrainedModel,
     PreTrainedTokenizer,
-    Trainer,
-    TrainerCallback,
-    TrainingArguments,
 )
 
 from dms.core import DMSTrainingStateAux
@@ -100,6 +99,28 @@ def _configure_gradients(model: PreTrainedModel) -> tuple[list[str], list[str]]:
     return disabled_grad, enabled_grad
 
 
+def _initialize_new_adapters(model: PreTrainedModel, loading_info: dict[str, list]) -> None:
+    """Give the adapter weights a Base checkpoint lacks the values transformers 4.57.3 initializes them to.
+
+    transformers<4.56 has no generic ``_init_weights`` and leaves weights missing from the checkpoint as
+    uninitialized memory. Only DMS adapter weights may be missing; anything else fails the load.
+    """
+    missing = set(loading_info["missing_keys"])
+    if (loading_info["unexpected_keys"] or loading_info["mismatched_keys"]
+            or not all(_is_trainable_param(name) for name in missing)):
+        raise ValueError(f"Unexpected student checkpoint contents: {loading_info}")
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if name not in missing:
+                continue
+            if "_norm." in name:  # RMSNorm weight
+                param.fill_(1.0)
+            elif name.endswith(".bias"):
+                param.zero_()
+            else:  # nn.Linear weight
+                param.normal_(mean=0.0, std=model.config.initializer_range)
+
+
 def get_student_model(
     model_args: DistillationModelArguments,
     model_constructor: type[PreTrainedModel],
@@ -125,11 +146,13 @@ def get_student_model(
         f"with dtype {model_args.student.dtype} and dms kwargs {json.dumps(dms_kwargs, indent=4)}"
     )
 
-    model = model_constructor.from_pretrained(
+    model, loading_info = model_constructor.from_pretrained(
         model_args.student.model_name_or_path,
-        dtype=model_args.student.dtype,
+        torch_dtype=getattr(torch, model_args.student.dtype),
+        output_loading_info=True,
         **dms_kwargs,
     )
+    _initialize_new_adapters(model, loading_info)
 
     if zero_out_proj_alpha:
         for name, param in model.named_parameters():
@@ -164,7 +187,7 @@ def get_teacher_model(
 
     model = model_constructor.from_pretrained(
         model_args.teacher.model_name_or_path,
-        dtype=model_args.teacher.dtype,
+        torch_dtype=getattr(torch, model_args.teacher.dtype),
     )
     model.eval()
     return model
@@ -221,7 +244,7 @@ def get_dms_noise(dist, device: torch.device, dms_state: DMSTrainingStateAux):
 
 def dms_schedule(
     step: int,
-    training_args: TrainingArguments,
+    training_args: Any,  # anything with max_steps
     dms_initial_cr,
     dms_final_cr,
     dms_final_step: int | None = None,
@@ -257,18 +280,17 @@ class DMSTrainerState:
     Usage:
         state = DMSTrainerState()
         combined_model = CombinedModel(..., trainer_state=state)
-        trainer = ModifiedTrainer(trainer_state=state, ...)
-        state.set_trainer(trainer)
+        trainer = DMSTrainer(combined_model, ..., trainer_state=state)  # dms.training.loop; calls set_trainer
     """
 
     def __init__(self):
         """Initialize with no trainer (set later after trainer construction)."""
-        self.trainer: Trainer | None = None
+        self.trainer: Any = None  # exposes state.global_step and args.process_index
         self.logs: dict[str, float] = {}
         self.grad_acc_step: int = 0
 
-    def set_trainer(self, trainer: Trainer):
-        """Set the HF trainer after construction."""
+    def set_trainer(self, trainer: Any):
+        """Set the trainer after construction."""
         self.trainer = trainer
 
     @property
@@ -294,49 +316,6 @@ class DMSTrainerState:
     def update_logs(self, logs: dict[str, float]):
         """Update logs and track gradient accumulation step."""
         self.logs = dict(**logs)
-
-
-class DMSGradAccCallback(TrainerCallback):
-    """Callback to track gradient accumulation steps for DMS noise seeding."""
-
-    def __init__(self, trainer_state: DMSTrainerState):
-        """Initialize with a reference to the shared trainer state."""
-        self.trainer_state = trainer_state
-
-    def on_step_begin(self, *args, **kwargs):
-        """Reset the gradient accumulation step on new step."""
-        self.trainer_state.reset_grad_acc_step()
-
-    def on_substep_end(self, *args, **kwargs):
-        """Increment the gradient accumulation step on substep end."""
-        self.trainer_state.increment_grad_acc_step()
-
-
-class ModifiedTrainer(Trainer):
-    """Modified Trainer class that gathers DMS logs across distributed processes."""
-
-    def __init__(self, trainer_state: DMSTrainerState, **kwargs):
-        """Initialize with a reference to the shared trainer state."""
-        super().__init__(**kwargs)
-        self.trainer_state = trainer_state
-        self.add_callback(DMSGradAccCallback(trainer_state))
-
-    def log(self, logs: dict[str, float], start_time: float | None = None):
-        """Log training metrics with gathered global DMS logs."""
-        custom_logs = dict(**self.trainer_state.logs)
-        names = list(custom_logs.keys())
-        values = [custom_logs[key] for key in names]
-
-        if dist.is_initialized():
-            values = torch.tensor(values, dtype=torch.float32, device=torch.cuda.current_device())
-            dist.all_reduce(values, op=dist.ReduceOp.AVG)
-
-            values = values.tolist()
-
-        for key, value in zip(names, values):
-            logs["gl_" + key] = value
-
-        super().log(logs=logs, start_time=start_time)
 
 
 # =============================================================================

@@ -230,6 +230,44 @@ def test_platform_launcher_maps_ranks_ports_and_stops_on_failure(tmp_path, nodes
     assert not log.exists()
 
 
+@pytest.mark.parametrize("base_exists,fail_training", [(False, False), (True, False), (True, True)])
+def test_platform_launcher_trains_then_evaluates_the_exported_student(tmp_path, base_exists, fail_training):
+    env = platform_launcher_env(tmp_path)
+    executable = tmp_path / "python"
+    # Answers the training-YAML query, and its training launch exports a student like models.qwen3.train.
+    executable.write_text(
+        '#!/bin/bash\nif [[ "$1" = -c && "$2" = *yaml* ]]; then echo "$DMS_TEST_BASE"; echo "$DMS_TEST_OUT"; exit; fi\n'
+        + executable.read_text().split("\n", 1)[1]
+        + 'if [[ "$*" = *"torch.distributed.run"*"models.qwen3.train"* ]]; then\n'
+          '  [[ "$DMS_TEST_FAIL_TRAIN" = 1 ]] && exit 9\n'
+          '  mkdir -p "$DMS_TEST_OUT/student_model" && touch "$DMS_TEST_OUT/student_model/config.json"\nfi\n')
+    base, out = tmp_path / "base", tmp_path / "run"
+    if base_exists:
+        base.mkdir()
+    env.update(DMS_TEST_BASE=str(base), DMS_TEST_OUT=str(out), DMS_TEST_FAIL_TRAIN=str(int(fail_training)))
+    train = BASELINE_ROOT / "configs/qwen3_1.7b_base.yaml"
+    command = ["bash", str(BASELINE_ROOT / "majob.sh"), "--train", str(train), "--limit", "4"]
+    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert result.returncode == (9 if fail_training else 0), result.stderr
+    calls = [call.split(" | ")[1] for call in (tmp_path / "calls").read_text().splitlines()]
+    expected = [] if base_exists else [f"-m models.qwen3.prepare_base --experiment-config "
+                                       f"configs/experiment_qwen1.7b_32k.yaml --output {base}"]
+    expected += [f"-m models.qwen3.train --config {train} --prepare-dataset-only",
+                 f"-m torch.distributed.run --standalone --nproc_per_node 4 -m models.qwen3.train --config {train}"]
+    if not fail_training:  # the evaluation stages see the exported student, never a stale one
+        expected += [f"-m torch.distributed.run --standalone --nproc_per_node 4 -m models.qwen3.evaluate "
+                     f"--experiment-config configs/experiment_qwen1.7b_32k.yaml --suite {suite} --limit 4 "
+                     f"--model {out}/student_model" for suite in ("main", "niah")]
+    assert calls == expected
+    for extra, message in ((["--model", "x"], "do not also pass --model"), (["--train", "missing.yaml"], "Missing")):
+        result = subprocess.run(command[:2] + extra + (["--train", str(train)] if extra[0] == "--model" else []),
+                                cwd=tmp_path, env=env, capture_output=True, text=True)
+        assert result.returncode == 2 and message in result.stderr, result.stderr
+    env.update(MA_NUM_HOSTS="2", VC_TASK_INDEX="0", MASTER_ADDR="node0")
+    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert result.returncode == 2 and "--train runs on one node" in result.stderr
+
+
 def test_result_check_rejects_same_dataset_name_with_different_prompt_or_runtime():
     result = {"comparison_contract": dict.fromkeys(CONTRACT_FIELDS, "same"), "results": {"samples": {"niah": [
         dict(doc_id=0, doc_hash="doc", prompt_hash="prompt", target_hash="target",
@@ -330,12 +368,12 @@ def declared_requirements():
 # torch218 versions listed in docs/BASELINE_ENVIRONMENT.md section 1 (2026-10-16 snapshot).
 TORCH218 = {"transformers": "4.51.3", "PyYAML": "6.0.3", "lightning": "2.6.1", "jsonargparse": "4.41.0",
             "psutil": "7.1.3", "safetensors": "0.7.0", "tokenizers": "0.21.4", "pytest": "9.1.1",
-            "lm-eval": "0.4.11", "datasets": "4.8.4", "pandas": "2.3.3", "xlsxwriter": "3.2.9"}
+            "lm-eval": "0.4.11", "datasets": "4.8.4", "pandas": "2.3.3", "xlsxwriter": "3.2.9", "numpy": "2.2.6"}
 
 
 def test_declared_requirements_install_nothing_new_into_torch218():
     core, extras = declared_requirements()
-    assert set(extras) == {"test", "eval", "dms-train"}
+    assert set(extras) == {"test", "eval"}
     assert f"datasets>={'.'.join(map(str, runner.EVAL_DATASETS_MIN))}" in extras["eval"]
     assert f"lm-eval[ruler,longbench,ifeval]>={'.'.join(map(str, runner.EVAL_LM_EVAL_MIN))}" in extras["eval"]
     for requirement in core + extras["test"] + extras["eval"]:
@@ -349,16 +387,31 @@ def test_declared_requirements_install_nothing_new_into_torch218():
             found = tuple(int(part) for part in (TORCH218[name].split(".") + ["0", "0"])[:3])
             bound = tuple(int(part) for part in (bound.split(".") + ["0", "0"])[:3])
             assert {">=": found >= bound, ">": found > bound, "<=": found <= bound, "<": found < bound}[op], requirement
-    # The upstream training pins live only in the separate training environment's extra.
-    from models.qwen3.check_env import TRAINING_TRANSFORMERS
-    assert f"transformers=={TRAINING_TRANSFORMERS}" in extras["dms-train"]
+
+
+def test_training_needs_no_hf_trainer_or_accelerate():
+    """torch218 has no accelerate, which HF Trainer and TrainingArguments require."""
+    violations = []
+    for path in [*sorted((BASELINE_ROOT / "dms").rglob("*.py")), *sorted((BASELINE_ROOT / "models/qwen3").glob("*.py"))]:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module] + [f"{node.module}.{alias.name}" for alias in node.names]
+            for name in names:
+                if name.split(".")[0] == "accelerate" or name in {
+                        "transformers.Trainer", "transformers.TrainingArguments", "transformers.TrainerCallback",
+                        "transformers.DataCollatorWithPadding"}:
+                    violations.append(f"{path.relative_to(BASELINE_ROOT)}:{node.lineno}: {name}")
+    assert not violations, "\n".join(violations)
 
 
 @pytest.mark.parametrize("versions,message", [
     ({"lm-eval": "0.4.11", "datasets": "4.8.4"}, None),  # torch218
     ({"lm-eval": "0.4.9", "datasets": "4.8.4"}, None),
     ({"lm-eval": "0.4.11", "datasets": "5.1.0"}, None),
-    ({"lm-eval": "0.4.11", "datasets": "4.4.2"}, "datasets>=4.7"),  # the DMS training environment
+    ({"lm-eval": "0.4.11", "datasets": "4.4.2"}, "datasets>=4.7"),  # the former DMS training environment
     ({"lm-eval": "0.4.11", "datasets": "3.6.0"}, "datasets>=4.7"),
     ({"lm-eval": "0.4.8", "datasets": "4.8.4"}, "lm-eval>=0.4.9"),
 ])

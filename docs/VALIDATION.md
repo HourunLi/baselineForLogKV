@@ -1,5 +1,39 @@
 # 本地验证记录
 
+## 2026-10-19（再续）：训练也在 torch218 中运行，训练→评测一体化
+
+改动：训练不再另建环境。`dms/training/loop.py` 代替 HF Trainer + accelerate（torch218 没有 accelerate），对配方用到的设置
+重现 transformers 4.57.3 Trainer + accelerate 1.4.0 的行为（见 [UPSTREAM.md](UPSTREAM.md)）；训练引擎按 4.57.3 的规则初始化
+新增 adapter（4.51.3 不初始化 checkpoint 里缺失的权重）；`check_env --training-only` 只要求 transformers>=4.51；去掉 `[dms-train]`；
+`majob.sh --train TRAIN_YAML` 在单节点上依次准备 Base（缺失时）、准备数据、训练、评测 main 与 NIAH，失败即停。
+蒸馏损失、门控、数据管线、模型与评测快照未改动。
+
+环境（开发容器，CPU，Python 3.10.20、torch 2.11.0）：torch218 副本（transformers 4.51.3、datasets 4.8.4、tokenizers 0.21.4，
+没有 accelerate）与上游副本（transformers 4.57.3、accelerate 1.4.0、datasets 4.4.2、tokenizers 0.22.1）。没有 GPU。
+
+对拍方法：两边用同一份微型 Base（2 层、hidden 64、vocab 64，权重为固定种子的随机数）、40 条随机词文本、`train_samples` 10 或 11、
+`max_length` 64、窗口 17、梯度累积 4、5 步、学习率 3e-2、第 4 步 CR 从 1 到 4、每 2 步存 checkpoint。上游侧运行改动前的
+`d984de5`（HF Trainer 路径，配置段名改回 `hf_trainer`，`use_cpu`）。两边都用相同的 CPU 替身：FlexAttention 与损失不编译
+（eager），噪声的 `fork_rng` 不碰 CUDA；上游 `ModifiedTrainer.log` 在 gloo 上没有 CUDA 与 AVG，替身为 SUM 后除以进程数。
+比较每一步的全部日志值（loss 按上游日志的 4 位小数舍入后比较）和导出 student 的每个张量（逐位）。
+
+| 检查 | 结果 |
+|---|---|
+| 单进程，10 个样本（每个 epoch 分组 4/4/2，第 3 步后重洗） | **逐位相同**：5 步 × 18 个日志值，29 个导出张量 |
+| 新循环中途续训（从第 2 步，epoch 中间；从第 3 步，epoch 末）对上游不中断训练 | 逐位相同 |
+| 2 进程 DDP（gloo），10 个样本，及 11 个样本（epoch 需补齐） | 逐位相同；日志的 epoch 进度证实数据按进程切分 |
+| `epoch_indices` 对 accelerate 自身的 `SeedableRandomSampler` + `BatchSamplerShard` | 样本数 1–40、进程数 1–8、每个 rank、3 个 epoch 共 4320 种情况全部相同 |
+| 反向对照 | 换 seed 43：adapter 不同（比较器能发现差异）；去掉 adapter 初始化：第 1 步 grad_norm 为 Infinity；续训不跳过已完成的组：续训测试失败 |
+| 新循环 FSDP（`full_shard auto_wrap`、逐层 activation checkpointing；CPU 上不能用 CPU offload 与 `sync_module_states`），2 进程 gloo | 能训练、存 checkpoint（含 FSDP 优化器状态）、导出；从第 2 步续训与不中断训练逐位相同。CPU 的 FlexAttention 不能对 q/k/v 反向，而 FSDP 的 flat parameter 视图让冻结权重也带梯度，这项检查用稠密 attention 替身 |
+| 同一替身下 FSDP 对 DDP | 第 1 步 grad_norm 1.38029 对 1.38063，之后逐渐分开：FSDP 按 accelerate 的设置以 bf16 参数计算，DDP 是 fp32 参数加 autocast，上游两种配置本来就不同 |
+| 同一组权重分别在 transformers 4.57.3 与 4.51.3 中导出（`tests/cross_env_check.py`） | 29 个张量逐位相同；4.57.3 导出→4.57.3 评测、→4.51.3 评测、4.51.3 导出→4.51.3 评测三者的 prefill/decode logits、token 与 KV 条目数完全相同。此前该脚本的随机模型在填权重前没有重新播种，两版默认初始化消耗的随机数不同，起始权重就不同，已修正 |
+| torch218 副本 `python -m pytest -q` | **111 passed、12 skipped**（都需要 CUDA） |
+| 上游副本 `python -m pytest -q` | 109 passed、14 skipped（CUDA 12 项、lm-eval 1 项、已有 masking_utils 时跳过的旧版 mask 测试 1 项） |
+
+未验证（需目标 GPU）：FSDP 的 CPU offload 与 `sync_module_states`、NCCL、编译后的 FlexAttention 训练内核与 `kernel_options`、
+真实 1.7B 的显存与速度，以及 GPU 上与上游的数值一致性（GPU kernel 不保证逐位确定）。`tests/test_qwen3_cuda.py` 新增的单进程
+FSDP 训练、续训与导出测试（主配置的 FSDP 设置）在 GPU 上运行后才算验证；其 CPU 变体（去掉 offload 与同步、稠密 attention 替身）已通过。
+
 ## 2026-10-19（续）：服务器 torch218 首次运行与修复
 
 服务器 torch218（GPU 机器，`/data/lihourun/baselineForLogKV/DMS`，`2a3c18c`）上

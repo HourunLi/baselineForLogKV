@@ -42,14 +42,14 @@ DMS 保留原始 KV，不形成合并簇，因此统计中的 `hierarchical_slot
 
 ## 环境与执行
 
-训练在单独的训练环境中进行：`pip install -e '.[dms-train,test]'`（上游固定的 transformers 4.57.3、accelerate 1.4.0、datasets 4.4.2）。评测在 SemanticLogKV 的评测环境 torch218 中进行，不安装本项目或任何包，从项目根目录运行；入口只检查 `lm-eval>=0.4.9`、`datasets>=4.7`，transformers 4.51.3 缺少的接口由 `dms/transformers_compat.py` 补齐，训练环境导出的模型在两个环境中的评测行为由 `tests/cross_env_check.py` 核对。私有快照所需的 lightning、jsonargparse、psutil 等 torch218 都已具备；sentencepiece 只在 tokenizer 只有 `tokenizer.model` 时才需要，Qwen3 不需要。两种方法的正式比较在同一评测环境运行，结果记录精确版本，`compare_results` 要求双方一致。
+训练与评测都在 SemanticLogKV 的环境 torch218 中进行，不安装本项目或任何包，从项目根目录运行。训练用本项目的 `dms/training/loop.py` 代替 HF Trainer + accelerate（torch218 没有 accelerate），CPU 上与上游训练逐位一致（见 [验证记录](VALIDATION.md)）；评测入口只检查 `lm-eval>=0.4.9`、`datasets>=4.7`，transformers 4.51.3 缺少的接口由 `dms/transformers_compat.py` 补齐。此前在 transformers 4.57.3 训练环境中导出的模型在 torch218 中的评测行为由 `tests/cross_env_check.py` 核对。私有快照所需的 lightning、jsonargparse、psutil 等 torch218 都已具备；sentencepiece 只在 tokenizer 只有 `tokenizer.model` 时才需要，Qwen3 不需要。两种方法的正式比较在同一评测环境运行，结果记录精确版本，`compare_results` 要求双方一致。
 
 ```bash
-# 训练环境：一次性精确转换项目实验 YAML 选中的原始 Base
+# torch218，项目根目录：一次性精确转换项目实验 YAML 选中的原始 Base
 python -m models.qwen3.prepare_base
-# 随后按 README 做训练，得到 student_model
+# 随后按 README 做训练，得到 student_model（或 bash majob.sh --train configs/qwen3_1.7b_base.yaml 训练后直接评测）
 
-# 评测环境（torch218，项目根目录）：只解析配置，不加载权重或数据
+# 只解析配置，不加载权重或数据
 python -m models.qwen3.evaluate --model outputs/qwen3_1.7b_base/student_model --suite niah --print-config
 
 # 用同一组 4 个样本先检查真实端到端链路

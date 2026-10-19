@@ -4,11 +4,10 @@ import argparse
 import re
 from importlib.metadata import PackageNotFoundError, version
 
-# Training follows the upstream recipe and its pinned releases in a separate training environment
-# (`[dms-train]`). Evaluation adapts to SemanticLogKV's environment (torch218, transformers 4.51.3):
-# Qwen3 needs transformers>=4.51, and dms.transformers_compat supplies the newer APIs DMS uses.
-TRAINING_TRANSFORMERS = "4.57.3"
-EVALUATION_TRANSFORMERS_MIN = (4, 51)
+# Training and evaluation both run in SemanticLogKV's environment (torch218, transformers 4.51.3) without
+# changing its packages: Qwen3 needs transformers>=4.51, dms.transformers_compat supplies the newer APIs DMS
+# uses, and dms.training.loop trains without HF Trainer/accelerate.
+TRANSFORMERS_MIN = (4, 51)
 
 
 def _version(name: str) -> str | None:
@@ -27,15 +26,10 @@ def check_environment(training_only: bool = False) -> dict[str, str | None]:
     if not torch.cuda.is_bf16_supported():
         raise RuntimeError("This recipe requires a GPU with bfloat16 support.")
     transformers = _version("transformers")
-    if training_only:
-        if transformers != TRAINING_TRANSFORMERS:
-            raise RuntimeError(f"DMS training needs transformers=={TRAINING_TRANSFORMERS}, found {transformers}: "
-                               "use the separate training environment (pip install -e '.[dms-train]'), "
-                               "never SemanticLogKV's evaluation environment")
-    elif transformers is None or tuple(int(p) for p in re.findall(r"\d+", transformers)[:2]) < EVALUATION_TRANSFORMERS_MIN:
-        raise RuntimeError(f"DMS evaluation needs transformers>=4.51 (Qwen3), found {transformers}; "
-                           "evaluate in SemanticLogKV's environment without changing its packages")
-    versions = {name: _version(name) for name in ("torch", "transformers", "datasets", "accelerate")}
+    if transformers is None or tuple(int(p) for p in re.findall(r"\d+", transformers)[:2]) < TRANSFORMERS_MIN:
+        raise RuntimeError(f"DMS needs transformers>=4.51 (Qwen3), found {transformers}; "
+                           "run in SemanticLogKV's environment without changing its packages")
+    versions = {name: _version(name) for name in ("torch", "transformers", "datasets")}
     if not training_only:
         from flash_attn import flash_attn_with_kvcache  # noqa: F401
 

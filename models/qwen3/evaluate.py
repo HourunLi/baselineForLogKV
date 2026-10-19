@@ -211,6 +211,9 @@ def evaluated_model(evaluator, checkpoint_dir, backend):
         # Training target and Base identity travel with the exported student config.
         "dms": {key: config.get(key) for key in sorted(config) if key.startswith("dms_")},
         "semanticlogkv_base": config.get("semanticlogkv_base"),
+        # Steps, settings, devices, versions and time of the training run that exported it.
+        "training": json.loads((path / "training_record.json").read_text(encoding="utf-8"))
+        if (path / "training_record.json").is_file() else None,
     }
 
 

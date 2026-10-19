@@ -356,7 +356,8 @@ except ImportError:  # transformers<4.52
 
         def __call__(self, *args, **kwargs):
             if self.gradient_checkpointing and self.training:
-                raise RuntimeError("Gradient checkpointing needs transformers>=4.52 (the DMS training environment)")
+                raise RuntimeError("Gradient checkpointing needs transformers>=4.52; "
+                                   "use trainer.fsdp_config.activation_checkpointing")
             return super().__call__(*args, **kwargs)
 
 try:

@@ -1,15 +1,21 @@
 """Real CUDA kernels, tiny random model. No downloaded weights or quality claims."""
 
+import socket
+from types import SimpleNamespace
+
 import pytest
 import torch
-from types import SimpleNamespace
+import torch.distributed as dist
 
 from dms.training.engine import (
     DMSTrainerState, CombinedModel, _configure_gradients, distillation_forward,
 )
+from dms.training.loop import init_runtime
 from models.qwen3.check_env import check_environment
 from models.qwen3.modeling_qwen3_dms import Qwen3ForCausalLMDMS
+from models.qwen3.train import export_trained_student
 from tests.test_qwen3_base import tiny_config, tokenizer
+from tests.test_training_loop import adapters, fixture, run  # noqa: F401  (fixture)
 
 pytestmark = [pytest.mark.cuda, pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")]
 
@@ -46,3 +52,38 @@ def test_cuda_distillation_then_prefill_decode(tokenizer):
             assert output.shape == (1, 1027)
             assert cache.get_seq_length() == 1026
             assert cache.get_cr() >= 1
+
+
+def test_cuda_fsdp_training_resumes_and_exports(fixture, tmp_path, monkeypatch):
+    """The recipe's FSDP setup (CPU offload, module-state sync, activation checkpointing) in one process."""
+    check_environment(training_only=True)
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    for name, value in dict(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port), RANK="0", WORLD_SIZE="1",
+                            LOCAL_RANK="0").items():
+        monkeypatch.setenv(name, value)
+    runtime = init_runtime()
+    fsdp = dict(fsdp="full_shard offload auto_wrap", fsdp_config=dict(
+        use_orig_params=True, sync_module_states=True, activation_checkpointing=True,
+        transformer_layer_cls_to_wrap=["Qwen3DecoderLayerDMS"], state_dict_type="FULL_STATE_DICT"))
+    try:
+        straight, _ = run(fixture, "straight", runtime=runtime, max_steps=3, **fsdp)
+        run(fixture, "resumed", runtime=runtime, max_steps=2, **fsdp)
+        resumed, seconds = run(fixture, "resumed", resume=str(fixture[0] / "resumed/checkpoint-2"),
+                               runtime=runtime, max_steps=3, **fsdp)
+        # GPU kernels need not be bitwise deterministic; a resume must still continue the same run.
+        for a, b in zip(straight.state.log_history, resumed.state.log_history, strict=True):
+            assert (a["step"], a["epoch"]) == (b["step"], b["epoch"])
+            torch.testing.assert_close(a["loss"], b["loss"], rtol=1e-3, atol=1e-6)
+        final, expected = adapters(resumed), adapters(straight)
+        assert sorted(final) == sorted(expected)
+        for name in expected:
+            torch.testing.assert_close(final[name], expected[name], rtol=1e-3, atol=1e-5)
+        path = tmp_path / "student_model"
+        export_trained_student(resumed, resumed.combined, fixture[3], str(path), resumed.training_record(seconds))
+        exported = dict(Qwen3ForCausalLMDMS.from_pretrained(path, torch_dtype=torch.bfloat16).named_parameters())
+        for name, value in final.items():
+            assert torch.equal(exported[name.removeprefix("student_model.")], value.bfloat16())
+    finally:
+        dist.destroy_process_group()
