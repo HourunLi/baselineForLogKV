@@ -69,8 +69,11 @@ KVCache-Factory 把多种 KV 压缩方法放在同一个推理入口下，用参
 入口脚本先 `cd` 到项目根目录再用 `python -m` 启动，torchrun 的各个进程也从这里 import `h2okv`，所以只需要把代码放到服务器上：
 
 ```bash
+# 首次检出：仓库的默认分支是 DMS，必须用 -b 指定本分支；已有目录不能靠 git pull 换分支
+git clone -b H2O https://github.com/HourunLi/baselineForLogKV.git /data/lihourun/baselineForLogKV/H2O
 source /home/ma-user/anaconda3/bin/activate torch218
-cd /data/lihourun/baselineForLogKV/H2O    # 本分支的检出目录
+cd /data/lihourun/baselineForLogKV/H2O
+git branch --show-current    # 应为 H2O；目录里应有 h2okv/，不应有 dms/ 或其他方法的包
 ```
 
 2026-10-16 的 torch218 为 torch 2.11.0+cu128、lm-eval 0.4.11、datasets 4.8.4、transformers 4.51.3、tokenizers 0.21.4、pyarrow 23.0.1，
