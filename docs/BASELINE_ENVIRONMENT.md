@@ -260,11 +260,11 @@ docs/<METHOD>.md             # 方法细节、预算口径、排错与验证记�
 
 ## 9. 现有 baseline 分支的已知差距（2026-10-16 静态检查）
 
-只读检查了 `origin/CaM`、`origin/DMS`、`origin/H2O`、`origin/PyramidKV`。其中 `H2O`（2026-10-16）与 `PyramidKV`（2026-10-17）已按
-`chunkKV` 的做法对齐，下表这两列是对齐前的状态，对齐后均已修复；验证范围见各自分支的 `docs/VALIDATION.md`（torch218 副本中的
-CPU 测试，未在服务器或 GPU 上运行）。CaM、DMS 未修改，也未在服务器上运行。
+只读检查了 `origin/CaM`、`origin/DMS`、`origin/H2O`、`origin/PyramidKV`。其中 `H2O`（2026-10-16）、`PyramidKV`（2026-10-17）与
+`DMS`（2026-10-19）已按 `chunkKV` 的做法对齐，下表这三列是对齐前的状态，对齐后均已修复；验证范围见各自分支的 `docs/VALIDATION.md`
+（torch218 副本中的 CPU 测试，未在服务器或 GPU 上运行）。CaM 未修改，也未在服务器上运行。
 
-| 问题 | CaM | DMS | H2O（已修复） | PyramidKV（已修复） |
+| 问题 | CaM | DMS（已修复） | H2O（已修复） | PyramidKV（已修复） |
 |---|---|---|---|---|
 | 启动检查要求 `lm-eval==0.4.9` 且 `datasets<4`，在 torch218 中会直接拒绝运行 | 是 | 是 | 是 | 是 |
 | `[eval]` 写 `datasets>=2.18,<4`、`lm-eval==0.4.9` | 是 | 是 | 是 | 是 |
@@ -273,12 +273,19 @@ CPU 测试，未在服务器或 GPU 上运行）。CaM、DMS 未修改，也未�
 | `majob.sh` 默认 8 个进程 | 是 | 是 | 是 | 是 |
 | `majob.sh` 没有设置 CUDA 12.8 的 PATH/`LD_LIBRARY_PATH`，训练作业中会遇到同样的驱动报错 | 是 | 是 | 是 | 是 |
 | AGENTS.md 第 7 条和规范 4.1 仍是 `datasets<4` 的旧版 | 是 | 是 | 是 | 是 |
-| `--print-config` 需要 import torch（对齐时发现） | 未检查 | 未检查 | 是 | 是 |
+| `--print-config` 需要 import torch（对齐时发现） | 未检查 | 否 | 是 | 是 |
+| 模型代码需要 transformers>=4.56 的接口，在 torch218（4.51.3）中 import 即失败（对齐时发现） | 未检查 | 是 | 否 | 否 |
 
-CaM、DMS 在 torch218 中运行前需要按 `chunkKV` 分支的做法对齐，对应提交：17e99d3、7de21cb、218eadb、81a8919、5ea70c6、
-84efc50（设置运行库路径）和 304d926（单节点 `--standalone`）。H2O 与 PyramidKV 结构相同，可参照 H2O 分支的 11ffdb3。
+CaM 在 torch218 中运行前需要按 `chunkKV` 分支的做法对齐，对应提交：17e99d3、7de21cb、218eadb、81a8919、5ea70c6、
+84efc50（设置运行库路径）和 304d926（单节点 `--standalone`）。
 
 H2O 与 PyramidKV 和本清单第 5 节的做法有一处结构差异：它们不 vendor SemanticLogKV，而是自带按同一请求语义实现的评测器，
 没有 `--backend logkv`；与 SemanticLogKV 对照时，在对方项目中生成结果，再用各自的 `compare_results` 核对逐样本输入与六个包的版本。
+
+DMS 需要训练，训练与评测分两个环境（规范 4.3）：训练沿用上游固定的 transformers 4.57.3、accelerate 1.4.0、datasets 4.4.2，
+只装在另建的训练环境（`[dms-train]`）；评测在 torch218 中运行，transformers 4.51.3 缺少的 `CacheLayerMixin`/分层 `Cache` 等由
+项目内 `dms/transformers_compat.py` 补齐。训练环境导出的 student 在两个环境中的评测输出由 `tests/cross_env_check.py` 逐元素核对。
+因为模型代码直接 import transformers，DMS 的核心依赖写了 torch218 满足的下限 `transformers>=4.51`，这是第 2 节“不要声明 transformers”
+的一处例外（该条针对只经 lm-eval 间接使用 transformers 的项目）。
 
 另外，各分支的 AGENTS.md、实现规范和本文件应保持同一版本。
