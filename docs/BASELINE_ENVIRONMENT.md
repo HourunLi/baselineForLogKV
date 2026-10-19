@@ -282,9 +282,11 @@ CaM 在 torch218 中运行前需要按 `chunkKV` 分支的做法对齐，对应�
 H2O 与 PyramidKV 和本清单第 5 节的做法有一处结构差异：它们不 vendor SemanticLogKV，而是自带按同一请求语义实现的评测器，
 没有 `--backend logkv`；与 SemanticLogKV 对照时，在对方项目中生成结果，再用各自的 `compare_results` 核对逐样本输入与六个包的版本。
 
-DMS 需要训练，训练与评测分两个环境（规范 4.3）：训练沿用上游固定的 transformers 4.57.3、accelerate 1.4.0、datasets 4.4.2，
-只装在另建的训练环境（`[dms-train]`）；评测在 torch218 中运行，transformers 4.51.3 缺少的 `CacheLayerMixin`/分层 `Cache` 等由
-项目内 `dms/transformers_compat.py` 补齐。训练环境导出的 student 在两个环境中的评测输出由 `tests/cross_env_check.py` 逐元素核对。
+DMS 需要训练。2026-10-19 起训练与评测都在 torch218 中运行，不往其中安装任何包：上游训练依赖的 HF Trainer 需要 torch218 没有的
+accelerate，DMS 分支改用项目内 `dms/training/loop.py`，对配方用到的设置重现 transformers 4.57.3 Trainer + accelerate 1.4.0 的行为
+（CPU 上与上游逐位一致；GPU 上的 FSDP/CPU offload 待实测），`majob.sh --train` 在一个作业里训练后接着评测。规范 4.3 要求分开管理的是
+会改动评测环境的训练依赖，DMS 现在没有这类依赖。transformers 4.51.3 缺少的 `CacheLayerMixin`/分层 `Cache` 等由项目内
+`dms/transformers_compat.py` 补齐；4.51.3 加载 Base 时不初始化 checkpoint 里缺失的权重，新增模块须自己初始化（DMS 的 adapter 即如此）。
 因为模型代码直接 import transformers，DMS 的核心依赖写了 torch218 满足的下限 `transformers>=4.51`，这是第 2 节“不要声明 transformers”
 的一处例外（该条针对只经 lm-eval 间接使用 transformers 的项目）。
 
