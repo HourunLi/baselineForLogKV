@@ -1,4 +1,6 @@
 # Adapted from https://github.com/huggingface/transformers/blob/47b0e478f324b54f177ea7998a0791870fdd0324/src/transformers/models/qwen3/configuration_qwen3.py
+# Modified for this baseline: derive layer_types as transformers 4.57.3 does when the installed
+# transformers (<4.54) does not, so evaluation also runs with transformers 4.51.3.
 
 # Copyright 2024 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
 #
@@ -99,3 +101,11 @@ class Qwen3ConfigDMS(Qwen3Config):
         super().__init__(
             **kwargs,
         )
+        if getattr(self, "layer_types", None) is None:
+            # transformers<4.54 has no layer_types; derive them as transformers 4.57.3 Qwen3Config does.
+            sliding_window = self.sliding_window if self.use_sliding_window else None
+            self.layer_types = [
+                "sliding_attention" if sliding_window is not None and i >= self.max_window_layers
+                else "full_attention"
+                for i in range(self.num_hidden_layers)
+            ]

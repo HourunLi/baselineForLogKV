@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Modified: take CacheLayerMixin from dms.transformers_compat so evaluation also runs with transformers<4.56.
 """Paged DMS cache layer implementation with block-based memory management."""
 
 import gc
@@ -20,7 +21,8 @@ import math
 from typing import Any
 
 import torch
-from transformers import CacheLayerMixin
+
+from dms.transformers_compat import CacheLayerMixin
 
 
 def ceil_int_div(a: int, b: int) -> int:

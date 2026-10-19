@@ -24,7 +24,7 @@
 | tokenizer | 双方评测都加载原始 Base 目录的快照 `Tokenizer` |
 | 测试缓存 | 与参考相同的缓存根目录及子目录、离线设置、RULER patch；map/filter 结果用 `datasets.disable_caching()` 写进程私有临时文件，多 rank 不竞争共享缓存文件；新版 datasets 写入的不兼容缓存条目明确报错 |
 | 任务与长度 | `--suite main`：47 个入口，不传 NIAH metadata（同参考 `eval.sh`）；`--suite niah`：`niah_single_1/2/3`，`metadata.max_seq_lengths=[32768]`；模型窗口取 `context_length=32768`；`metadata.pretrained` 保留原 `ckpt_dir` 字符串 |
-| 样本 | 同 harness 0.4.9、同默认 seeds/fewshot、同 limit；保存 doc/prompt/target hash 与实际 arguments，事后严格核对 |
+| 样本 | 同一 lm-eval（torch218 中为 0.4.11，任务定义随版本变化）、同默认 seeds/fewshot、同 limit；保存 doc/prompt/target hash 与实际 arguments，事后严格核对 |
 | 提示与分词 | 不加 chat template；选择题 context 与 continuation 分别编码，continuation `bos=False` |
 | 生成 | 共用快照 `generate`；按任务生成参数，非采样时 temperature/top_p=0；在窗口内先预留输出长度，再从左侧截断 prompt |
 | 停止 | 共享代码只检查 EOS 与长度，不执行 `until` 字符串；DMS 保持相同行为，不能将其结果宣称为 harness 原生 HFLM 停止规则 |
@@ -42,14 +42,14 @@ DMS 保留原始 KV，不形成合并簇，因此统计中的 `hierarchical_slot
 
 ## 环境与执行
 
-训练环境：`pip install -e '.[train,test]'`；评测环境：`pip install -e '.[eval,test]'`。私有快照所需的 lightning、jsonargparse、psutil、sentencepiece 等已列入本项目依赖（原先由 `pip install -e ../litgpt` 间接安装），不再安装任何相邻项目。训练保留 datasets 4.4.2；评测采用共享协议的 datasets<4 和 lm-eval 0.4.9，入口启动时检查这两个版本。不要将 train/eval extras 合并安装。两种方法的正式比较在同一评测环境运行。
+训练在单独的训练环境中进行：`pip install -e '.[dms-train,test]'`（上游固定的 transformers 4.57.3、accelerate 1.4.0、datasets 4.4.2）。评测在 SemanticLogKV 的评测环境 torch218 中进行，不安装本项目或任何包，从项目根目录运行；入口只检查 `lm-eval>=0.4.9`、`datasets>=4.7`，transformers 4.51.3 缺少的接口由 `dms/transformers_compat.py` 补齐，训练环境导出的模型在两个环境中的评测行为由 `tests/cross_env_check.py` 核对。私有快照所需的 lightning、jsonargparse、psutil 等 torch218 都已具备；sentencepiece 只在 tokenizer 只有 `tokenizer.model` 时才需要，Qwen3 不需要。两种方法的正式比较在同一评测环境运行，结果记录精确版本，`compare_results` 要求双方一致。
 
 ```bash
 # 训练环境：一次性精确转换项目实验 YAML 选中的原始 Base
 python -m models.qwen3.prepare_base
 # 随后按 README 做训练，得到 student_model
 
-# 评测环境：只解析配置，不加载权重或数据
+# 评测环境（torch218，项目根目录）：只解析配置，不加载权重或数据
 python -m models.qwen3.evaluate --model outputs/qwen3_1.7b_base/student_model --suite niah --print-config
 
 # 用同一组 4 个样本先检查真实端到端链路

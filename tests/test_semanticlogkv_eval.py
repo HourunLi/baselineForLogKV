@@ -112,6 +112,33 @@ def test_base_identity_rejects_missing_provenance_and_changed_inputs(tmp_path):
         verify_base_source(provenance, tmp_path)
 
 
+def test_shared_loader_ties_lm_head_with_the_installed_transformers(tmp_path, monkeypatch):
+    """DMSModel.from_checkpoint in this environment: complete, tied, bfloat16; an untied load is refused."""
+    from models.qwen3 import check_env, semanticlogkv_eval
+    from models.qwen3.configuration_qwen3_dms import Qwen3ConfigDMS
+    from models.qwen3.modeling_qwen3_dms import Qwen3ForCausalLMDMS
+
+    config = Qwen3ConfigDMS(vocab_size=32, hidden_size=64, intermediate_size=128, num_hidden_layers=2,
+                            num_attention_heads=4, num_key_value_heads=2, head_dim=16, max_position_embeddings=64,
+                            tie_word_embeddings=True, dms_separate_alpha=True, dms_window_size=32,
+                            dms_paged_attention_block_size=16)
+    model = Qwen3ForCausalLMDMS(config)
+    assert model.lm_head.weight is model.model.embed_tokens.weight
+    model.save_pretrained(tmp_path / "student")
+    # Loader coverage only: no CUDA kernels, and no shared Base to compare provenance against.
+    monkeypatch.setattr(check_env, "check_environment", lambda: None)
+    monkeypatch.setattr(semanticlogkv_eval, "verify_base_source", lambda provenance, tokenizer_dir: None)
+    facade = DMSModel.from_checkpoint(tmp_path / "student", tmp_path, 64, "cpu")
+    loaded = facade.hf_model
+    assert loaded.lm_head.weight is loaded.model.embed_tokens.weight
+    assert next(facade.parameters()).dtype == torch.bfloat16 and not facade.training
+    assert loaded.config.layer_types == ["full_attention", "full_attention"]
+    # Without tying (the transformers<4.54 default accessor) the head the checkpoint omits is reported missing.
+    monkeypatch.setattr(Qwen3ForCausalLMDMS, "get_output_embeddings", lambda self: None)
+    with pytest.raises(ValueError, match="Incomplete DMS checkpoint.*lm_head.weight"):
+        DMSModel.from_checkpoint(tmp_path / "student", tmp_path, 64, "cpu")
+
+
 class Tokenizer:
     bos_id = 1
     eos_id = None

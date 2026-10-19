@@ -1,4 +1,6 @@
 # Adapted from https://github.com/huggingface/transformers/blob/47b0e478f324b54f177ea7998a0791870fdd0324/src/transformers/models/qwen3/modeling_qwen3.py
+# Modified for this baseline: transformers APIs newer than 4.51 come from dms.transformers_compat,
+# so evaluation also runs in SemanticLogKV's environment (transformers 4.51.3).
 
 # Copyright 2025 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
 #
@@ -44,15 +46,17 @@ from dms.core import (
 )
 from dms.logging import get_logger
 from torch import nn
-from transformers.generation import GenerationMixin
-from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
-from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
-from transformers.modeling_layers import (
+from dms.transformers_compat import (
     GenericForQuestionAnswering,
     GenericForSequenceClassification,
     GenericForTokenClassification,
     GradientCheckpointingLayer,
+    TransformersKwargs,
+    create_causal_mask,
+    create_sliding_window_causal_mask,
 )
+from transformers.generation import GenerationMixin
+from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_utils import PreTrainedModel
 from transformers.models.qwen3.modeling_qwen3 import (
     Qwen3Attention,
@@ -62,7 +66,7 @@ from transformers.models.qwen3.modeling_qwen3 import (
     apply_rotary_pos_emb,
 )
 from transformers.processing_utils import Unpack
-from transformers.utils import TransformersKwargs, can_return_tuple
+from transformers.utils import can_return_tuple
 from transformers.utils.deprecation import deprecate_kwarg
 
 from .configuration_qwen3_dms import Qwen3ConfigDMS
@@ -231,6 +235,8 @@ class Qwen3PreTrainedModelDMS(PreTrainedModel):
     """A modified version of the transformers Qwen3PreTrainedModel model."""
 
     config: Qwen3ConfigDMS
+    # transformers<4.56 reads config_class only, not the annotation above; both name the same class.
+    config_class = Qwen3ConfigDMS
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
     _no_split_modules = ["Qwen3DecoderLayerDMS"]
@@ -270,6 +276,14 @@ class Qwen3ModelDMS(Qwen3PreTrainedModelDMS):
 
         # Initialize weights and apply final processing
         self.post_init()
+
+    # transformers<4.54 has no default embedding accessors, so it would not tie lm_head without these;
+    # they return what the transformers 4.57.3 defaults return.
+    def get_input_embeddings(self):
+        return self.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.embed_tokens = value
 
     def forward(
         self,
@@ -376,6 +390,19 @@ class Qwen3ForCausalLMDMS(Qwen3PreTrainedModelDMS, GenerationMixin):
         # Initialize weights and apply final processing
         self.post_init()
 
+    # As in Qwen3ModelDMS: explicit accessors so transformers<4.54 ties lm_head to the embeddings.
+    def get_input_embeddings(self):
+        return self.model.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.model.embed_tokens = value
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
+
     def get_cache(self, preallocate_for_tokens: int | None = None):
         """Get the DMS cache for inference."""
         if preallocate_for_tokens is None:
@@ -474,25 +501,24 @@ class Qwen3ForCausalLMDMS(Qwen3PreTrainedModelDMS, GenerationMixin):
         )
 
 
-class Qwen3ForSequenceClassificationDMS(GenericForSequenceClassification, Qwen3PreTrainedModelDMS):
-    """Qwen3 model for sequence classification with DMS."""
+__all__ = ["Qwen3ForCausalLMDMS", "Qwen3ModelDMS", "Qwen3PreTrainedModelDMS"]
 
+# The generic task heads need transformers>=4.53; evaluation uses only the causal LM above.
+if GenericForSequenceClassification is not None:
 
-class Qwen3ForTokenClassificationDMS(GenericForTokenClassification, Qwen3PreTrainedModelDMS):
-    """Qwen3 model for token classification with DMS."""
+    class Qwen3ForSequenceClassificationDMS(GenericForSequenceClassification, Qwen3PreTrainedModelDMS):
+        """Qwen3 model for sequence classification with DMS."""
 
+    class Qwen3ForTokenClassificationDMS(GenericForTokenClassification, Qwen3PreTrainedModelDMS):
+        """Qwen3 model for token classification with DMS."""
 
-class Qwen3ForQuestionAnsweringDMS(GenericForQuestionAnswering, Qwen3PreTrainedModelDMS):
-    """Qwen3 model for question answering with DMS."""
+    class Qwen3ForQuestionAnsweringDMS(GenericForQuestionAnswering, Qwen3PreTrainedModelDMS):
+        """Qwen3 model for question answering with DMS."""
 
-    base_model_prefix = "transformer"  # For BC, where `transformer` was used instead of `model`
+        base_model_prefix = "transformer"  # For BC, where `transformer` was used instead of `model`
 
-
-__all__ = [
-    "Qwen3ForCausalLMDMS",
-    "Qwen3ForQuestionAnsweringDMS",
-    "Qwen3ForSequenceClassificationDMS",
-    "Qwen3ForTokenClassificationDMS",
-    "Qwen3ModelDMS",
-    "Qwen3PreTrainedModelDMS",
-]
+    __all__ += [
+        "Qwen3ForQuestionAnsweringDMS",
+        "Qwen3ForSequenceClassificationDMS",
+        "Qwen3ForTokenClassificationDMS",
+    ]

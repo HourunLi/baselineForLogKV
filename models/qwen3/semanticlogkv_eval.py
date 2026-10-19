@@ -95,7 +95,7 @@ class DMSModel(nn.Module):
             raise ValueError("DMS comparison requires eviction enabled")
         verify_base_source(getattr(config, "semanticlogkv_base", None), tokenizer_dir)
         model, loading = Qwen3ForCausalLMDMS.from_pretrained(
-            checkpoint_dir, config=config, dtype=torch.bfloat16,
+            checkpoint_dir, config=config, torch_dtype=torch.bfloat16,
             local_files_only=True, output_loading_info=True,
         )
         if loading["missing_keys"] or loading["unexpected_keys"] or loading["mismatched_keys"]:

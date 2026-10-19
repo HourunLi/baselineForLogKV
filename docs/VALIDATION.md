@@ -1,5 +1,44 @@
 # 本地验证记录
 
+## 2026-10-19：评测适配 torch218（transformers 4.51.3、lm-eval 0.4.11、datasets 4.8.4），训练环境分开
+
+改动：评测在 SemanticLogKV 的 torch218 中运行，不安装任何包；训练沿用上游固定的 transformers 4.57.3、accelerate 1.4.0、
+datasets 4.4.2，只装在另建环境（`[dms-train]`）。评测入口只检查 `lm-eval>=0.4.9`、`datasets>=4.7`；`dms/transformers_compat.py`
+补齐 4.51 缺少的 `CacheLayerMixin`/分层 `Cache`（从 4.57.3 原样复制）、`create_causal_mask`、`GradientCheckpointingLayer`、
+`TransformersKwargs`；模型类显式写 `config_class` 与 embedding 访问器；`check_env` 分训练/评测要求；`pyproject` 只留 torch218 满足的下限；
+`majob.sh` 与 `scripts/evaluate.sh` 按 chunkKV 的做法对齐（可见卡数、CUDA 12.8 库路径与自检、单节点 `--standalone`）。DMS 的门控、
+淘汰、缓存与注意力算法，以及 vendor 的评测快照均未改动（快照与 chunkKV 分支逐文件相同，仅命名空间、头注释与 `DMS_HF_CACHE` 不同）。
+
+环境（开发容器，CPU，均为 Python 3.10.20、torch 2.11.0 的 PyPI 默认 CUDA 版，只在 CPU 上执行；没有 FlashAttention）：
+
+- **torch218 副本**：transformers 4.51.3、tokenizers 0.21.4、lm-eval 0.4.11、datasets 4.8.4、huggingface-hub 0.36.2、pyarrow 23.0.1、
+  numpy 2.2.6、pandas 2.3.3、xlsxwriter 3.2.9、lightning 2.6.1、jsonargparse 4.41.0、litdata 0.2.61、tensorboard 2.20.0；
+  与 torch218 一样没有 accelerate、sentencepiece、openpyxl。按环境清单第 1 节的版本表逐个安装，没有完整 freeze。
+- **训练环境副本**：transformers 4.57.3、accelerate 1.4.0、datasets 4.4.2、tokenizers 0.22.1、lightning 2.6.1、jsonargparse 4.41.0；
+  没有 lm-eval。
+
+| 检查 | 结果 |
+|---|---|
+| 改动前的 `origin/DMS`（6891e07），torch218 副本中 `python -m pytest -q` | **9 个测试文件收集失败**（`cannot import name 'CacheLayerMixin' from 'transformers'`），与服务器 torch218 上看到的报错相同 |
+| 改动前，训练环境副本 | 76 passed、12 skipped（缺 lm-eval 1 项、需要 CUDA 11 项） |
+| 改动后，torch218 副本 `env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 python -m pytest -q` | **88 passed、13 skipped**：依赖训练引擎的 2 项标明 training environment 跳过，需要 CUDA 的 11 项跳过 |
+| 改动后，训练环境副本 | **89 passed、12 skipped**（缺 lm-eval 1 项、需要 CUDA 11 项） |
+| `tests/cross_env_check.py`：训练环境副本导出一个 adapter 非零的小型随机 student（项目的 `extract_student_model`，transformers 4.57.3 写出），两个副本分别按评测器的加载步骤与 `DMSModel.forward`/`kv_compression_snapshot` 跑 96 token 的 3 块 prefill 与 12 步贪心 decode | **逐元素相同**：96×64 的 prefill logits、每步 decode logits 与 token、每步 KV 条目数（结束时 432 中保留 285，确有淘汰）。CPU 上用上游测试的参考 FlashAttention 替代与未编译的 FlexAttention |
+| 反向对照：去掉新增的 embedding 访问器后在 torch218 副本重跑 | 报 `lm_head is not tied`；正式加载器同样会因缺 `lm_head.weight` 拒绝（`test_shared_loader_ties_lm_head_with_the_installed_transformers`） |
+| `--print-config` | 系统 Python 3.13（只有 PyYAML，没有 torch）中正常输出；原有测试在禁止 import torch/transformers/lm_eval/datasets 的情况下通过 |
+
+新增或改写的测试：`majob.sh` 的可见卡数默认值、超出可见卡数与 CUDA 初始化失败时不启动 torchrun、`LD_LIBRARY_PATH` 顺序、单节点
+`--standalone`、多节点 rank/端口/主节点 DNS；启动检查放行 torch218 的版本、拒绝训练环境的 datasets 4.4.2 与过旧版本；`pyproject` 的核心依赖、
+`[test]`、`[eval]` 都是 torch218 满足的下限，上游版本固定只在 `[dms-train]`；`dataset_info.json` 解析失败与新版 datasets 缓存条目的报错；
+评测加载器在当前 transformers 下加载完整、`lm_head` 绑定、bfloat16。
+
+### 未验证
+
+- 服务器上的 torch218 本身；flash-attn 2.8.3 在 torch218 中是否可 import、`flash_attn_with_kvcache` 与 FlexAttention 在 A800 上的执行。
+- 任何 GPU 路径：编译的 FlexAttention prefill、FlashAttention paged decode、bfloat16 CUDA 数值；`tests/test_qwen3_cuda.py` 与上游 CUDA 测试。
+- 训练环境本身尚未在服务器上建立；真实 1.7B Base 的 `prepare_base`、训练、导出均未运行，因此还没有可评测的 DMS student。
+- `majob.sh` 在训练平台的执行、离线缓存的真实读取、`--limit 4` 小样本、全量评测与 SemanticLogKV 的对照。
+
 ## 2026-10-15：项目独立化与统一评测协议
 
 改动：移除运行时对相邻 `../litgpt` 的全部依赖（评测代码、实验 YAML、权重转换），改用项目内私有快照、

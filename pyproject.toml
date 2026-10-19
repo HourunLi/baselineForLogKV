@@ -7,28 +7,31 @@ name = "semanticlogkv-dms-baseline"
 version = "0.1.0"
 description = "Qwen3-1.7B-Base with NVIDIA Dynamic Memory Sparsification"
 requires-python = ">=3.10,<3.14"
-# PyTorch/CUDA (and FlashAttention for inference) come from the prepared CUDA image.
+# PyTorch/CUDA (and FlashAttention for inference) come from the environment. Lower bounds of what the code
+# imports: SemanticLogKV's evaluation environment (torch218) meets all of them and none excludes a version it
+# has, because evaluation runs there without installing this project. transformers>=4.51 is the first release
+# with Qwen3; the newer APIs DMS uses come from dms.transformers_compat when the installed release lacks them.
 dependencies = [
-    "transformers==4.57.3",
-    "accelerate==1.4.0",
+    "transformers>=4.51",
     "PyYAML>=6.0",
-    # Bundled SemanticLogKV/LitGPT runtime (models/_vendor/semanticlogkv): same packages
-    # that installing the sibling litgpt checkout used to pull in.
+    # Bundled SemanticLogKV/LitGPT runtime (models/_vendor/semanticlogkv).
     "lightning>=2.6.1",
     "jsonargparse[signatures]>=4.37,<=4.41",
     "psutil>=5.9",
     "safetensors>=0.4.3",
     "tokenizers>=0.21",
-    "sentencepiece>=0.2",
     "tqdm>4.66",
 ]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
-# Training and evaluation need separate environments: datasets 4 vs the shared datasets<4 protocol.
-train = ["datasets==4.4.2"]
-# Shared evaluation protocol. Formal runs record the exact installed versions (datasets, pyarrow, ...).
-eval = ["lm-eval[ruler,longbench,ifeval]==0.4.9", "datasets>=2.18,<4", "pandas>=1.9", "openpyxl>=3"]
+# For a separate environment only. These are what the code and the shared offline cache need (its IFEval
+# entry uses the Json feature type of datasets>=4.7); each run records the exact versions, and compare_results
+# requires both sides to match. transformers comes with lm-eval as well.
+eval = ["lm-eval[ruler,longbench,ifeval]>=0.4.9", "datasets>=4.7", "pandas>=1.9", "xlsxwriter>=3"]
+# DMS training only, in its own environment and never in torch218: the upstream recipe's pinned releases
+# (models.qwen3.check_env --training-only requires them). Training and evaluation extras are never combined.
+dms-train = ["transformers==4.57.3", "accelerate==1.4.0", "datasets==4.4.2"]
 
 [tool.setuptools.packages.find]
 include = ["dms*", "models*"]
