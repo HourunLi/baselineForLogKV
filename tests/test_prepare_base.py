@@ -1,5 +1,6 @@
 """Real LitGPT -> HF conversion on a tiny offline Qwen3 fixture, using only project code."""
 
+from importlib.metadata import version
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -13,9 +14,15 @@ from transformers import PreTrainedTokenizerFast, Qwen3Config, Qwen3ForCausalLM
 
 from models._vendor.semanticlogkv.litgpt import Config, GPT
 from models._vendor.semanticlogkv.litgpt.scripts import convert_hf_checkpoint
+from models.qwen3.check_env import TRAINING_TRANSFORMERS
 from models.qwen3.config import load_experiment_config, require_project_file
 from models.qwen3.convert_lit_to_hf import copy_weights_qwen_3
 from models.qwen3.prepare_base import build_hf_model, prepare_base, sha256_file, verify_prepared_base
+
+# DMS training code (dms.training.engine) targets the training environment's transformers release.
+requires_training_env = pytest.mark.skipif(
+    version("transformers") != TRAINING_TRANSFORMERS,
+    reason=f"DMS training code runs in the training environment (transformers=={TRAINING_TRANSFORMERS})")
 
 
 @pytest.fixture
@@ -196,6 +203,7 @@ def test_unprepared_base_is_rejected(tmp_path):
         verify_prepared_base(tmp_path)
 
 
+@requires_training_env
 def test_converted_base_to_dms_export_to_shared_model_loader(source, tmp_path, monkeypatch):
     from dms.training.engine import DistillationModelArguments, ModelArguments, get_student_model
     from models.qwen3 import check_env

@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Modified: include the recent contiguous window in prefill compression statistics.
+# Modified: include the recent contiguous window in prefill compression statistics; take the cache base
+# classes from dms.transformers_compat so evaluation also runs with transformers<4.56.
 """DMS KV cache: HF-compatible wrapper, combined cache layer, and contiguous cache layer.
 
 The paged cache layer (DMSPagedCacheLayer) is in dms.cache_paged.
@@ -24,10 +25,8 @@ from enum import Enum
 from typing import Any
 
 import torch
-from transformers import CacheLayerMixin
-from transformers.cache_utils import Cache
-
 from dms.cache_paged import DMSPagedCacheLayer
+from dms.transformers_compat import Cache, CacheLayerMixin
 
 # =============================================================================
 # Contiguous (non-paged) DMS cache layer

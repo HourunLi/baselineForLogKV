@@ -19,6 +19,7 @@ import re
 import socket
 import subprocess
 import sys
+import traceback
 
 import yaml
 
@@ -30,6 +31,12 @@ from .config import (
 BACKENDS = ("dms", "logkv")
 SUITES = ("main", "longbench", "niah")
 DEFAULT_HF_CACHE = "/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache"
+# Requirements of the bundled protocol code and the shared offline cache, not a target environment:
+# evaluation adapts to SemanticLogKV's environment (torch218: lm-eval 0.4.11, datasets 4.8.4 on 2026-10-16).
+# lm-eval 0.4.9 is the oldest release the bundled evaluator was checked against; the cache's IFEval entry
+# uses the Json feature type, which datasets reads from 4.7 on. Results record the exact versions and
+# compare_results refuses to compare runs whose versions differ.
+EVAL_LM_EVAL_MIN, EVAL_DATASETS_MIN = (0, 4, 9), (4, 7)
 TOKENIZER_NAMES = ("tokenizer.json", "tokenizer.model", "tokenizer_config.json", "special_tokens_map.json",
                    "added_tokens.json", "vocab.json", "merges.txt", "chat_template.jinja",
                    "generation_config.json")
@@ -48,12 +55,24 @@ def configure_environment():
     )
 
 
+def check_evaluation_packages():
+    """Fail early when the installed packages cannot run the protocol or read the shared cache."""
+    for name, minimum, needed_by in (("lm-eval", EVAL_LM_EVAL_MIN, "The bundled evaluation protocol"),
+                                     ("datasets", EVAL_DATASETS_MIN, "The shared offline cache")):
+        try:
+            found = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            found = None
+        if found is None or tuple(int(part) for part in re.findall(r"\d+", found)[:len(minimum)]) < minimum:
+            raise RuntimeError(f"{needed_by} needs {name}>={'.'.join(map(str, minimum))}, found {found or 'none'}; "
+                               "evaluate in SemanticLogKV's environment (torch218) without changing its packages, "
+                               "not in the DMS training environment")
+
+
 def load_evaluator(root=RUNTIME_ROOT):
     """Private evaluator instance with imports confined to the bundled runtime."""
-    if importlib.metadata.version("lm-eval") != "0.4.9":
-        raise RuntimeError("Shared evaluation requires lm-eval==0.4.9")
-    if int(importlib.metadata.version("datasets").split(".")[0]) >= 4:
-        raise RuntimeError("Use the evaluation environment (datasets<4), not the DMS training environment")
+    # Checked before the evaluator imports them; the exact versions are recorded in every result.
+    check_evaluation_packages()
     configure_environment()
     spec = importlib.util.spec_from_file_location("models._vendor.semanticlogkv._evaluation", root / "eval.py")
     module = importlib.util.module_from_spec(spec)
@@ -220,13 +239,22 @@ def run_evaluation(evaluator, kwargs, backend, contract, resolved=None):
         evaluator.main(**kwargs)
     except ValueError as exc:
         # Raised while task data loads from the offline cache, before any model call.
+        in_cache_lookup = any("packaged_modules/cache" in frame.filename.replace(os.sep, "/")
+                              for frame in traceback.extract_tb(exc.__traceback__))
+        if isinstance(exc, json.JSONDecodeError) and in_cache_lookup:
+            raise RuntimeError(
+                f"A dataset_info.json in the offline cache under {os.environ.get('HF_DATASETS_CACHE')} is not "
+                "valid JSON (datasets parses it for every entry of the config it loads). The shared cache is "
+                "read-only: report the entry instead of moving or rewriting it; see docs/BASELINE_ENVIRONMENT.md "
+                "section 4."
+            ) from exc
         if not re.match(r"Feature type '\w+' not found", str(exc)):
             raise
         raise RuntimeError(
             f"An offline cache entry under {os.environ.get('HF_DATASETS_CACHE')} was written by a newer "
-            f"`datasets` than the installed {importlib.metadata.version('datasets')}. The shared protocol "
-            "reads entries readable by datasets<4: repair or restore that entry instead of upgrading "
-            "datasets or switching data."
+            f"`datasets` than the installed {importlib.metadata.version('datasets')}, so this environment has "
+            "been downgraded. Evaluate in SemanticLogKV's environment (torch218) instead of converting the "
+            "cache or switching data; see docs/BASELINE_ENVIRONMENT.md section 4."
         ) from exc
     finally:
         os.chdir(previous_dir)

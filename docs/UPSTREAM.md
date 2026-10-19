@@ -8,8 +8,8 @@
 
 | 上游路径 | 当前路径 | 处理 |
 |---|---|---|
-| experimental/dms/dms | dms | 门控、attention、训练引擎原样保留；data.py 增加空数据报错，cache.py 修正 prefill CR 统计 |
-| experimental/dms/models | models | Qwen3 模型和配置原样；训练与导出入口做以下适配 |
+| experimental/dms/dms | dms | 门控、attention、训练引擎原样保留；data.py 增加空数据报错，cache.py 修正 prefill CR 统计；cache.py、cache_paged.py 的 transformers 基类改从 `dms/transformers_compat.py` 取 |
+| experimental/dms/models | models | Qwen3 模型和配置除下文的 transformers 兼容外原样；训练与导出入口做以下适配 |
 | experimental/dms/tests | tests/upstream | 保留原测试，修正独立仓库的测试工具导入 |
 | experimental/dms/README.md、ARCHITECTURE.md | docs/upstream | 原文档快照，不代表本仓库命令和验证结果 |
 | LICENSE | LICENSE | 原许可证与第三方声明 |
@@ -21,19 +21,35 @@
 | SemanticLogKV（`HourunLi/LogKV@4fd97c78e04f0ec96ad6aed18df9e9cf440c6090`）`eval.py` 及其导入闭包（LitGPT 0.5.12 分支） | `models/_vendor/semanticlogkv` | 评测协议私有快照，Apache-2.0；仅改命名空间、头注释与 `DMS_HF_CACHE`；省略 `demo.py`、`data.py`。逐文件来源/打包哈希见其 `SOURCE.json` |
 | LitGPT 0.5.12 `litgpt/scripts/convert_lit_checkpoint.py` 的 `copy_weights_qwen_3` | `models/qwen3/convert_lit_to_hf.py` | Apache-2.0；只保留 dense Qwen3 映射，去掉惰性加载 saver，未知键报错 |
 
+## 其他来源（transformers）
+
+| 来源 | 当前路径 | 处理 |
+|---|---|---|
+| transformers 4.57.3 `src/transformers/cache_utils.py` 的 `CacheLayerMixin`、`Cache` | `dms/transformers_compat.py` | Apache-2.0；类体原样复制（`Cache` 的 docstring 缩短），只在已安装的 transformers 没有 `CacheLayerMixin` 时使用 |
+
 ## 本地差异
+
+- `dms/transformers_compat.py`（新增）：DMS 按 transformers 4.57.3 写成，评测环境 torch218 是 4.51.3。每个名字优先取已安装的 transformers：
+  `CacheLayerMixin`/`Cache` 缺失时用上表复制的类（两者成对使用，不与 4.51 的旧 `Cache` 混用）；`create_causal_mask` 缺失时对未 padding 的输入返回
+  `None`（DMS 推理只把最后一行 mask 当作 key padding 掩码，两者都是全 1），遇到 padding 报错；`GradientCheckpointingLayer` 缺失时为普通模块
+  （启用梯度检查点即报错）；`TransformersKwargs` 为同名 TypedDict；通用任务头缺失时为 `None`。训练环境（4.57.3）因此运行上游原类。
+- `models/qwen3/modeling_qwen3_dms.py`：上述名字从兼容模块导入；`Qwen3PreTrainedModelDMS` 显式写 `config_class`（4.51 不从类型注解推断）；
+  `Qwen3ModelDMS`、`Qwen3ForCausalLMDMS` 显式给出 embedding 访问器（4.51 没有默认实现，`lm_head` 不会绑定，加载时报缺 `lm_head.weight`），
+  返回值与 4.57.3 的默认实现相同；序列分类、token 分类与问答头只在 transformers 提供通用头时定义。
+- `models/qwen3/configuration_qwen3_dms.py`：transformers 没有 `layer_types` 时按 4.57.3 `Qwen3Config` 的规则推出。
+- `models/qwen3/semanticlogkv_eval.py`、`infer.py`：`from_pretrained` 用两版都接受的 `torch_dtype=`（4.56 起的 `dtype=` 在 4.51 中会被当成配置字段）。
 
 - `configs/qwen3_1.7b_base.yaml`：从官方 1.7B 配置换为 Base、显式纯文本模板、FSDP 按 decoder layer 包装和完整 state dict，关闭外部实验追踪。核心门控、学习率、8K 长度和压缩日程保持原配方。
 - `configs/qwen3_1.7b_base_smoke.yaml`：真实 1.7B 模型的两步合成文本试跑，无 FSDP；不用于质量结果。
 - `models/qwen3/train.py`：支持本地 `text` JSONL；缺失 resume 路径报错；纯数据准备放在 TrainingArguments 初始化前；向 Trainer 传 tokenizer 使中间 checkpoint 可导出；仅主进程写配置；收集完整 FSDP 权重并单进程导出；导出不原地改写 live shards 的 dtype；保存训练目标 CR 元数据。
 - `models/qwen3/extract.py`：checkpoint 张量加载到 CPU，避免按原设备占用 GPU。
 - `dms/cache.py`：prefill 时把近期窗口的 contiguous KV 计入 CR；上游仅计 paged 部分，会在尚未开始 decode 时高估压缩率。淘汰和缓存更新算法保持原样。
-- `models/qwen3/check_env.py`、`infer.py`、`scripts/`：显式环境检查、Base 续写、训练和可选评测入口。
-- `pyproject.toml`：同时打包 `dms` 和 `models`（含私有评测快照），保留官方 Transformers/accelerate 版本，并声明快照所需的 lightning 等依赖；训练 extra 固定 datasets4.4.2，独立评测 extra 使用共享协议的 `lm-eval[ruler,longbench,ifeval]==0.4.9`、datasets<4。
+- `models/qwen3/check_env.py`、`infer.py`、`scripts/`：显式环境检查、Base 续写、训练和可选评测入口。`check_env --training-only` 要求训练环境的 transformers 4.57.3；评测检查只要求 transformers>=4.51 及实际用到的 CUDA、FlexAttention、FlashAttention 接口。`scripts/evaluate.sh` 与 `majob.sh` 设置 SemanticLogKV 的 CUDA 12.8 库路径。
+- `pyproject.toml`：同时打包 `dms` 和 `models`（含私有评测快照）。核心依赖只写 torch218 满足的下限（`transformers>=4.51` 与快照所需的 lightning 等），不声明 accelerate、sentencepiece；上游固定的 transformers 4.57.3、accelerate 1.4.0、datasets 4.4.2 只在单独训练环境用的 `[dms-train]` 中；`[eval]` 为 `lm-eval[ruler,longbench,ifeval]>=0.4.9`、`datasets>=4.7`、pandas、xlsxwriter，只用于另建环境。
 - `prepare_base.py`：读取项目内实验 YAML 的原始 Base，用私有转换器精确转换，复制 tokenizer 并记录文件哈希；训练前验证产物，来源随 DMS config 导出。
 - `semanticlogkv_eval.py`、`evaluate.py`、`compare_results.py`、`config.py`：在项目内私有评测快照上接入 DMS，子类继承请求方法，在私有模块实例接入模型/缓存；不修改快照或全局统计函数。任务清单、实验配置、tokenizer、生成/评分与指标均由本项目维护，核对实际样本和比较条件。详细边界见 [评测对齐记录](SEMANTICLOGKV_ALIGNMENT.md)。
-- `majob.sh`：训练平台评测入口，每节点执行一次，main 与 32K NIAH 分阶段启动，失败即停止，从不训练。
-- `tests/test_qwen3_base.py`、`test_qwen3_cuda.py`：新增本地适配验证；CUDA 测试无设备时明确跳过。
+- `majob.sh`：训练平台评测入口，每节点执行一次，main 与 32K NIAH 分阶段启动，失败即停止，从不训练；默认取可见卡数，启动前做 CUDA 自检，单节点用 `--standalone`。
+- `tests/test_qwen3_base.py`、`test_qwen3_cuda.py`：新增本地适配验证；CUDA 测试无设备时明确跳过；依赖训练引擎的测试只在训练环境运行。`tests/cross_env_check.py`：训练环境导出、两个环境分别运行评测接口并逐元素比较。
 
 ## 不应混淆的口径
 

@@ -26,7 +26,7 @@ def main():
     check_environment()
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     model = Qwen3ForCausalLMDMS.from_pretrained(
-        args.model, dtype=torch.bfloat16, dms_disable_eviction=args.disable_eviction,
+        args.model, torch_dtype=torch.bfloat16, dms_disable_eviction=args.disable_eviction,
         dms_chunked_prefill=4096,
     ).to("cuda").eval()
     inputs = tokenizer(args.prompt, return_tensors="pt", add_special_tokens=False).to("cuda")

@@ -1,5 +1,6 @@
 """Offline checks using tiny random weights; no model download or CUDA kernels."""
 
+from importlib.metadata import version
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,11 +20,17 @@ from dms.training.engine import (
     DistillationModelArguments, ModelArguments, _configure_gradients, dms_schedule,
     get_student_model,
 )
+from models.qwen3.check_env import TRAINING_TRANSFORMERS
 from models.qwen3.configuration_qwen3_dms import Qwen3ConfigDMS
 from models.qwen3.modeling_qwen3_dms import Qwen3ForCausalLMDMS
 from models.qwen3.train import (
     _create_train_dataset, export_trained_student, extract_student_model, resolve_checkpoint,
 )
+
+# DMS training code (dms.training.engine) targets the training environment's transformers release.
+requires_training_env = pytest.mark.skipif(
+    version("transformers") != TRAINING_TRANSFORMERS,
+    reason=f"DMS training code runs in the training environment (transformers=={TRAINING_TRANSFORMERS})")
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -73,6 +80,7 @@ def test_full_base_adapter_dimensions_without_allocating_weights():
     assert model.lm_head.weight is model.model.embed_tokens.weight
 
 
+@requires_training_env
 def test_load_base_weights_and_freeze(tmp_path):
     base = Qwen3ForCausalLM(tiny_config())
     base.save_pretrained(tmp_path)
@@ -91,7 +99,7 @@ def test_export_roundtrip_preserves_adapters_and_tied_weights(tmp_path, tokenize
     model.config.dms_cr = 16
     model.config.semanticlogkv_base = {"source_weight_sha256": "original-base-digest"}
     extract_student_model(SimpleNamespace(student_model=model), tokenizer, str(tmp_path))
-    restored = AutoModelForCausalLM.from_pretrained(tmp_path, trust_remote_code=True, dtype=torch.bfloat16)
+    restored = AutoModelForCausalLM.from_pretrained(tmp_path, trust_remote_code=True, torch_dtype=torch.bfloat16)
     assert restored.config.dms_separate_alpha
     assert restored.config.dms_cr == 16
     assert restored.config.semanticlogkv_base == model.config.semanticlogkv_base

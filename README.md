@@ -13,20 +13,44 @@
 - 1.7B Base：28 层、hidden 2048、16 个 Q heads、8 个 KV heads、head_dim 128、绑定 embedding。新增可训练参数为 **516,096**。
 - 官方源码固定于 `f27b47626d0d5886244d0fe1075e52d7d564ddc9`；来源与修改记录见 [docs/UPSTREAM.md](docs/UPSTREAM.md)。许可证见 [LICENSE](LICENSE)。
 
-## 安装
+## 环境：训练与评测分开
 
-推荐使用上游的 CUDA 环境 `nvcr.io/nvidia/pytorch:25.11-py3`，Python 3.10–3.13。训练需要支持 BF16 的 NVIDIA GPU、PyTorch FlexAttention/Triton；推理另外需要匹配 PyTorch/CUDA 的 FlashAttention，且包含 `flash_attn_with_kvcache`。当前实现不支持昇腾 NPU、MPS 或 CPU 的正式训练/推理。
+DMS 需要训练。训练沿用上游配方固定的依赖，评测在 SemanticLogKV 的评测环境 torch218 中进行，两者不混装（规范 4.3）。
+当前环境的版本、路径与已知坑见 [Baseline 环境与避坑清单](docs/BASELINE_ENVIRONMENT.md)。
 
-在已有 PyTorch/CUDA 环境中执行：
+| | 训练环境（另建，不是 torch218） | 评测环境（SemanticLogKV 的 torch218） |
+|---|---|---|
+| 做什么 | `prepare_base`、`scripts/train.sh`、`extract` | `models.qwen3.evaluate`、`scripts/evaluate.sh`、`majob.sh`、`compare_results` |
+| 依赖 | `python -m pip install -e '.[dms-train,test]'`：上游固定的 `transformers==4.57.3`、`accelerate==1.4.0`、`datasets==4.4.2` | **不安装本项目，也不往其中安装任何包**；从项目根目录用 `python -m` 运行 |
+| 预检 | `python -m models.qwen3.check_env --training-only`（要求 transformers 4.57.3） | `python -m models.qwen3.check_env`（CUDA、BF16、FlexAttention `AuxRequest`、`flash_attn_with_kvcache`、transformers>=4.51） |
 
-```bash
-python -m pip install -e '.[train,test]'
-python -m models.qwen3.check_env
-```
+训练环境需要支持 BF16 的 NVIDIA GPU 与 PyTorch FlexAttention/Triton，上游推荐 `nvcr.io/nvidia/pytorch:25.11-py3`（Python 3.10–3.13）。
+（未验证的选项）也可以 `conda create -n dms-train --clone torch218` 后在克隆出的环境里安装 `[dms-train]`，这样训练与评测共用同一份
+torch/CUDA/FlashAttention；无论哪种方式都不要在 torch218 本身安装。当前实现不支持昇腾 NPU、MPS 或 CPU 的正式训练/推理。
 
-训练环境固定 `transformers==4.57.3`、`datasets==4.4.2`、`accelerate==1.4.0`。评测需单独环境：共享 SemanticLogKV 的 `lm-eval==0.4.9`、`datasets<4`（评测入口启动时检查），不能同时安装 `[train,eval]`。私有评测快照需要的 lightning、jsonargparse、psutil、sentencepiece 等已列入本项目依赖，不再安装相邻 LitGPT。先准备匹配的 PyTorch/CUDA 与 FlashAttention，再检查依赖解析结果。预检实际检查 `AuxRequest`、CUDA、BF16 和 FlashAttention 接口；只有训练时可使用 `--training-only`。
+评测侧的代码适配 torch218（2026-10-16：torch 2.11.0+cu128、transformers 4.51.3、lm-eval 0.4.11、datasets 4.8.4、flash-attn 2.8.3，
+没有 accelerate、sentencepiece）：
+
+- 评测入口在 import 评测框架之前只检查 `lm-eval>=0.4.9`、`datasets>=4.7`（共享缓存中 IFEval 条目的 `Json` 特征类型从 4.7 起可读），
+  不满足时报错并提示回到 torch218；精确版本写进每个结果的 `comparison_contract.versions`，`compare_results` 要求双方一致。
+- DMS 代码按 transformers 4.57.3 写成，用到了 4.51 没有的 `CacheLayerMixin`/分层 `Cache`、`masking_utils`、`GradientCheckpointingLayer`
+  与 `TransformersKwargs`。[`dms/transformers_compat.py`](dms/transformers_compat.py) 在已安装的 transformers 提供这些名字时直接用它的，
+  否则用从 4.57.3 原样复制的类或等价的替代；训练环境因此运行上游原类，不受影响。模型类另外显式给出 `config_class` 与
+  embedding 访问器（4.51 没有默认实现，否则 `lm_head` 不会与 embedding 绑定）。
+- 训练环境导出的 student 在两个环境中的评测行为用 [`tests/cross_env_check.py`](tests/cross_env_check.py) 核对：
+  分块 prefill 与逐 token decode 的 logits、生成 token 和每一步的 KV 条目数都逐元素相同（记录见 [验证记录](docs/VALIDATION.md)）。
+- `pyproject.toml` 的核心依赖与 `[eval]` 只有 torch218 满足的下限；上游的版本固定只在 `[dms-train]` 中。
+- 若曾在 torch218 中执行过 `pip install -e .` 或安装过旧的 `[train]`/`[eval]` extra，可用
+  `python -m pip uninstall semanticlogkv-dms-baseline` 撤销本项目的 editable 条目；旧 extra 若改动过 transformers、datasets、lm-eval 等，
+  按环境清单第 1 节导出快照与版本表核对，有差异时交由环境维护者恢复，不在共享环境里自行重装。
+
+**lm-eval 版本决定任务定义。** torch218 的 lm-eval 0.4.11 与 0.4.9 的 LongBench 数据源（`THUDM/LongBench` → `Xnhyacinth/LongBench`）、
+prompt 字段（`{{input}}` → `{{question}}`）和解码方式（`do_sample: True` → `False`，即贪心）不同，arc、ceval、ifeval 与 RULER 不变。
+只比较同一 lm-eval 版本下的结果；SemanticLogKV 来自其他版本的旧结果须在 torch218 中重跑。
 
 ## 准备同一份 Base
+
+在训练环境中执行（输出是训练的输入）：
 
 ```bash
 python -m models.qwen3.prepare_base
@@ -40,13 +64,24 @@ python -m models.qwen3.prepare_base
 
 ## 先做小规模检查
 
-不下载权重的 CPU 检查：
+不下载权重的 CPU 检查，两个环境都在项目根目录运行，不设 `PYTHONPATH`：
 
 ```bash
-python -m pytest -q tests/test_qwen3_base.py tests/upstream/test_dms_utils.py
+env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 python -m pytest -q
 ```
 
-验证配置、纯文本格式、1.7B 参数尺寸、底模加载与冻结、teacher 数学一致性、适配器梯度、保存与重载。CPU attention 检查使用 eager 执行，不能证明 CUDA 内核可用。
+验证配置、纯文本格式、1.7B 参数尺寸、底模加载与冻结、teacher 数学一致性、适配器梯度、保存与重载、评测加载器、启动器与依赖声明。
+CPU attention 检查使用 eager 执行，不能证明 CUDA 内核可用。在 torch218 中，依赖训练引擎的 2 项测试标明“training environment”跳过；
+在训练环境中，需要 lm-eval 的 1 项跳过。
+
+两个环境之间的行为用跨环境检查核对（CPU 即可；DIR 为任意新目录）：
+
+```bash
+<训练环境 python> -m tests.cross_env_check export DIR/student
+<训练环境 python> -m tests.cross_env_check run DIR/student DIR/train.json
+<torch218 python> -m tests.cross_env_check run DIR/student DIR/eval.json
+<torch218 python> -m tests.cross_env_check compare DIR/train.json DIR/eval.json   # 应输出 IDENTICAL
+```
 
 CUDA 内核检查同样不下载权重，使用随机小模型，序列 1024，超过 512 的保护窗口：
 
@@ -63,6 +98,8 @@ bash scripts/train.sh configs/qwen3_1.7b_base_smoke.yaml
 这是流程检查，**不能用合成数据产出的 checkpoint 评价方法质量**。配置默认单 GPU、1024 tokens、2 步、不启用 FSDP；真实峰值显存需在目标 GPU 上验证。输出为 `outputs/qwen3_1.7b_base_smoke/student_model/`。
 
 ## 训练
+
+在训练环境中执行；`scripts/train.sh` 先做 `check_env --training-only`，不是训练环境时直接报错。
 
 ```bash
 # 单机，GPU 数量按机器设置；CUDA_VISIBLE_DEVICES 可选择具体设备
@@ -123,17 +160,19 @@ python -m models.qwen3.infer \
 
 `final_cr` 是**训练目标**。模型配置的 `dms_cr` 仅记录目标，修改它不会在推理时强制达到某个压缩倍数。实际压缩比随输入和保护窗口变化，应实测并与质量一同报告。
 
-正式横向评测在单独的评测环境中执行，两种方法使用同一入口。每次必须选 `--suite main|niah|longbench`（项目内 `configs/eval_suites.yaml`：47 个 main 入口、其中 33 个 LongBench/LongBench-E，3 个 NIAH 仅 32768；输出进入 `<output>/<suite>/`）或诊断用 `--tasks`：
+正式横向评测在 torch218 中执行，两种方法使用同一入口。每次必须选 `--suite main|niah|longbench`（项目内 `configs/eval_suites.yaml`：47 个 main 入口、其中 33 个 LongBench/LongBench-E，3 个 NIAH 仅 32768；输出进入 `<output>/<suite>/`）或诊断用 `--tasks`：
 
 ```bash
-python -m pip install -e '.[eval]'
+source /home/ma-user/anaconda3/bin/activate torch218
+cd /data/lihourun/baselineForLogKV/DMS          # 本分支的检出目录；不安装任何包
+python -m models.qwen3.check_env                 # GPU 机器上：CUDA、BF16、FlexAttention、FlashAttention 接口
 python -m models.qwen3.evaluate --model outputs/qwen3_1.7b_base/student_model --suite main --print-config
 bash scripts/evaluate.sh outputs/qwen3_1.7b_base/student_model --suite niah --limit 4
 # 使用同一配置、任务、样本数检查 SemanticLogKV CPT checkpoint
 bash scripts/evaluate.sh /path/to/semanticlogkv/checkpoint --backend logkv --suite niah --limit 4
 ```
 
-模型窗口 32K、batch 1。main 阶段不传 NIAH metadata，与参考脚本一致。删除 `--limit` 才是任务全量。`NPROC_PER_NODE` 控制每卡一份模型，默认 1。启动器私有加载项目内快照的 `eval.py`，在该私有评测实例中接入 DMS 子类，复用 tokenizer、生成循环、评分与指标统计。评测强制离线；map/filter 预处理写进程私有临时文件；遇到新版 datasets 写入的不兼容缓存条目会明确报错，不升级 datasets、不换数据。
+模型窗口 32K、batch 1。main 阶段不传 NIAH metadata，与参考脚本一致。删除 `--limit` 才是任务全量。`NPROC_PER_NODE` 控制每卡一份模型，默认 1。启动器私有加载项目内快照的 `eval.py`，在该私有评测实例中接入 DMS 子类，复用 tokenizer、生成循环、评分与指标统计。评测强制离线；map/filter 预处理写进程私有临时文件。共享离线缓存只读：报 `Feature type 'List'/'Json' not found` 说明安装的 datasets 比写缓存的版本旧（环境被降级，例如误在训练环境评测），应回到 torch218；某个条目的 `dataset_info.json` 不是合法 JSON 时报错并停止，不移动、不改写缓存条目，见环境清单第 4 节。
 
 ### 训练平台作业：majob.sh
 
@@ -146,7 +185,7 @@ bash majob.sh configs/experiment_qwen1.7b_32k.yaml --model outputs/qwen3_1.7b_ba
   --output outputs/dms-32k-full
 ```
 
-平台变量与 chunkKV 等分支一致：`MA_NUM_GPUS`（每节点进程数，缺省 `NPROC_PER_NODE`/`LOCAL_WORLD_SIZE`/8）、`MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MA_VJ_NAME`/`MA_TASK_NAME`/`MA_MASTER_INDEX`（主节点 DNS，多节点禁止 localhost）、`MASTER_PORT`（main 用 +1、NIAH 用 +2，可由 `EVAL_MASTER_PORT`/`NIAH_MASTER_PORT` 覆盖）。`DMS_PYTHON` 直接指定解释器，否则激活 `/home/ma-user/anaconda3/bin/activate ${DMS_CONDA_ENV:-torch218}`；环境名不代表实际版本，以结果记录为准。脚本导出 `LITGPT_EXPECTED_WORLD_SIZE`，快照评测器据此检查 rendezvous。
+平台变量与 chunkKV 等分支一致：`MA_NUM_GPUS`（每节点进程数，缺省 `NPROC_PER_NODE`/`LOCAL_WORLD_SIZE`/本节点可见的 CUDA 设备数，超过可见设备数时在启动 torchrun 前报错）、`MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MA_VJ_NAME`/`MA_TASK_NAME`/`MA_MASTER_INDEX`（主节点 DNS，多节点禁止 localhost）、`MASTER_PORT`（只用于多节点：main 用 +1、NIAH 用 +2，可由 `EVAL_MASTER_PORT`/`NIAH_MASTER_PORT` 覆盖；单节点每个阶段用 `--standalone` 绑定空闲端口）。激活环境后、任何 CUDA 调用之前，脚本照搬 SemanticLogKV `eval.sh`/`majob.sh` 的 CUDA 12.8 `PATH`/`LD_LIBRARY_PATH` 与 NCCL 设置，并用同一解释器执行一次 `torch.cuda.init()`，失败时打印加载的 libcuda 与 `LD_LIBRARY_PATH` 后退出；`scripts/evaluate.sh` 使用同样的库路径。平台上建议设置 `TMPDIR=/tmp`。`DMS_PYTHON` 直接指定解释器，否则激活 `/home/ma-user/anaconda3/bin/activate ${DMS_CONDA_ENV:-torch218}`；环境名不代表实际版本，以结果记录为准。脚本导出 `LITGPT_EXPECTED_WORLD_SIZE`，快照评测器据此检查 rendezvous。
 
 结果包含 `comparison_contract`、`resolved_eval` 和 harness 逐样本日志，可自动核对：
 
