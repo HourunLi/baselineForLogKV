@@ -25,17 +25,19 @@
 
 | 来源 | 当前路径 | 处理 |
 |---|---|---|
-| transformers 4.57.3 `src/transformers/cache_utils.py` 的 `CacheLayerMixin`、`Cache` | `dms/transformers_compat.py` | Apache-2.0；类体原样复制（`Cache` 的 docstring 缩短），只在已安装的 transformers 没有 `CacheLayerMixin` 时使用 |
+| transformers 4.57.3 `src/transformers/cache_utils.py` 的 `CacheLayerMixin`、`Cache` | `dms/transformers_compat.py` | Apache-2.0；类体原样复制（`Cache` 的 docstring 缩短），只在已安装的 transformers 没有 `CacheLayerMixin` 时使用；此时 `Cache` 继承已安装的旧 `Cache`，只为让 transformers 自己的 `generate()` 接受 DMS cache |
 
 ## 本地差异
 
 - `dms/transformers_compat.py`（新增）：DMS 按 transformers 4.57.3 写成，评测环境 torch218 是 4.51.3。每个名字优先取已安装的 transformers：
-  `CacheLayerMixin`/`Cache` 缺失时用上表复制的类（两者成对使用，不与 4.51 的旧 `Cache` 混用）；`create_causal_mask` 缺失时对未 padding 的输入返回
-  `None`（DMS 推理只把最后一行 mask 当作 key padding 掩码，两者都是全 1），遇到 padding 报错；`GradientCheckpointingLayer` 缺失时为普通模块
+  `CacheLayerMixin`/`Cache` 缺失时用上表复制的类（两者成对使用；复制的 `Cache` 继承 4.51 的 `Cache` 只为通过 `generate()` 的 isinstance
+  检查，DMS 用到的成员全部来自 4.57.3）；`create_causal_mask` 缺失时对没有 padding 的输入（没有 mask，或 `generate()` 与训练 collator 传入的
+  全 1 二维 mask）返回 `None`，与 4.57.3 在 SDPA 下的返回值相同（DMS 训练不读 mask 的值，推理只把最后一行当作 key padding 掩码），遇到 padding 报错；`GradientCheckpointingLayer` 缺失时为普通模块
   （启用梯度检查点即报错）；`TransformersKwargs` 为同名 TypedDict；通用任务头缺失时为 `None`。训练环境（4.57.3）因此运行上游原类。
 - `models/qwen3/modeling_qwen3_dms.py`：上述名字从兼容模块导入；`Qwen3PreTrainedModelDMS` 显式写 `config_class`（4.51 不从类型注解推断）；
   `Qwen3ModelDMS`、`Qwen3ForCausalLMDMS` 显式给出 embedding 访问器（4.51 没有默认实现，`lm_head` 不会绑定，加载时报缺 `lm_head.weight`），
-  返回值与 4.57.3 的默认实现相同；序列分类、token 分类与问答头只在 transformers 提供通用头时定义。
+  返回值与 4.57.3 的默认实现相同；`_supports_cache_class = True`（4.51 的 `generate()` 据此接受 `DMSCache`，4.57.3 不读取）；
+  序列分类、token 分类与问答头只在 transformers 提供通用头时定义。
 - `models/qwen3/configuration_qwen3_dms.py`：transformers 没有 `layer_types` 时按 4.57.3 `Qwen3Config` 的规则推出。
 - `models/qwen3/semanticlogkv_eval.py`、`infer.py`：`from_pretrained` 用两版都接受的 `torch_dtype=`（4.56 起的 `dtype=` 在 4.51 中会被当成配置字段）。
 
@@ -49,7 +51,7 @@
 - `prepare_base.py`：读取项目内实验 YAML 的原始 Base，用私有转换器精确转换，复制 tokenizer 并记录文件哈希；训练前验证产物，来源随 DMS config 导出。
 - `semanticlogkv_eval.py`、`evaluate.py`、`compare_results.py`、`config.py`：在项目内私有评测快照上接入 DMS，子类继承请求方法，在私有模块实例接入模型/缓存；不修改快照或全局统计函数。任务清单、实验配置、tokenizer、生成/评分与指标均由本项目维护，核对实际样本和比较条件。详细边界见 [评测对齐记录](SEMANTICLOGKV_ALIGNMENT.md)。
 - `majob.sh`：训练平台评测入口，每节点执行一次，main 与 32K NIAH 分阶段启动，失败即停止，从不训练；默认取可见卡数，启动前做 CUDA 自检，单节点用 `--standalone`。
-- `tests/test_qwen3_base.py`、`test_qwen3_cuda.py`：新增本地适配验证；CUDA 测试无设备时明确跳过；依赖训练引擎的测试只在训练环境运行。`tests/cross_env_check.py`：训练环境导出、两个环境分别运行评测接口并逐元素比较。
+- `tests/test_qwen3_base.py`、`test_qwen3_cuda.py`：新增本地适配验证；CUDA 测试无设备时明确跳过；依赖训练引擎的测试只在训练环境运行。`tests/cross_env_check.py`：训练环境导出、两个环境分别运行评测接口并逐元素比较。`tests/test_transformers_compat.py`：`DMSCache` 被已安装的 transformers 认作 `Cache`，旧版 mask 替代接受未 padding 的输入、拒绝 padding。
 
 ## 不应混淆的口径
 
