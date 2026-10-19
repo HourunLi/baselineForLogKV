@@ -2,6 +2,16 @@
 
 只记录本分支实际执行过的检查。配置检查、CPU 局部测试与真实模型/全量评测分开表述。
 
+## 2026-10-19：`--print-config` 独立性测试不再依赖机器上是否有 Base
+
+PyramidKV 在服务器 torch218 上同一测试 5 项失败（用户运行）；本分支的测试相同，（推断）在服务器上会同样失败，本分支尚未在服务器上运行。失败的都是 `tests/test_standalone.py` 的 `--print-config` 测试：
+服务器上真实 Base 存在，预览按设计读取其 `model_config.yaml` 取层数（共享模型元数据，规范允许），而测试只允许读项目内的 YAML；
+开发容器里没有这个路径，所以此前没有暴露。评测代码未改。
+
+修复：测试自带一个只有 LitGPT `model_config.yaml` 和空 `lit_model.pth` 的临时 Base 并用 `--model` 指向它，只额外放行这一个文件，
+并断言逐层预算按其层数算出。torch218 副本中，在服务器同路径放一个同样的假 Base（复现出相同的 5 项失败）和不放两种情况下，
+`python -m pytest -q` 均为 **75 passed**。修复后尚未在服务器上重跑。
+
 ## 2026-10-16：适配 torch218（lm-eval 0.4.11、datasets 4.8.4），不改动共享环境
 
 按 [docs/BASELINE_ENVIRONMENT.md](BASELINE_ENVIRONMENT.md) 与 `chunkKV` 分支的做法对齐：启动检查只要求 `lm-eval>=0.4.9`、
