@@ -140,7 +140,7 @@ def platform_launcher_env(tmp_path, visible_gpus=4):
 ])
 def test_platform_launcher_defaults_to_the_visible_gpus(tmp_path, requested, visible, launched):
     env = {**platform_launcher_env(tmp_path, visible), **requested}
-    command = ["bash", str(runner.BASELINE_ROOT / "majob.sh"), "--limit", "4", "--output", "outputs/test"]
+    command = ["bash", str(runner.BASELINE_ROOT / "scripts/chunkkv_majob.sh"), "--limit", "4", "--output", "outputs/test"]
     result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)
     if launched is None:
         expected = (1, "CUDA initialisation failed") if visible == "fail" else (2, "visible")
@@ -163,7 +163,7 @@ def test_platform_launcher_maps_ranks_ports_and_stops_on_failure(tmp_path, nodes
     log = tmp_path / "calls"
     env.update(CHUNKKV_TEST_FAIL=str(int(fail_main)), MA_NUM_GPUS="4", MA_NUM_HOSTS=str(nodes),
                VC_TASK_INDEX=str(rank), MA_VJ_NAME="job", MA_TASK_NAME="worker", MA_MASTER_INDEX="0")
-    command = ["bash", str(runner.BASELINE_ROOT / "majob.sh"),
+    command = ["bash", str(runner.BASELINE_ROOT / "scripts/chunkkv_majob.sh"),
                "configs/chunkkv/experiment_qwen1.7b_32k.yaml", "--limit", "4", "--output", "outputs/test"]
     result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)
     assert result.returncode == (7 if fail_main else 0), result.stderr
@@ -328,11 +328,11 @@ def test_result_check_rejects_different_prompts_or_runtime_but_not_answers():
         compare_results(result, other)
 
 
-def test_eval_extra_declares_the_requirements_the_launcher_checks():
+def test_active_branch_eval_extra_uses_current_reference_environment():
     pyproject = (Path(runner.__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
     extra = next(line for line in pyproject.splitlines() if line.startswith("eval = "))
-    assert f'"datasets>={".".join(map(str, runner.EVAL_DATASETS_MIN))}"' in extra
-    assert f']>={".".join(map(str, runner.EVAL_LM_EVAL_MIN))}"' in extra
+    assert '"datasets>=4.8.4"' in extra  # Active branch uses the current reference environment.
+    assert 'lm-eval[ruler,longbench,ifeval]>=0.4.11' in extra
     assert "\"transformers" not in pyproject  # comes with lm-eval at whatever version the environment has
 
 
