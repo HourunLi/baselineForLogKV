@@ -13,6 +13,8 @@ import shlex
 import subprocess
 import sys
 
+import yaml
+
 from .config import BASELINE_ROOT, environment_path, load_experiment_config, require_project_file
 from .evaluate import (BACKENDS, DEFAULT_CONFIG, DEFAULT_HYBRID_CSA_CONFIG, DEFAULT_EVALUATION_CONFIG,
                        configure_environment, load_hybrid_csa_options, load_eval_suite, validate_output)
@@ -20,12 +22,22 @@ from .train import DEFAULT_CONFIG as TRAIN_CONFIG, accumulation_steps, resolve_c
 
 
 TORCH218_PYTHON = "/home/ma-user/anaconda3/envs/torch218/bin/python"
+JOB_CONFIG = BASELINE_ROOT / "configs/hybrid_csa/majob.yaml"
 # Variables of the former separate training environment; refused rather than silently ignored.
 TRAINING_PYTHON_VARIABLES = ("HYBRID_CSA_TRAIN_PYTHON", "BASELINE_TRAIN_PYTHON")
 
 
 def first_env(*names, default=None):
     return next((os.environ[name] for name in names if os.environ.get(name)), default)
+
+
+def configured_output_root(path=None):
+    """``output_root`` of the project's majob.yaml; every run gets a new directory below it."""
+    path = require_project_file(path or JOB_CONFIG)
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if set(cfg) != {"output_root"} or not Path(str(cfg["output_root"])).is_absolute():
+        raise ValueError(f"{path} must set exactly one absolute output_root")
+    return Path(cfg["output_root"])
 
 
 def topology(visible=None):
@@ -120,7 +132,7 @@ def build_plan(args):
         job = os.environ.get("MA_VJ_NAME")
         if topo["nodes"] > 1 and not job:
             raise ValueError("Multi-node jobs require --output or MA_VJ_NAME so every node uses the same run")
-        output = BASELINE_ROOT / "outputs/hybrid_csa" / (job or datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+        output = configured_output_root() / (job or datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
     output = Path(output).resolve()
     validate_output(output, {"checkpoint_dir": str(args.model or base), "tokenizer_dir": base})
     settings = load_hybrid_csa_options(args.hybrid_csa_config)

@@ -1,0 +1,4 @@
+# Defaults of `bash majob.sh`, read only by hybrid_csa.pipeline. Each run writes a new directory
+# <output_root>/<MA_VJ_NAME, or the launch time when there is no platform job name>, so a later run never
+# reuses an earlier one. --output, HYBRID_CSA_OUTPUT_ROOT or BASELINE_OUTPUT_ROOT name the run directory itself.
+output_root: /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4

@@ -142,6 +142,30 @@ main()
     assert not output.exists()
 
 
+def test_plain_majob_writes_a_new_run_directory_under_the_configured_root(clean_env, monkeypatch, tmp_path):
+    assert pipeline.configured_output_root() == Path(
+        "/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4")
+    config = pipeline.BASELINE_ROOT / "configs/hybrid_csa/test_majob_root.yaml"
+    config.write_text(f"output_root: {tmp_path / 'ckpt'}\n")
+    try:
+        monkeypatch.setattr(pipeline, "JOB_CONFIG", config)
+        monkeypatch.setenv("MA_VJ_NAME", "job-42")
+        monkeypatch.setenv("MA_TASK_NAME", "worker")
+        plan = pipeline.build_plan(pipeline.parse_args([]))
+        assert plan["output"] == str(tmp_path / "ckpt/job-42")
+        assert plan["training"]["output_dir"] == str(tmp_path / "ckpt/job-42/train")
+        assert plan["eval_output"] == str(tmp_path / "ckpt/job-42/eval")
+        monkeypatch.delenv("MA_VJ_NAME")
+        first, second = (Path(pipeline.build_plan(pipeline.parse_args([]))["output"]) for _ in range(2))
+        assert first.parent == second.parent == tmp_path / "ckpt" and first != second  # launch time
+        assert pipeline.build_plan(pipeline.parse_args(["--output", str(tmp_path / "x")]))["output"] == str(tmp_path / "x")
+        config.write_text("output_root: relative/path\n")
+        with pytest.raises(ValueError, match="absolute output_root"):
+            pipeline.build_plan(pipeline.parse_args([]))
+    finally:
+        config.unlink()
+
+
 def test_topology_defaults_and_precedence(clean_env, monkeypatch):
     assert pipeline.topology(3)["gpus"] == 3
     monkeypatch.setenv("MA_NUM_GPUS", "4")

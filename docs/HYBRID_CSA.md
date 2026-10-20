@@ -142,14 +142,14 @@ export HYBRID_CSA_DATA_DIR=/home/ma-user/work/bucket-pangu-green/lihourun/longco
 
 # 不导入 torch/lm_eval，不访问权重，不建输出目录
 bash majob.sh --print-config
-# 每节点执行同一命令一次，平台节点变量自动解析
-bash majob.sh --output /shared/your-output/csa-run-001
+# 每节点执行同一命令一次，平台节点变量自动解析；输出见下表"本次输出"
+bash majob.sh
 # 已训练产物的少样本检查；去掉 --limit 才是完整评测
-bash majob.sh --mode eval --adapter /shared/your-output/csa-run-001/train/sparse.pt \
-  --limit 4 --output /shared/your-output/csa-eval-smoke
+bash majob.sh --mode eval --adapter /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4/<run>/train/sparse.pt \
+  --limit 4 --output /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4/eval-smoke
 ```
 
-`/shared/your-output` 是须替换的本方法输出位置。**不要向 torch218 安装任何 extra，包括 `[eval]`**；训练不需要额外依赖。
+`<run>` 是完整流程实际创建的运行目录（启动日志与 `pipeline_node_0.json` 中可见）。**不要向 torch218 安装任何 extra，包括 `[eval]`**；训练不需要额外依赖。
 `--limit` 只限制评测样本，完整流程中的训练仍执行配置的 160 步。
 
 | 项目 | 优先级 / 约定 |
@@ -157,7 +157,7 @@ bash majob.sh --mode eval --adapter /shared/your-output/csa-run-001/train/sparse
 | Python（所有阶段） | `--eval-python` → `HYBRID_CSA_PYTHON` → `BASELINE_EVAL_PYTHON` → `BASELINE_PYTHON` → 已有 torch218 绝对路径；与此前评测解释器的规则相同。`--train-python`、`HYBRID_CSA_TRAIN_PYTHON`、`BASELINE_TRAIN_PYTHON` 已取消，出现即报错 |
 | Base / 语料 | `--base-checkpoint-dir` / `--data-dir` → `HYBRID_CSA_*` → `BASELINE_BASE_CHECKPOINT` / `BASELINE_DATA_DIR` → 项目 YAML |
 | 分词缓存 | `--tokenized-dir` → `HYBRID_CSA_TOKENIZED_DIR` → 训练 YAML；与原始语料、评测 HF 缓存及本次输出分开 |
-| 本次输出 | `--output` → `HYBRID_CSA_OUTPUT_ROOT` → `BASELINE_OUTPUT_ROOT` → `outputs/hybrid_csa/<MA_VJ_NAME 或时间>` |
+| 本次输出 | `--output` → `HYBRID_CSA_OUTPUT_ROOT` → `BASELINE_OUTPUT_ROOT`（三者都是本次运行目录本身）→ `configs/hybrid_csa/majob.yaml` 的 `output_root`（当前 `/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4`）下的新目录 `<MA_VJ_NAME 或启动时间>`；多节点不给 `--output` 时必须有 `MA_VJ_NAME` |
 | 配置 | 可选位置参数选择项目内实验 YAML；`--train-config`、`--hybrid-csa-config` 选择项目内训练/方法 YAML；结构设置必须一致 |
 | 相对路径 | shell 入口先切到项目根；直接 Python CLI 的路径参数相对于调用者 cwd，YAML 内的资产相对路径相对于项目根 |
 | HF 路径 | `HYBRID_CSA_HF_CACHE` → `BASELINE_HF_CACHE` → `HF_HOME` → 默认根；显式 HF 子目录、RULER、NLTK 路径保留 |
