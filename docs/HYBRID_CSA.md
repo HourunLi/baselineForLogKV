@@ -145,11 +145,11 @@ bash majob.sh --print-config
 # 每节点执行同一命令一次，平台节点变量自动解析；输出见下表"本次输出"
 bash majob.sh
 # 已训练产物的少样本检查；去掉 --limit 才是完整评测
-bash majob.sh --mode eval --adapter /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4/<run>/train/sparse.pt \
-  --limit 4 --output /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4/eval-smoke
+bash majob.sh --mode eval --adapter /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4/train/sparse.pt \
+  --limit 4 --output /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4-eval-smoke
 ```
 
-`<run>` 是完整流程实际创建的运行目录（启动日志与 `pipeline_node_0.json` 中可见）。**不要向 torch218 安装任何 extra，包括 `[eval]`**；训练不需要额外依赖。
+**不要向 torch218 安装任何 extra，包括 `[eval]`**；训练不需要额外依赖。
 `--limit` 只限制评测样本，完整流程中的训练仍执行配置的 160 步。
 
 | 项目 | 优先级 / 约定 |
@@ -157,7 +157,7 @@ bash majob.sh --mode eval --adapter /home/ma-user/work/bucket-pangu-green/lihour
 | Python（所有阶段） | `--eval-python` → `HYBRID_CSA_PYTHON` → `BASELINE_EVAL_PYTHON` → `BASELINE_PYTHON` → 已有 torch218 绝对路径；与此前评测解释器的规则相同。`--train-python`、`HYBRID_CSA_TRAIN_PYTHON`、`BASELINE_TRAIN_PYTHON` 已取消，出现即报错 |
 | Base / 语料 | `--base-checkpoint-dir` / `--data-dir` → `HYBRID_CSA_*` → `BASELINE_BASE_CHECKPOINT` / `BASELINE_DATA_DIR` → 项目 YAML |
 | 分词缓存 | `--tokenized-dir` → `HYBRID_CSA_TOKENIZED_DIR` → 训练 YAML；与原始语料、评测 HF 缓存及本次输出分开 |
-| 本次输出 | `--output` → `HYBRID_CSA_OUTPUT_ROOT` → `BASELINE_OUTPUT_ROOT`（三者都是本次运行目录本身）→ `configs/hybrid_csa/majob.yaml` 的 `output_root`（当前 `/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4`）下的新目录 `<MA_VJ_NAME 或启动时间>`；多节点不给 `--output` 时必须有 `MA_VJ_NAME` |
+| 本次输出 | `--output` → `HYBRID_CSA_OUTPUT_ROOT` → `BASELINE_OUTPUT_ROOT` → `configs/hybrid_csa/majob.yaml` 的 `output`（当前 `/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4`）；每次运行覆盖，见下文 |
 | 配置 | 可选位置参数选择项目内实验 YAML；`--train-config`、`--hybrid-csa-config` 选择项目内训练/方法 YAML；结构设置必须一致 |
 | 相对路径 | shell 入口先切到项目根；直接 Python CLI 的路径参数相对于调用者 cwd，YAML 内的资产相对路径相对于项目根 |
 | HF 路径 | `HYBRID_CSA_HF_CACHE` → `BASELINE_HF_CACHE` → `HF_HOME` → 默认根；显式 HF 子目录、RULER、NLTK 路径保留 |
@@ -179,7 +179,10 @@ bash majob.sh --mode eval --adapter /home/ma-user/work/bucket-pangu-green/lihour
 <output>/eval/niah/
 ```
 
-eval 模式结果直接位于 `<output>/main` 和 `<output>/niah`。输出须使用新目录，存在本节点 pipeline manifest 时拒绝复用；不会从历史文件中选 adapter。
+eval 模式结果直接位于 `<output>/main` 和 `<output>/niah`。**同一输出目录每次运行都会被覆盖**：环境预检通过后、开始准备与训练前，
+节点 0 删除上次运行的 `train/`、`eval/`、`main/`、`niah/`（只评测时保留 `train/`，要评测的 adapter 若在被删目录里则报错停止），
+每个节点替换自己的 `pipeline_node_<rank>.json`，并删掉本次不存在的节点留下的记录；目录中的其他文件和分词缓存不动。
+因此目录里只会有本次运行的结果；需要保留的旧结果须在下次运行前自行复制。不会从历史文件中选 adapter。
 
 ### 5.2 当前评测环境与比较边界
 

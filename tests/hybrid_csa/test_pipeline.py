@@ -111,14 +111,50 @@ def test_missing_artifact_never_falls_back_to_base(launcher, monkeypatch):
     assert calls[-1]["phase"] == "train"
 
 
-def test_dense_is_eval_only_and_refuses_stale_output(launcher):
+def test_dense_is_eval_only_and_overwrites_the_previous_run(launcher):
     launch, output = launcher
     result, calls = launch("--backend", "dense")
     assert result.returncode == 0, result.stderr
     assert [c["phase"] for c in calls] == ["preflight_eval", "main", "niah"]
     assert all("--adapter" not in c["args"] for c in calls)
     result, _ = launch("--backend", "dense")
-    assert result.returncode != 0 and "File exists" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert json.loads((output / "pipeline_node_1.json").read_text())["status"] == "complete"
+
+
+def test_rerun_deletes_the_earlier_results_but_nothing_else(launcher, monkeypatch, tmp_path):
+    launch, output = launcher
+    monkeypatch.setenv("VC_TASK_INDEX", "0")  # node 0 clears the shared result directories
+    assert launch()[0].returncode == 0
+    for stale in ("eval/main/old_result.json", "main/old_result.json", "train/old.pt"):
+        (output / stale).parent.mkdir(parents=True, exist_ok=True)
+        (output / stale).write_text("earlier run")
+    (output / "pipeline_node_1.json").write_text("node 1 record")  # node 1 replaces its own
+    (output / "pipeline_node_5.json").write_text("a node this run does not have")
+    (output / "notes.txt").write_text("kept")
+    result, _ = launch()
+    assert result.returncode == 0, result.stderr
+    assert not any((output / stale).exists() for stale in
+                   ("eval/main/old_result.json", "main/old_result.json", "train/old.pt", "pipeline_node_5.json"))
+    assert (output / "train/sparse.pt").is_file() and (output / "notes.txt").read_text() == "kept"
+    assert (output / "pipeline_node_1.json").read_text() == "node 1 record"
+    # An eval-only run keeps train/ and never deletes the adapter it is about to evaluate.
+    result, _ = launch("--mode", "eval", "--adapter", str(output / "train/sparse.pt"))
+    assert result.returncode == 0, result.stderr
+    assert (output / "train/sparse.pt").is_file()
+    (output / "eval").mkdir()
+    (output / "eval/sparse.pt").write_text("adapter")
+    result, _ = launch("--mode", "eval", "--adapter", str(output / "eval/sparse.pt"))
+    assert result.returncode != 0 and "move it first" in result.stderr and (output / "eval/sparse.pt").is_file()
+
+
+def test_other_nodes_leave_shared_results_to_node_zero(launcher):
+    launch, output = launcher  # the fixture runs node 1 of 2
+    (output / "main").mkdir(parents=True)
+    (output / "main/from_node_0.json").write_text("node 0 may have written this already")
+    result, _ = launch("--backend", "dense")
+    assert result.returncode == 0, result.stderr
+    assert (output / "main/from_node_0.json").is_file()
 
 
 def test_preview_never_imports_model_libraries_or_creates_output(tmp_path, clean_env):
@@ -142,25 +178,21 @@ main()
     assert not output.exists()
 
 
-def test_plain_majob_writes_a_new_run_directory_under_the_configured_root(clean_env, monkeypatch, tmp_path):
-    assert pipeline.configured_output_root() == Path(
-        "/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4")
-    config = pipeline.BASELINE_ROOT / "configs/hybrid_csa/test_majob_root.yaml"
-    config.write_text(f"output_root: {tmp_path / 'ckpt'}\n")
+def test_plain_majob_writes_to_the_configured_directory(clean_env, monkeypatch, tmp_path):
+    assert pipeline.configured_output() == Path("/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4")
+    config = pipeline.BASELINE_ROOT / "configs/hybrid_csa/test_majob_output.yaml"
+    config.write_text(f"output: {tmp_path / 'ckpt'}\n")
     try:
         monkeypatch.setattr(pipeline, "JOB_CONFIG", config)
-        monkeypatch.setenv("MA_VJ_NAME", "job-42")
+        monkeypatch.setenv("MA_VJ_NAME", "job-42")  # a platform job name does not change the directory
         monkeypatch.setenv("MA_TASK_NAME", "worker")
         plan = pipeline.build_plan(pipeline.parse_args([]))
-        assert plan["output"] == str(tmp_path / "ckpt/job-42")
-        assert plan["training"]["output_dir"] == str(tmp_path / "ckpt/job-42/train")
-        assert plan["eval_output"] == str(tmp_path / "ckpt/job-42/eval")
-        monkeypatch.delenv("MA_VJ_NAME")
-        first, second = (Path(pipeline.build_plan(pipeline.parse_args([]))["output"]) for _ in range(2))
-        assert first.parent == second.parent == tmp_path / "ckpt" and first != second  # launch time
+        assert plan["output"] == str(tmp_path / "ckpt")
+        assert plan["training"]["output_dir"] == str(tmp_path / "ckpt/train")
+        assert (plan["eval_output"], plan["adapter"]) == (str(tmp_path / "ckpt/eval"), str(tmp_path / "ckpt/train/sparse.pt"))
         assert pipeline.build_plan(pipeline.parse_args(["--output", str(tmp_path / "x")]))["output"] == str(tmp_path / "x")
-        config.write_text("output_root: relative/path\n")
-        with pytest.raises(ValueError, match="absolute output_root"):
+        config.write_text("output: relative/path\n")
+        with pytest.raises(ValueError, match="absolute output"):
             pipeline.build_plan(pipeline.parse_args([]))
     finally:
         config.unlink()

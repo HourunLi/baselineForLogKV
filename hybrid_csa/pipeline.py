@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 
@@ -31,13 +32,37 @@ def first_env(*names, default=None):
     return next((os.environ[name] for name in names if os.environ.get(name)), default)
 
 
-def configured_output_root(path=None):
-    """``output_root`` of the project's majob.yaml; every run gets a new directory below it."""
+def configured_output(path=None):
+    """The run directory ``output`` of the project's majob.yaml; each run overwrites it."""
     path = require_project_file(path or JOB_CONFIG)
     cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if set(cfg) != {"output_root"} or not Path(str(cfg["output_root"])).is_absolute():
-        raise ValueError(f"{path} must set exactly one absolute output_root")
-    return Path(cfg["output_root"])
+    if set(cfg) != {"output"} or not Path(str(cfg["output"])).is_absolute():
+        raise ValueError(f"{path} must set exactly one absolute output")
+    return Path(cfg["output"])
+
+
+def clear_previous_run(output, mode, rank, nodes, keep=()):
+    """Overwrite: delete what earlier runs wrote here, so no earlier file can pass for this run's.
+
+    Node 0 deletes the shared result directories; every later write happens inside a torchrun phase that node 0
+    joins only afterwards. Each node replaces its own record. An eval-only run keeps train/ (its adapter).
+    """
+    names = ("eval", "main", "niah") + (() if mode == "eval" else ("train",))
+    for kept in keep:
+        if any(Path(kept).resolve().is_relative_to((output / name).resolve()) for name in names):
+            raise ValueError(f"{kept} lies in a result directory this run overwrites; move it first")
+    if rank == 0:
+        for name in names:
+            path = output / name
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+            elif path.is_dir():
+                shutil.rmtree(path)
+        for path in output.glob("pipeline_node_*.json"):
+            index = path.stem.rsplit("_", 1)[1]
+            if not index.isdigit() or int(index) >= nodes:  # records of nodes this run does not have
+                path.unlink()
+    (output / f"pipeline_node_{rank}.json").unlink(missing_ok=True)
 
 
 def topology(visible=None):
@@ -127,12 +152,7 @@ def build_plan(args):
         raise ValueError("Formal evaluation context_length must be 32768")
     if args.backend == "hybrid_csa" and args.model and args.model.resolve() != Path(base).resolve():
         raise ValueError("HybridCSA must load the same original Base used in training")
-    output = args.output or environment_path("HYBRID_CSA_OUTPUT_ROOT", "BASELINE_OUTPUT_ROOT")
-    if not output:
-        job = os.environ.get("MA_VJ_NAME")
-        if topo["nodes"] > 1 and not job:
-            raise ValueError("Multi-node jobs require --output or MA_VJ_NAME so every node uses the same run")
-        output = configured_output_root() / (job or datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+    output = args.output or environment_path("HYBRID_CSA_OUTPUT_ROOT", "BASELINE_OUTPUT_ROOT") or configured_output()
     output = Path(output).resolve()
     validate_output(output, {"checkpoint_dir": str(args.model or base), "tokenizer_dir": base})
     settings = load_hybrid_csa_options(args.hybrid_csa_config)
@@ -181,9 +201,11 @@ def execute(plan):
     env.pop("GLOBAL_RANK", None)  # torchrun supplies each worker's rank; avoid a stale parent value.
     output = Path(plan["output"])
     output.mkdir(parents=True, exist_ok=True)
+    keep = [plan["adapter"]] if plan["mode"] == "eval" and plan["backend"] == "hybrid_csa" else []
+    clear_previous_run(output, plan["mode"], topo["rank"], topo["nodes"], keep)
     manifest = output / f"pipeline_node_{topo['rank']}.json"
     state = {"plan": plan, "environments": records, "steps": [], "status": "running"}
-    # Refuse stale runs. Each node owns a separate manifest on the shared output.
+    # Each node owns a separate manifest on the shared output; "x" refuses a concurrent run of the same node.
     with manifest.open("x") as handle:
         json.dump(state, handle, ensure_ascii=False, indent=2)
 
