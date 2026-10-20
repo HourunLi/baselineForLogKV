@@ -42,11 +42,11 @@ if phase == 'train' and not os.environ.get('TEST_NO_ARTIFACT'):
     p.mkdir(parents=True)
     (p / 'sparse.pt').write_text('test artifact')
 """
-    for phase in ("train", "eval"):
-        executable = tmp_path / f"{phase}-python"
-        executable.write_text(source)
-        executable.chmod(0o755)
-        monkeypatch.setenv("HYBRID_CSA_TRAIN_PYTHON" if phase == "train" else "HYBRID_CSA_PYTHON", str(executable))
+    # One stand-in for torch218: training and evaluation run in the same interpreter.
+    executable = tmp_path / "torch218-python"
+    executable.write_text(source)
+    executable.chmod(0o755)
+    monkeypatch.setenv("HYBRID_CSA_PYTHON", str(executable))
     monkeypatch.setenv("BASELINE_PYTHON", sys.executable)
     monkeypatch.setenv("TEST_CALLS", str(calls))
     monkeypatch.setenv("MA_NUM_GPUS", "2")
@@ -75,7 +75,7 @@ def test_integrated_launch_and_failure_boundaries(launcher, monkeypatch, fail):
     assert [c["phase"] for c in calls] == expected
     for call in calls:
         phase = call["phase"]
-        assert call["python"] == ("train-python" if phase in ("preflight_train", "prepare", "train") else "eval-python")
+        assert call["python"] == "torch218-python"
         if phase in ("prepare", "train", "main", "niah"):
             args = call["args"]
             assert args[args.index("--node_rank") + 1] == "1"
@@ -90,6 +90,18 @@ def test_integrated_launch_and_failure_boundaries(launcher, monkeypatch, fail):
         assert record["status"] == ("failed" if fail else "complete")
     else:
         assert not output.exists()
+
+
+@pytest.mark.parametrize("variable", ["HYBRID_CSA_TRAIN_PYTHON", "BASELINE_TRAIN_PYTHON"])
+def test_former_training_interpreter_is_refused_not_ignored(launcher, monkeypatch, variable, tmp_path):
+    monkeypatch.setenv(variable, "/some/training-env/bin/python")
+    result, calls = launcher[0]()
+    assert result.returncode != 0 and f"unset {variable}" in result.stderr and not calls
+    result, calls = launcher[0]("--train-python", "/some/training-env/bin/python")
+    assert result.returncode != 0 and not calls
+    train_script = pipeline.BASELINE_ROOT / "scripts/hybrid_csa_train.sh"
+    result = subprocess.run(["bash", str(train_script), "--print-config"], cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 2 and f"unset {variable}" in result.stderr
 
 
 def test_missing_artifact_never_falls_back_to_base(launcher, monkeypatch):
