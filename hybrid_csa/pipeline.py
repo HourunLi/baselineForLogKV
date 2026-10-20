@@ -1,4 +1,8 @@
-"""One platform job: prepare -> three training stages -> main -> 32K NIAH."""
+"""One platform job: prepare -> three training stages -> main -> 32K NIAH, all in SemanticLogKV's torch218.
+
+Training needs nothing beyond what torch218 already has (PyTorch, LitData, PyArrow), so every phase runs with
+the evaluation interpreter; there is no separate training environment.
+"""
 
 import argparse
 from datetime import datetime, timezone
@@ -13,6 +17,11 @@ from .config import BASELINE_ROOT, environment_path, load_experiment_config, req
 from .evaluate import (BACKENDS, DEFAULT_CONFIG, DEFAULT_HYBRID_CSA_CONFIG, DEFAULT_EVALUATION_CONFIG,
                        configure_environment, load_hybrid_csa_options, load_eval_suite, validate_output)
 from .train import DEFAULT_CONFIG as TRAIN_CONFIG, accumulation_steps, resolve_config
+
+
+TORCH218_PYTHON = "/home/ma-user/anaconda3/envs/torch218/bin/python"
+# Variables of the former separate training environment; refused rather than silently ignored.
+TRAINING_PYTHON_VARIABLES = ("HYBRID_CSA_TRAIN_PYTHON", "BASELINE_TRAIN_PYTHON")
 
 
 def first_env(*names, default=None):
@@ -62,8 +71,7 @@ def parse_args(argv=None):
     parser.add_argument("--mode", choices=("all", "train", "eval"))
     parser.add_argument("--train-config", type=Path, default=TRAIN_CONFIG)
     parser.add_argument("--hybrid-csa-config", type=Path, default=DEFAULT_HYBRID_CSA_CONFIG)
-    parser.add_argument("--train-python")
-    parser.add_argument("--eval-python")
+    parser.add_argument("--eval-python", help="Interpreter for every phase (default: torch218)")
     parser.add_argument("--backend", choices=BACKENDS, default="hybrid_csa")
     parser.add_argument("--adapter", type=Path)
     parser.add_argument("--model", type=Path)
@@ -91,10 +99,12 @@ def parse_args(argv=None):
 
 def build_plan(args):
     topo = topology()
-    train_python = args.train_python or first_env("HYBRID_CSA_TRAIN_PYTHON", "BASELINE_TRAIN_PYTHON",
-                                                 "BASELINE_PYTHON", default=sys.executable)
-    eval_python = args.eval_python or first_env("HYBRID_CSA_PYTHON", "BASELINE_EVAL_PYTHON", "BASELINE_PYTHON",
-                                               default="/home/ma-user/anaconda3/envs/torch218/bin/python")
+    stale = [name for name in TRAINING_PYTHON_VARIABLES if os.environ.get(name)]
+    if stale:
+        raise ValueError(f"Training runs with the evaluation interpreter (torch218); unset {', '.join(stale)} "
+                         "and select the interpreter with --eval-python or HYBRID_CSA_PYTHON")
+    python = args.eval_python or first_env("HYBRID_CSA_PYTHON", "BASELINE_EVAL_PYTHON", "BASELINE_PYTHON",
+                                          default=TORCH218_PYTHON)
     experiment = require_project_file(args.experiment)
     source = load_experiment_config(experiment)
     if args.base_checkpoint_dir:
@@ -129,7 +139,7 @@ def build_plan(args):
     return {"mode": args.mode, "backend": args.backend, "base": base, "model": str(args.model.resolve()) if args.model else None,
             "experiment": str(experiment), "train_config": str(require_project_file(args.train_config)),
             "hybrid_csa_config": str(require_project_file(args.hybrid_csa_config)),
-            "train_python": train_python, "eval_python": eval_python, "topology": topo, "training": training,
+            "python": python, "topology": topo, "training": training,
             "output": str(output), "eval_output": str(output if args.mode == "eval" else output / "eval"),
             "adapter": str(args.adapter.resolve()) if args.adapter else str(output / "train/sparse.pt"),
             "limit": args.limit,
@@ -142,9 +152,9 @@ def build_plan(args):
 def execute(plan):
     env = dict(os.environ, HYBRID_CSA_BASE_CHECKPOINT=plan["base"])
     records = {}
-    # Fail before preparing/training if either interpreter or CUDA stack is unusable.
+    # Fail before preparing/training if the interpreter lacks what a phase imports or CUDA is unusable.
     for phase in (("train", "eval") if plan["mode"] == "all" else (plan["mode"],)):
-        command = [plan[f"{phase}_python"], "-m", "hybrid_csa.preflight",
+        command = [plan["python"], "-m", "hybrid_csa.preflight",
                    "--phase", phase, "--base", plan["base"]]
         print(f"[preflight {phase}] {shlex.join(command)}", flush=True)
         records[phase] = json.loads(subprocess.run(command, check=True, capture_output=True, text=True,
@@ -183,14 +193,14 @@ def execute(plan):
             arguments = ["--config", plan["train_config"]]
             for key in ("base_checkpoint_dir", "data_dir", "tokenized_dir", "output_dir"):
                 arguments += ["--" + key.replace("_", "-"), cfg[key]]
-            run("prepare", distributed_command(plan["train_python"], topo, "prepare", "hybrid_csa.train",
+            run("prepare", distributed_command(plan["python"], topo, "prepare", "hybrid_csa.train",
                                                arguments + ["--prepare-distributed"]))
-            run("train", distributed_command(plan["train_python"], topo, "train", "hybrid_csa.train", arguments))
+            run("train", distributed_command(plan["python"], topo, "train", "hybrid_csa.train", arguments))
         if plan["mode"] != "train":
             if plan["backend"] == "hybrid_csa":
                 if not Path(plan["adapter"]).is_file():
                     raise FileNotFoundError(f"No completed sparse adapter: {plan['adapter']}")
-                run("verify_adapter", [plan["eval_python"], "-m", "hybrid_csa.preflight", "--phase", "eval",
+                run("verify_adapter", [plan["python"], "-m", "hybrid_csa.preflight", "--phase", "eval",
                                        "--base", plan["base"], "--adapter", plan["adapter"],
                                        "--hybrid-csa-config", plan["hybrid_csa_config"]], capture=True)
             arguments = ["--experiment-config", plan["experiment"], "--backend", plan["backend"],
@@ -202,7 +212,7 @@ def execute(plan):
             if plan["limit"] is not None:
                 arguments += ["--limit", str(plan["limit"])]
             for suite in ("main", "niah"):
-                run(suite, distributed_command(plan["eval_python"], topo, suite, "hybrid_csa.evaluate",
+                run(suite, distributed_command(plan["python"], topo, suite, "hybrid_csa.evaluate",
                                                arguments + ["--suite", suite]))
         state["status"] = "complete"
     except Exception as error:

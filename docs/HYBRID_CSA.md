@@ -90,10 +90,12 @@ python -m hybrid_csa.budget --tokens 32768
 
 语料仅使用指定本地 JSON/JSONL/Parquet。字段优先级为 text/chapter/content/code，messages 则显式拼成角色段落；空或不兼容记录直接报错。BOS 关闭、每文档追加 EOS，跨文档打包。记录原始文件哈希、tokenizer 哈希、prepare 参数和 index 哈希。每阶段重新开始数据迭代和 AdamW；token 数是包含阶段重读的 exposure 数，**不是独立语料 token 数**。阶段内数据不足会失败，不静默循环。
 
-在单独训练环境准备依赖（正式 torch218 评测环境不安装包）：
+训练与评测都在已有的 torch218 中运行，不安装本项目或任何包。训练只用 PyTorch、LitData 与 PyArrow，torch218 已有
+（2026-10-16 快照：torch 2.11.0+cu128、litdata 0.2.61、pyarrow 23.0.1、lightning 2.6.1）；精确版本写入训练 manifest。
+`scripts/hybrid_csa_train.sh` 与评测脚本使用同一个解释器（`HYBRID_CSA_PYTHON` → `BASELINE_EVAL_PYTHON` → `BASELINE_PYTHON` →
+torch218 绝对路径）；设置了旧的 `HYBRID_CSA_TRAIN_PYTHON`/`BASELINE_TRAIN_PYTHON` 时报错，不会被悄悄忽略。
 
 ```bash
-python -m pip install '.[hybrid-csa-train]'
 python -m hybrid_csa.train --print-config
 # 一次性数据准备，必须单进程
 bash scripts/hybrid_csa_train.sh configs/hybrid_csa/train_qwen1.7b_32k.yaml --prepare-data
@@ -127,13 +129,12 @@ bash majob.sh --adapter outputs/hybrid_csa/adaptation/sparse.pt --output outputs
 
 ### 5.1 平台一体化入口
 
-**默认完整流程：检查训练和评测环境 → 准备/核验通用语料 → compressor/indexer/sparse 三阶段训练 → 校验 sparse adapter → main → NIAH。**
-直接调用两个环境的 Python，不在作业中激活 conda 或安装/升级包。`--mode train` 只准备与训练；`--mode eval` 只评测。
+**默认完整流程：检查训练和评测依赖 → 准备/核验通用语料 → compressor/indexer/sparse 三阶段训练 → 校验 sparse adapter → main → NIAH。**
+所有阶段直接调用同一个 torch218 解释器，不在作业中激活 conda 或安装/升级包。`--mode train` 只准备与训练；`--mode eval` 只评测。
 为兼容既有用法，未写 mode 但提供 `--adapter`，或使用 `--backend dense|logkv`，自动选择 eval；评测 CLI 自身永远不训练。
 
 ```bash
-# 在已经配置好的独立训练环境中，固定其解释器
-export HYBRID_CSA_TRAIN_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+# 训练与评测共用 torch218；缺省即此路径，可显式固定
 export HYBRID_CSA_PYTHON=/home/ma-user/anaconda3/envs/torch218/bin/python
 # 默认路径已对齐现有资产；需要时覆盖，环境路径必须为绝对路径
 export HYBRID_CSA_BASE_CHECKPOINT=/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/
@@ -148,13 +149,12 @@ bash majob.sh --mode eval --adapter /shared/your-output/csa-run-001/train/sparse
   --limit 4 --output /shared/your-output/csa-eval-smoke
 ```
 
-`/shared/your-output` 是须替换的本方法输出位置。独立训练环境缺依赖时，提前安装 `[hybrid-csa-train]`；**不要向 torch218 安装任何 extra，包括 `[eval]`**。
+`/shared/your-output` 是须替换的本方法输出位置。**不要向 torch218 安装任何 extra，包括 `[eval]`**；训练不需要额外依赖。
 `--limit` 只限制评测样本，完整流程中的训练仍执行配置的 160 步。
 
 | 项目 | 优先级 / 约定 |
 |---|---|
-| 训练 Python | `--train-python` → `HYBRID_CSA_TRAIN_PYTHON` → `BASELINE_TRAIN_PYTHON` → `BASELINE_PYTHON` → 启动器 Python |
-| 评测 Python | `--eval-python` → `HYBRID_CSA_PYTHON` → `BASELINE_EVAL_PYTHON` → `BASELINE_PYTHON` → 已有 torch218 绝对路径 |
+| Python（所有阶段） | `--eval-python` → `HYBRID_CSA_PYTHON` → `BASELINE_EVAL_PYTHON` → `BASELINE_PYTHON` → 已有 torch218 绝对路径；与此前评测解释器的规则相同。`--train-python`、`HYBRID_CSA_TRAIN_PYTHON`、`BASELINE_TRAIN_PYTHON` 已取消，出现即报错 |
 | Base / 语料 | `--base-checkpoint-dir` / `--data-dir` → `HYBRID_CSA_*` → `BASELINE_BASE_CHECKPOINT` / `BASELINE_DATA_DIR` → 项目 YAML |
 | 分词缓存 | `--tokenized-dir` → `HYBRID_CSA_TOKENIZED_DIR` → 训练 YAML；与原始语料、评测 HF 缓存及本次输出分开 |
 | 本次输出 | `--output` → `HYBRID_CSA_OUTPUT_ROOT` → `BASELINE_OUTPUT_ROOT` → `outputs/hybrid_csa/<MA_VJ_NAME 或时间>` |
@@ -164,7 +164,7 @@ bash majob.sh --mode eval --adapter /shared/your-output/csa-run-001/train/sparse
 | GPUs / 节点 / rank | `MA_NUM_GPUS` → `NPROC_PER_NODE` → `LOCAL_WORLD_SIZE` → 实测；`MA_NUM_HOSTS` → `NNODES` → `GROUP_WORLD_SIZE`；`VC_TASK_INDEX` → `NODE_RANK` → `GROUP_RANK` |
 | 地址 / 端口 | 显式 `MASTER_ADDR` 优先，否则平台 DNS；多节点禁止 localhost。训练基准端口 6000，main +1、NIAH +2、prepare +3；支持各阶段端口变量；单节点使用空闲端口 |
 
-配置预览中 GPU 数为空表示运行时检测。两个解释器分别实际执行 `torch.cuda.init()` 与 BF16 检查，取共同可见卡数，并在训练前核验全局 batch 可整除总 GPU 数。
+配置预览中 GPU 数为空表示运行时检测。同一解释器分别做训练与评测两项预检（各自导入所需模块，实际执行 `torch.cuda.init()` 与 BF16 检查），取可见卡数，并在训练前核验全局 batch 可整除总 GPU 数。
 默认全局 batch 8，因此默认配方最多支持 8 个训练 rank；更多 GPU 须显式修改训练 YAML 的全局 batch，并重新记录训练 token 成本。
 
 准备阶段用 Gloo 每节点启动一个进程，只有全局 rank 0 调用分词准备；各节点核对配置一致，接收成功/失败并检查共享文件可读。已存在完整缓存时核验 tokenizer、context、index 与原始语料哈希后复用；不覆盖半成品、不自动删除缓存。
@@ -173,7 +173,7 @@ bash majob.sh --mode eval --adapter /shared/your-output/csa-run-001/train/sparse
 本次输出为：
 
 ```text
-<output>/pipeline_node_<rank>.json   # 解释器、精确包版本、解析配置、阶段命令、起止时间及失败信息
+<output>/pipeline_node_<rank>.json   # 解释器（plan.python）、两项预检的精确包版本、解析配置、阶段命令、起止时间及失败信息
 <output>/train/                     # resolved_train.yaml、manifest、metrics.jsonl、三个 adapter
 <output>/eval/main/                 # resolved_eval、结果和逐样本输入
 <output>/eval/niah/
@@ -200,7 +200,17 @@ eval 模式结果直接位于 `<output>/main` 和 `<output>/niah`。输出须使
 - **不能给训练预算充分性背书。** 4K 适配后 32K 检索能力须由固定评测得出；结果低可能包含迁移/预算不足的影响。
 - **性能限制。** 当前为纯 PyTorch 正确性基线，按 query chunk 限制临时工作量；没有 V4 专用融合内核，32K 速度未经验证。不要把时间开销当成 CSA 算法的最优性能。
 
-2026-10-20 本机验证：
+2026-10-20 训练移入 torch218 后的验证（开发容器 CPU 上的 torch218 副本：Python 3.10.20、torch 2.11.0、lightning 2.6.1、
+litdata 0.2.61、pyarrow 23.0.1、lm-eval 0.4.11、datasets 4.8.4、transformers 4.51.3、tokenizers 0.21.4，与环境清单第 1 节一致；没有 GPU）：
+
+- 改动前（`0d7ee4c`）的全部测试在该副本中已通过（141 passed），包括真实小模型三阶段反传、LitData 打包读取与 checkpoint 测试，
+  说明训练代码在 torch218 的包版本下可运行；改动只涉及解释器选择、依赖声明与文档，训练、评测和模型代码未改。
+- 改动后同一副本：143 passed（新增旧训练解释器设置被拒绝的 2 项）。
+- 用同一个假解释器分别运行改动前后的 `majob.sh`：完整流程、`--mode eval --adapter`、`--backend dense` 三种模式下，每个阶段的命令、
+  参数、工作目录与 HF/CUDA/拓扑相关环境变量逐字相同；评测阶段的接口、输出位置和环境没有变化。
+- 未验证：真实 CUDA 上的训练（`hybrid_csa.train` 要求 CUDA/BF16，测试只覆盖 CPU 小模型）、多 GPU/多节点通信、原始 1.7B 与 32K 评测。
+
+2026-10-20 本机验证（训练移入 torch218 之前）：
 
 ```bash
 python -m pytest -q tests/hybrid_csa tests/chunkkv/test_evaluate.py --disable-warnings

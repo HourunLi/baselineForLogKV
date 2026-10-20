@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# Activate a separate training environment first. Run once per node for training.
+# Training only, once per node, in SemanticLogKV's torch218 (the evaluation interpreter); majob.sh trains and
+# then evaluates in one job.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 CONFIG=${1:-configs/hybrid_csa/train_qwen1.7b_32k.yaml}
 shift $(( $# > 0 ? 1 : 0 ))
-PYTHON=${HYBRID_CSA_TRAIN_PYTHON:-${BASELINE_TRAIN_PYTHON:-${BASELINE_PYTHON:-python}}}
+for name in HYBRID_CSA_TRAIN_PYTHON BASELINE_TRAIN_PYTHON; do
+    if [[ -n "${!name:-}" ]]; then
+        echo "Training runs with the evaluation interpreter (torch218); unset $name and use HYBRID_CSA_PYTHON" >&2
+        exit 2
+    fi
+done
+PYTHON=${HYBRID_CSA_PYTHON:-${BASELINE_EVAL_PYTHON:-${BASELINE_PYTHON:-/home/ma-user/anaconda3/envs/torch218/bin/python}}}
 source scripts/hybrid_csa_runtime.sh
 for argument in "$@"; do
     if [[ "$argument" == --print-config || "$argument" == --prepare-data ]]; then

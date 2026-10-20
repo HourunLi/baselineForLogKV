@@ -42,7 +42,7 @@ source /home/ma-user/anaconda3/bin/activate torch218
 
 两个环境分别保存实际 Python 路径、Python/PyTorch/CUDA 版本、完整依赖清单和相关内核检查结果。`pip check` 只检查声明的依赖关系，不证明 GPU 内核或真实任务可运行。开发阶段可在任一环境修改同一项目源码；正式训练/评测期间固定代码版本，不在运行中的 editable checkout 上改代码。
 
-启动器必须支持显式解释器。单阶段使用 `BASELINE_PYTHON`；一体化入口分别使用 `BASELINE_TRAIN_PYTHON` / `BASELINE_EVAL_PYTHON`，再回落到 `BASELINE_PYTHON`。HybridCSA 的方法变量、默认值与优先级见 [运行说明](HYBRID_CSA.md#51-平台一体化入口)。不得无提示重新激活某个固定环境。分布式启动统一用 `"$BASELINE_PYTHON" -m torch.distributed.run`，避免 `python` 与 PATH 中的 `torchrun` 来自不同环境。
+启动器必须支持显式解释器。单阶段使用 `BASELINE_PYTHON`；一体化入口分别使用 `BASELINE_TRAIN_PYTHON` / `BASELINE_EVAL_PYTHON`，再回落到 `BASELINE_PYTHON`。HybridCSA 的训练只用 torch218 已有的 PyTorch、LitData、PyArrow，因此不另建训练环境，训练与评测都使用 torch218 的同一解释器；其方法变量、默认值与优先级见 [运行说明](HYBRID_CSA.md#51-平台一体化入口)。不得无提示重新激活某个固定环境。分布式启动统一用 `"$BASELINE_PYTHON" -m torch.distributed.run`，避免 `python` 与 PATH 中的 `torchrun` 来自不同环境。
 
 ## 3. 环境变量与优先级
 
