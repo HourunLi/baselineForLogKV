@@ -1,0 +1,42 @@
+# Starting recipe, not an empirically optimized budget. 160 * 8 * 4096 = 5,242,880
+# token exposures; all original Base parameters remain frozen. No NIAH data/tuning.
+base_checkpoint_dir: ${HYBRID_CSA_BASE_CHECKPOINT-/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/}
+data_dir: ${HYBRID_CSA_DATA_DIR-/home/ma-user/work/bucket-pangu-green/lihourun/longcontext/prolong/data}
+# Raw shared corpus stays read-only. Explicit --prepare-data creates this directory.
+tokenized_dir: ${HYBRID_CSA_TOKENIZED_DIR-outputs/hybrid_csa/tokenized}
+# Must not already exist; use a new directory for every run or weight continuation.
+output_dir: ${HYBRID_CSA_TRAIN_OUTPUT-outputs/hybrid_csa/adaptation}
+# Adapt at 4K to reduce cost; 4096 > 512 * 4 exercises sparse selection.
+# Formal evaluation is still exclusively 32K.
+context_length: 4096
+global_batch_size: 8
+micro_batch_size: 1
+seed: 3407
+num_workers: 2
+prepare_workers: 8
+precision: bf16
+activation_checkpointing: true
+loss_chunk_size: 128
+weight_decay: 0.01
+grad_clip: 1.0
+indexer_loss_weight: 1.0
+warmup_steps: 8
+settings:
+  full_layer_interval: 3
+  compress_ratio: 4
+  window_size: 128
+  index_topk: 512
+  index_dim: 64
+  index_heads: 4
+  query_chunk_size: 64
+  prefill_chunk_size: 512
+stages:
+  - name: compressor
+    steps: 64
+    learning_rate: 0.0001
+  - name: indexer
+    steps: 32
+    learning_rate: 0.0001
+  - name: sparse
+    steps: 64
+    learning_rate: 0.00005

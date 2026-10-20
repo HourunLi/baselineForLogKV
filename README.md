@@ -1,37 +1,36 @@
-# ChunkKV baseline（`chunkKV` 分支）
+# Qwen3 Hybrid CSA4 baseline（`codex/hybrid-csa4`）
 
-本分支是 [ChunkKV](https://arxiv.org/html/2502.00299v5) 的独立项目，作为 SemanticLogKV 的对比 baseline（DMS 在 `DMS` 分支单独维护，本项目不含其代码）。统一规则见 [AGENTS.md](AGENTS.md)、[Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md) 与 [环境与避坑清单](docs/BASELINE_ENVIRONMENT.md)。ChunkKV 免训练：prompt 先完整 prefill，再按观察窗注意力选出整块（默认 10 token）原始 K/V 加观察窗保留，生成 token 直接追加；支持论文的层间索引复用。**ChunkKV 的配置、模型和训练/评测运行代码均在本项目内，不需要相邻 `litgpt` 或 SemanticLogKV checkout。**
+从原始 **Qwen3-1.7B-Base** 出发，冻结原参数，移植 DeepSeek CSA4 的学习式重叠压缩和 indexer，采用 **`[Full, CSA, CSA] × 9 + Full`**：10 个 Full 层、18 个 CSA 层。保持 Qwen 的 GQA、独立 K/V 和 RoPE，因此是机制移植，不是 DeepSeek V4 整模复现。
 
-- **配置与模型**：自有平铺实验配置在 `configs/chunkkv/experiment_qwen1.7b_32k.yaml`，直接加载其中原始 Base 的 `lit_model.pth`（兼容 LitGPT 权重格式，不转换），即 CPT 的同一起点。
-- **评测**：本地运行快照在 `chunkkv/_vendor/semanticlogkv/`，`ChunkKVLM` 继承其中 `LogKVLM` 的请求、生成、打分与 KV/速度指标；同一入口还可跑 `--backend logkv`（SemanticLogKV）与 `--backend dense`（Full KV），结果带 `comparison_contract`。`scripts/chunkkv_evaluate_all.sh` 按 Semantic 当前默认脚本分两阶段跑：47 个主任务入口（含 33 个 LongBench/LongBench-E）及三种 NIAH；按本次实验要求仅评测 32K；任务配置独立保存在本项目内。
-- **预算**：默认按参考 LogKV 缓存的持久分配字节对齐（同其 SWA 对照口径）；也可用 `--budget-from-result` 按 SemanticLogKV 实测保留条目数对齐，或 `--budget` / `--keep-ratio`。
-- **训练接口（可选对照）**：ChunkKV 本身不训练；`scripts/chunkkv_train.sh` 用本地训练运行快照和同一份自有实验配置做同数据、同预算的 dense CPT，供 "CPT + ChunkKV" 对照。
+默认局部窗口 128、压缩项 top-k 512。32K 时主 KV 理论保留 **52.0368%**，即 **1.9217× 压缩、节省 47.9632%**；另计 index key 和压缩器状态后为 **52.5548%** 元素保留率。只报告理论元素，不用实际显存衡量压缩。
 
-服务器项目根为 `/data/lihourun/baselineForLogKV/chunkKV`。SemanticLogKV 项目位于 `/data/lihourun/semanticLogKV`，仅作为独立对照项目；比较其训练权重时用 `--model` 指定实际 checkpoint。原始权重、训练数据和缓存的默认位置仍保留现有 `/home/ma-user/...`，可分别通过 `CHUNKKV_BASE_CHECKPOINT`、`CHUNKKV_DATA_DIR`、`CHUNKKV_HF_CACHE` 覆盖。
-ChunkKV 使用 Python 3.10–3.13、PyTorch >= 2.7。
+实现、语料准备、训练、配置、评测和平台启动器均在本项目内。无运行时跨 baseline 源码依赖。采用固定 47 个 main 入口与 3 个 NIAH，仅 32768 上限；比较双方使用同一 torch218 评测环境，不向该环境安装包。详见 [实现与运行说明](docs/HYBRID_CSA.md)、[统一规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md) 与 [环境清单](docs/BASELINE_ENVIRONMENT.md)。
 
 ```bash
-cd /data/lihourun/baselineForLogKV/chunkKV
-# 在 SemanticLogKV 的评测环境 torch218 中直接运行，无需安装本项目，不改动其中任何包
-python -m chunkkv.evaluate --suite main --print-config
-python -m chunkkv.evaluate --suite niah --print-config
-python -m chunkkv.train --print-config
-bash scripts/chunkkv_evaluate_all.sh --limit 4 --output outputs/cmp-chunkkv
-bash scripts/chunkkv_evaluate_all.sh --backend logkv --model /path/to/semanticlogkv/ckpt --limit 4 --output outputs/cmp-logkv
-# 比较各阶段本次生成的结果文件；将 TIMESTAMP 替换为实际文件名中的时间戳
-python -m chunkkv.compare_results outputs/cmp-chunkkv/main/eval_results_TIMESTAMP.json outputs/cmp-logkv/main/eval_results_TIMESTAMP.json
-python -m pytest -q tests/chunkkv
+# 无模型、无 GPU 也可检查配置和预算
+python -m hybrid_csa.budget --tokens 32768
+python -m hybrid_csa.train --print-config
+python -m hybrid_csa.evaluate --suite niah --print-config
+
+# 在已经准备好的训练环境中取解释器；评测固定使用已有 torch218
+export HYBRID_CSA_TRAIN_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+export HYBRID_CSA_PYTHON=/home/ma-user/anaconda3/envs/torch218/bin/python
+bash majob.sh --print-config
+
+# 平台每节点执行一次：准备数据 → 三阶段适配 → main → NIAH
+# --output 必须是新的作业目录；多节点使用同一共享绝对路径
+bash majob.sh --output outputs/csa-run-001
+
+# 已有产物时只评测；--limit 仅限制评测样本，不缩短训练
+bash majob.sh --mode eval --adapter outputs/csa-run-001/train/sparse.pt \
+  --limit 4 --output outputs/csa-eval-smoke
+
+# 本地实现验证（需项目基础依赖和 pytest）
+python -m pytest -q tests/hybrid_csa
 ```
 
-训练平台作业使用根目录 `majob.sh`，沿用 Semantic 的 `MA_*` 节点约定，默认激活 `torch218`，
-直接执行 Base + ChunkKV 的完整 32K 评测：
+默认全流程约 524 万训练 token exposures。适配分为压缩器 LM → indexer KL → sparse 联合训练，不使用捞针训练数据，不按捞针结果调布局或挑 checkpoint。一体化入口校验本次 `train/sparse.pt` 后交给评测；单独评测显式传入 adapter。任一阶段失败即停止，记录实际 Base、tokenizer、数据、代码、环境和训练成本。
 
-```bash
-bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml --output outputs/chunkkv-base-32k-full
-```
+本机仅完成小模型与入口验证；尚未执行原始 1.7B 的适配或 32K GPU 评测，没有捞针分数，也不保证初始训练预算足够。代码为纯 PyTorch 基线，未移植 DeepSeek 专用加速内核。
 
-每个节点执行一次，先 main（47 个入口）再 NIAH（3 个入口，仅 32768），main 失败即停止；`chunkkv.evaluate` 必须显式给出
-`--suite` 或 `--tasks`。评测环境为 SemanticLogKV 的 torch218，代码适配它（当前 lm-eval 0.4.11、datasets 4.8.4；启动时只检查 `lm-eval>=0.4.9`、`datasets>=4.7`），
-不要向其中安装本项目的 extra；可用 `python -m chunkkv.check_dataset_cache` 检查共享离线缓存是否都能被该版本读取。环境选择、多节点参数、实现细节、
-预算口径与验证记录见 [docs/CHUNKKV.md](docs/CHUNKKV.md)。尚未在 CUDA 上用真实权重运行。
-
+原 ChunkKV 代码保留，说明见 [CHUNKKV.md](docs/CHUNKKV.md)，其平台入口为 `scripts/chunkkv_majob.sh`；根目录 `majob.sh` 已切换为本分支 HybridCSA。

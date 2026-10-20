@@ -1,0 +1,13 @@
+# Neutral fixed layout: F,C,C repeated, with the final layer kept Full.
+# For Qwen3-1.7B: Full layers 0,3,6,9,12,15,18,21,24,27 (zero based).
+# Architecture settings are saved with adapters and must match at evaluation.
+full_layer_interval: 3
+compress_ratio: 4
+window_size: 128
+index_topk: 512
+# A smaller independently trained indexer for the 1.7B GQA backbone.
+index_dim: 64
+index_heads: 4
+# Execution chunk sizes affect memory use, not the causal attention definition.
+query_chunk_size: 64
+prefill_chunk_size: 512
