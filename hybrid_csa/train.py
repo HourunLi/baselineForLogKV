@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import shutil
 import subprocess
 import time
 
@@ -198,8 +199,12 @@ def prepare_data(cfg):
         raise FileNotFoundError(f"No local parquet/jsonl/json documents in {source}"
                                 + (f" (skipped LitData outputs: {[str(d) for d in skipped]})" if skipped else ""))
     destination = Path(cfg["tokenized_dir"])
-    if destination.exists() and any(destination.iterdir()):
+    if (destination / DATA_MANIFEST).exists():
         raise FileExistsError(f"Refusing to overwrite tokenized data: {destination}")
+    if destination.exists() and any(destination.iterdir()):
+        # No manifest: an earlier preparation stopped before finishing, so nothing in it can be used.
+        print(f"Removing an incomplete earlier preparation: {destination}", flush=True)
+        shutil.rmtree(destination)
     record = {"schema": 1, "context_length": cfg["context_length"],
               "tokenizer": tokenizer_identity(cfg["base_checkpoint_dir"]),
               "documents": {str(p.relative_to(source)): {"sha256": sha256(p), "bytes": p.stat().st_size} for p in files},
