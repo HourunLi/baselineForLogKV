@@ -51,6 +51,14 @@ def test_schema_fails_instead_of_silently_dropping_rows():
             train.text_from_record(row, "bad document")
 
 
+def test_empty_documents_are_told_apart_from_malformed_ones():
+    for row in ({"text": None}, {"text": "  "}, {"text": "", "messages": []}, {"chapter": None, "code": ""}):
+        assert train.is_empty_document(row), row
+    # No supported field, a field of another type, or a non-object: malformed, so text_from_record raises.
+    for row in ({}, {"title": "x"}, {"text": 3}, {"messages": [{"content": None}]}, None, {"text": "hello"}):
+        assert not train.is_empty_document(row), row
+
+
 def test_accumulation_and_learning_rate_budget():
     assert train.accumulation_steps(8, 1, 8) == 1
     assert train.accumulation_steps(8, 1, 2) == 4
