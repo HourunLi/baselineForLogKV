@@ -167,7 +167,7 @@ bash majob.sh --mode eval --adapter /home/ma-user/work/bucket-pangu-green/lihour
 配置预览中 GPU 数为空表示运行时检测。同一解释器分别做训练与评测两项预检（各自导入所需模块，实际执行 `torch.cuda.init()` 与 BF16 检查），取可见卡数，并在训练前核验全局 batch 可整除总 GPU 数。
 默认全局 batch 8、每卡 micro batch 1，训练进程总数须整除 8。卡数多于配方可用时，训练自动只用每节点能整除的最多卡数（如 1 节点 16 卡或 2 节点各 8 卡时共用 8 卡，6 卡时用 4 卡），梯度累积随之调整，全局 batch、步数与 token 预算不变；评测仍用全部卡。启动日志与 `pipeline_node_<rank>.json` 的 `topology.train_gpus` 记录实际训练卡数。节点数不能整除 8（如 3 节点）时报错；要改用更多卡训练，须显式修改训练 YAML 的全局 batch，并重新记录训练 token 成本。
 
-准备阶段用 Gloo 每节点启动一个进程，只有全局 rank 0 调用分词准备；各节点核对配置一致，接收成功/失败并检查共享文件可读。已存在完整缓存时核验 tokenizer、context、index 与原始语料哈希后复用；不覆盖半成品、不自动删除缓存。
+准备阶段用 Gloo 每节点启动一个进程，只有全局 rank 0 调用分词准备；各节点核对配置一致，接收成功/失败并检查共享文件可读。已存在完整缓存时核验 tokenizer、context、index 与原始语料哈希后复用；没有完成标记（数据 manifest）的目录是此前中断的准备，自动删除后重做；已完成的缓存不自动删除。
 多节点要求代码/资产位于一致路径，分词缓存和输出目录共享可见。训练完成并退出后，评测解释器使用 `weights_only=True` 校验产物的 Base/tokenizer 指纹、方法设置和 sparse 训练记录；真正载入模型时再严格核验参数键和形状。
 
 本次输出为：

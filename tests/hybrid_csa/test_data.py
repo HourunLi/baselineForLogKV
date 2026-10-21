@@ -79,7 +79,10 @@ def test_preparation_skips_and_records_litdata_chunks_and_verifies_the_same_file
     (chunks / "index.json").write_text(json.dumps({"chunks": [], "config": {}}))
     cfg = dict(base_checkpoint_dir=str(base), data_dir=str(source), tokenized_dir=str(tmp_path / "packed"),
                context_length=7, prepare_workers=1, seed=42, micro_batch_size=1, num_workers=0)
+    (tmp_path / "packed").mkdir()
+    (tmp_path / "packed/chunk-9-9.bin").write_bytes(b"left by a preparation that failed")  # no manifest
     prepare_data(cfg)
+    assert not (tmp_path / "packed/chunk-9-9.bin").exists()
     record = validate_prepared_data(cfg, verify_source=True)
     assert list(record["documents"]) == ["documents.jsonl"]
     assert record["skipped_litdata_outputs"] == ["litdata_key_ctx32768"]
