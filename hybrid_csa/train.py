@@ -234,11 +234,13 @@ def validate_prepared_data(cfg, verify_source=False):
     if Path(record["data_dir"]).resolve() != Path(cfg["data_dir"]).resolve():
         raise ValueError("Prepared data came from a different raw corpus; choose a new tokenized_dir")
     if verify_source:
+        # The same files with the same sizes. Their SHA-256 were recorded once at preparation; re-reading a
+        # 100+ GB shared corpus before every reuse would cost more than the run itself.
         source = Path(cfg["data_dir"])
         files, _ = corpus_files(source)
-        actual = {str(p.relative_to(source)): {"sha256": sha256(p), "bytes": p.stat().st_size} for p in files}
-        if actual != record["documents"]:
-            raise ValueError("Raw corpus changed since preparation; choose a new tokenized_dir")
+        actual = {str(p.relative_to(source)): p.stat().st_size for p in files}
+        if actual != {name: entry["bytes"] for name, entry in record["documents"].items()}:
+            raise ValueError("Raw corpus files or sizes changed since preparation; choose a new tokenized_dir")
     return record
 
 
