@@ -18,7 +18,8 @@ bash majob.sh --print-config
 
 # 平台每节点执行一次：准备数据 → 三阶段适配 → main → NIAH，不需要任何参数。
 # 输出写到 configs/hybrid_csa/majob.yaml 的 output：/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4
-# 每次运行覆盖它：环境预检通过后先删除上次的 train/、eval/、main/、niah/ 与运行记录，其他文件不动
+# 每次运行覆盖它：环境预检通过后先删除上次的 train/、eval/、main/、niah/ 与运行记录，其他文件不动；
+# 其中的 tokenized/ 是第一次运行准备的分词数据，之后的运行校验后直接复用
 bash majob.sh
 # --output 可改用别的运行目录（同样覆盖；多节点使用同一共享绝对路径）
 

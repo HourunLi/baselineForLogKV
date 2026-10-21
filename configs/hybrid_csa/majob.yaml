@@ -1,5 +1,6 @@
 # Defaults of `bash majob.sh`, read only by hybrid_csa.pipeline. --output, HYBRID_CSA_OUTPUT_ROOT or
 # BASELINE_OUTPUT_ROOT replace this run directory. A new run overwrites it: once the environment checks pass,
 # the train/, eval/, main/ and niah/ results and pipeline records of the earlier run are deleted (eval-only runs
-# keep train/), so no earlier file can pass for this run's. Other files in the directory are left alone.
+# keep train/), so no earlier file can pass for this run's. Other files in the directory are left alone, including
+# tokenized/, the prepared training data the first run writes and later runs reuse (train_qwen1.7b_32k.yaml).
 output: /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4

@@ -24,6 +24,8 @@ from .train import DEFAULT_CONFIG as TRAIN_CONFIG, accumulation_steps, resolve_c
 
 TORCH218_PYTHON = "/home/ma-user/anaconda3/envs/torch218/bin/python"
 JOB_CONFIG = BASELINE_ROOT / "configs/hybrid_csa/majob.yaml"
+# What a run deletes from its output directory before writing (see clear_previous_run).
+RESULT_DIRECTORIES = ("train", "eval", "main", "niah")
 # Variables of the former separate training environment; refused rather than silently ignored.
 TRAINING_PYTHON_VARIABLES = ("HYBRID_CSA_TRAIN_PYTHON", "BASELINE_TRAIN_PYTHON")
 
@@ -47,7 +49,7 @@ def clear_previous_run(output, mode, rank, nodes, keep=()):
     Node 0 deletes the shared result directories; every later write happens inside a torchrun phase that node 0
     joins only afterwards. Each node replaces its own record. An eval-only run keeps train/ (its adapter).
     """
-    names = ("eval", "main", "niah") + (() if mode == "eval" else ("train",))
+    names = tuple(name for name in RESULT_DIRECTORIES if mode != "eval" or name != "train")
     for kept in keep:
         if any(Path(kept).resolve().is_relative_to((output / name).resolve()) for name in names):
             raise ValueError(f"{kept} lies in a result directory this run overwrites; move it first")
@@ -181,7 +183,10 @@ def build_plan(args):
             raise ValueError("Training and evaluation CSA settings differ; align both project YAML files")
         for key in ("data_dir", "tokenized_dir"):
             path = Path(training[key]).resolve()
-            if output.is_relative_to(path) or path.is_relative_to(output):
+            # The prepared data may sit beside the results in the output directory, never inside what a run deletes.
+            inside = path.is_relative_to(output) and (key == "data_dir" or any(
+                path.is_relative_to(output / name) for name in RESULT_DIRECTORIES))
+            if output.is_relative_to(path) or inside:
                 raise ValueError(f"Run output must not overlap {key}: {path}")
     return {"mode": args.mode, "backend": args.backend, "base": base, "model": str(args.model.resolve()) if args.model else None,
             "experiment": str(experiment), "train_config": str(require_project_file(args.train_config)),

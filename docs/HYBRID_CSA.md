@@ -156,7 +156,7 @@ bash majob.sh --mode eval --adapter /home/ma-user/work/bucket-pangu-green/lihour
 |---|---|
 | Python（所有阶段） | `--eval-python` → `HYBRID_CSA_PYTHON` → `BASELINE_EVAL_PYTHON` → `BASELINE_PYTHON` → 已有 torch218 绝对路径；与此前评测解释器的规则相同。`--train-python`、`HYBRID_CSA_TRAIN_PYTHON`、`BASELINE_TRAIN_PYTHON` 已取消，出现即报错 |
 | Base / 语料 | `--base-checkpoint-dir` / `--data-dir` → `HYBRID_CSA_*` → `BASELINE_BASE_CHECKPOINT` / `BASELINE_DATA_DIR` → 项目 YAML |
-| 分词缓存 | `--tokenized-dir` → `HYBRID_CSA_TOKENIZED_DIR` → 训练 YAML；与原始语料、评测 HF 缓存及本次输出分开 |
+| 分词缓存 | `--tokenized-dir` → `HYBRID_CSA_TOKENIZED_DIR` → 训练 YAML（当前 `/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4/tokenized`）。放在持久共享存储上：第一次运行准备一次（全量 241 个分片），之后的运行校验后直接复用。可以位于输出目录中、与结果并列，但不能在每次运行会删除的 `train/`、`eval/`、`main/`、`niah/` 里；与原始语料和评测 HF 缓存分开 |
 | 本次输出 | `--output` → `HYBRID_CSA_OUTPUT_ROOT` → `BASELINE_OUTPUT_ROOT` → `configs/hybrid_csa/majob.yaml` 的 `output`（当前 `/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4`）；每次运行覆盖，见下文 |
 | 配置 | 可选位置参数选择项目内实验 YAML；`--train-config`、`--hybrid-csa-config` 选择项目内训练/方法 YAML；结构设置必须一致 |
 | 相对路径 | shell 入口先切到项目根；直接 Python CLI 的路径参数相对于调用者 cwd，YAML 内的资产相对路径相对于项目根 |
@@ -167,7 +167,7 @@ bash majob.sh --mode eval --adapter /home/ma-user/work/bucket-pangu-green/lihour
 配置预览中 GPU 数为空表示运行时检测。同一解释器分别做训练与评测两项预检（各自导入所需模块，实际执行 `torch.cuda.init()` 与 BF16 检查），取可见卡数，并在训练前核验全局 batch 可整除总 GPU 数。
 默认全局 batch 8、每卡 micro batch 1，训练进程总数须整除 8。卡数多于配方可用时，训练自动只用每节点能整除的最多卡数（如 1 节点 16 卡或 2 节点各 8 卡时共用 8 卡，6 卡时用 4 卡），梯度累积随之调整，全局 batch、步数与 token 预算不变；评测仍用全部卡。启动日志与 `pipeline_node_<rank>.json` 的 `topology.train_gpus` 记录实际训练卡数。节点数不能整除 8（如 3 节点）时报错；要改用更多卡训练，须显式修改训练 YAML 的全局 batch，并重新记录训练 token 成本。
 
-准备阶段用 Gloo 每节点启动一个进程，只有全局 rank 0 调用分词准备；各节点核对配置一致，接收成功/失败并检查共享文件可读。已存在完整缓存时核验 tokenizer、context、index 与原始语料哈希后复用；没有完成标记（数据 manifest）的目录是此前中断的准备，自动删除后重做；已完成的缓存不自动删除。
+准备阶段用 Gloo 每节点启动一个进程，只有全局 rank 0 调用分词准备；各节点核对配置一致，接收成功/失败并检查共享文件可读。已存在完整缓存时核验 tokenizer、context、index 哈希与原始语料的文件清单和大小后复用（各文件 SHA-256 只在首次准备时计算并记入 manifest，复用时不再重读 100+ GB 语料；同名同大小的内容改动因此不会被发现，共享语料按只读资产对待）；没有完成标记（数据 manifest）的目录是此前中断的准备，自动删除后重做；已完成的缓存不自动删除。
 多节点要求代码/资产位于一致路径，分词缓存和输出目录共享可见。训练完成并退出后，评测解释器使用 `weights_only=True` 校验产物的 Base/tokenizer 指纹、方法设置和 sparse 训练记录；真正载入模型时再严格核验参数键和形状。
 
 本次输出为：

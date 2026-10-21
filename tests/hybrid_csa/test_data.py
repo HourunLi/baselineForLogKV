@@ -86,3 +86,13 @@ def test_preparation_skips_and_records_litdata_chunks_and_verifies_the_same_file
     record = validate_prepared_data(cfg, verify_source=True)
     assert list(record["documents"]) == ["documents.jsonl"]
     assert record["skipped_litdata_outputs"] == ["litdata_key_ctx32768"]
+    assert len(record["documents"]["documents.jsonl"]["sha256"]) == 64  # full hashes, recorded once
+    # Reuse checks the file list and sizes without re-reading the corpus.
+    (source / "extra.jsonl").write_text(json.dumps({"text": "hello"}) + "\n")
+    with pytest.raises(ValueError, match="files or sizes changed"):
+        validate_prepared_data(cfg, verify_source=True)
+    (source / "extra.jsonl").unlink()
+    with (source / "documents.jsonl").open("a") as stream:
+        stream.write("\n")
+    with pytest.raises(ValueError, match="files or sizes changed"):
+        validate_prepared_data(cfg, verify_source=True)

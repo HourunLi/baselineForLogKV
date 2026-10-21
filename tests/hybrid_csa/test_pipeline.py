@@ -318,3 +318,14 @@ def test_more_gpus_than_the_recipe_uses_train_on_fewer_and_evaluate_on_all(launc
                  for c in calls if "--nproc_per_node" in c["args"]}
     assert processes == {"prepare": "1", "train": "4", "main": "8", "niah": "8"}
     assert "[train] 4 of 8 GPUs per node, 8 processes: global batch 8 = micro batch 1 x 8 processes x 1" in result.stdout
+
+
+def test_prepared_data_lives_beside_the_results_and_survives_reruns(clean_env, tmp_path):
+    output = Path("/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4")
+    plan = pipeline.build_plan(pipeline.parse_args([]))
+    assert plan["output"] == str(output) and plan["training"]["tokenized_dir"] == str(output / "tokenized")
+    assert "tokenized" not in pipeline.RESULT_DIRECTORIES
+    for inside in ("train/tokens", "eval", "."):
+        with pytest.raises(ValueError, match="must not overlap tokenized_dir|must be separate directories"):
+            pipeline.build_plan(pipeline.parse_args(["--output", str(tmp_path / "run"),
+                                                      "--tokenized-dir", str(tmp_path / "run" / inside)]))

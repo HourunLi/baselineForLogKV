@@ -2,8 +2,10 @@
 # token exposures; all original Base parameters remain frozen. No NIAH data/tuning.
 base_checkpoint_dir: ${HYBRID_CSA_BASE_CHECKPOINT-/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/}
 data_dir: ${HYBRID_CSA_DATA_DIR-/home/ma-user/work/bucket-pangu-green/lihourun/longcontext/prolong/data}
-# Raw shared corpus stays read-only. Explicit --prepare-data creates this directory.
-tokenized_dir: ${HYBRID_CSA_TOKENIZED_DIR-outputs/hybrid_csa/tokenized}
+# Raw shared corpus stays read-only. The first run prepares this directory once; later runs verify and reuse it.
+# Persistent shared storage (all nodes see it, and it outlives the job); majob.sh overwrites only the results
+# next to it, never this directory.
+tokenized_dir: ${HYBRID_CSA_TOKENIZED_DIR-/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4/tokenized}
 # Must not already exist; use a new directory for every run or weight continuation.
 output_dir: ${HYBRID_CSA_TRAIN_OUTPUT-outputs/hybrid_csa/adaptation}
 # Adapt at 4K to reduce cost; 4096 > 512 * 4 exercises sparse selection.
