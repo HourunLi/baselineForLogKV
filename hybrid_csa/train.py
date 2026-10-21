@@ -270,7 +270,8 @@ def make_loader(cfg):
 def accumulation_steps(global_batch_size, micro_batch_size, world_size):
     divisor = micro_batch_size * world_size
     if global_batch_size % divisor:
-        raise ValueError("global_batch_size must be divisible by micro_batch_size * WORLD_SIZE")
+        raise ValueError(f"global_batch_size {global_batch_size} must be divisible by micro_batch_size "
+                         f"{micro_batch_size} * WORLD_SIZE {world_size}")
     return global_batch_size // divisor
 
 

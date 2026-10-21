@@ -36,7 +36,7 @@ with open(os.environ['TEST_CALLS'], 'a') as f:
 if phase == os.environ.get('TEST_FAIL'):
     sys.exit(7)
 if phase.startswith('preflight') or phase == 'verify_adapter':
-    print(json.dumps(dict(visible_gpus=2, adapter='validated' if phase == 'verify_adapter' else None)))
+    print(json.dumps(dict(visible_gpus=int(os.environ.get('TEST_VISIBLE', 2)), adapter='validated' if phase == 'verify_adapter' else None)))
 if phase == 'train' and not os.environ.get('TEST_NO_ARTIFACT'):
     p = Path(a[a.index('--output-dir')+1])
     p.mkdir(parents=True)
@@ -286,10 +286,35 @@ def test_preflight_records_a_missing_optional_package_but_refuses_a_missing_requ
 def test_pipeline_reports_missing_optional_packages(launcher, monkeypatch, tmp_path):
     launch, _ = launcher
     executable = tmp_path / "torch218-python"
-    source = executable.read_text().replace(
-        "print(json.dumps(dict(visible_gpus=2,",
-        "print(json.dumps(dict(missing_optional={'xlsxwriter': 'inference_metrics.xlsx is skipped'}, visible_gpus=2,")
+    source = executable.read_text()
+    assert source.count("print(json.dumps(dict(") == 1
+    source = source.replace("print(json.dumps(dict(",
+                            "print(json.dumps(dict(missing_optional={'xlsxwriter': 'inference_metrics.xlsx is skipped'}, ")
     executable.write_text(source)
     result, calls = launch("--backend", "dense")
     assert result.returncode == 0, result.stderr
     assert "[preflight eval] xlsxwriter is not installed: inference_metrics.xlsx is skipped" in result.stdout
+
+
+@pytest.mark.parametrize("nodes,gpus,expected", [(1, 8, 8), (1, 6, 4), (1, 3, 2), (1, 16, 8), (2, 8, 4), (2, 2, 2),
+                                                 (4, 8, 2), (8, 8, 1), (3, 8, None)])
+def test_training_keeps_the_recipe_and_uses_the_gpus_it_can(nodes, gpus, expected):
+    recipe = {"global_batch_size": 8, "micro_batch_size": 1}
+    topo = {"nodes": nodes, "gpus": gpus}
+    if expected is None:
+        with pytest.raises(ValueError, match="cannot be split over 3 nodes"):
+            pipeline.training_gpus(recipe, topo)
+    else:
+        assert pipeline.training_gpus(recipe, topo) == expected
+
+
+def test_more_gpus_than_the_recipe_uses_train_on_fewer_and_evaluate_on_all(launcher, monkeypatch):
+    launch, _ = launcher  # node 1 of 2
+    monkeypatch.setenv("MA_NUM_GPUS", "8")
+    monkeypatch.setenv("TEST_VISIBLE", "8")
+    result, calls = launch("--limit", "4")
+    assert result.returncode == 0, result.stderr
+    processes = {c["phase"]: c["args"][c["args"].index("--nproc_per_node") + 1]
+                 for c in calls if "--nproc_per_node" in c["args"]}
+    assert processes == {"prepare": "1", "train": "4", "main": "8", "niah": "8"}
+    assert "[train] 4 of 8 GPUs per node, 8 processes: global batch 8 = micro batch 1 x 8 processes x 1" in result.stdout
