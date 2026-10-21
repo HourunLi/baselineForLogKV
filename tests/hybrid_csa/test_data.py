@@ -8,7 +8,8 @@ from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import Whitespace
 
-from hybrid_csa.train import DATA_MANIFEST, make_loader, prepare_data, tokenize_file
+from hybrid_csa.train import (DATA_MANIFEST, corpus_files, make_loader, prepare_data, tokenize_file,
+                              validate_prepared_data)
 
 
 def test_offline_preparation_and_loader_bind_tokenizer_and_length(tmp_path, monkeypatch):
@@ -42,3 +43,43 @@ def test_offline_preparation_and_loader_bind_tokenizer_and_length(tmp_path, monk
     with pytest.raises(ValueError, match="tokenizer"):
         make_loader(cfg)
     assert (tmp_path / "packed" / DATA_MANIFEST).is_file()
+
+
+def test_prepared_litdata_chunks_inside_the_corpus_are_not_documents(tmp_path):
+    """SemanticLogKV writes litdata_<key>_ctx<N>/ (index.json + chunk files) into the shared data_dir."""
+    source = tmp_path / "raw"
+    (source / "books").mkdir(parents=True)
+    (source / "books/a.jsonl").write_text(json.dumps({"text": "hello"}) + "\n")
+    (source / "b.parquet").write_bytes(b"")
+    chunks = source / "litdata_719749c807061589_ctx32768"
+    (chunks / "nested").mkdir(parents=True)
+    (chunks / "index.json").write_text(json.dumps({"chunks": [{"filename": "chunk-0-0.bin"}],
+                                                   "config": {"data_format": ["no_header_tensor:16"]}}))
+    (chunks / "chunk-0-0.bin").write_bytes(b"\0" * 8)
+    (chunks / "nested/stray.json").write_text("{}")
+    (source / "notes").mkdir()
+    (source / "notes/index.json").write_text(json.dumps({"text": "a document named index.json"}))
+    files, skipped = corpus_files(source)
+    assert [str(p.relative_to(source)) for p in files] == ["b.parquet", "books/a.jsonl", "notes/index.json"]
+    assert skipped == [chunks]
+
+
+def test_preparation_skips_and_records_litdata_chunks_and_verifies_the_same_files(tmp_path, monkeypatch):
+    pytest.importorskip("litdata")
+    base, source = tmp_path / "base", tmp_path / "raw"
+    base.mkdir()
+    source.mkdir()
+    tokenizer = Tokenizer(WordLevel({"[UNK]": 0, "[EOS]": 1, "hello": 2, "world": 3}, unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = Whitespace()
+    tokenizer.save(str(base / "tokenizer.json"))
+    (base / "tokenizer_config.json").write_text(json.dumps({"eos_token": "[EOS]", "tokenizer_class": "PreTrainedTokenizerFast"}))
+    (source / "documents.jsonl").write_text("\n".join(json.dumps({"text": "hello world " * 8}) for _ in range(8)))
+    chunks = source / "litdata_key_ctx32768"
+    chunks.mkdir()
+    (chunks / "index.json").write_text(json.dumps({"chunks": [], "config": {}}))
+    cfg = dict(base_checkpoint_dir=str(base), data_dir=str(source), tokenized_dir=str(tmp_path / "packed"),
+               context_length=7, prepare_workers=1, seed=42, micro_batch_size=1, num_workers=0)
+    prepare_data(cfg)
+    record = validate_prepared_data(cfg, verify_source=True)
+    assert list(record["documents"]) == ["documents.jsonl"]
+    assert record["skipped_litdata_outputs"] == ["litdata_key_ctx32768"]
