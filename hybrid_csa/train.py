@@ -122,6 +122,34 @@ def text_from_record(record, source):
     raise ValueError(f"No nonempty text/chapter/content/code/messages in {source}")
 
 
+def is_litdata_output(directory):
+    """A directory LitData's optimize wrote: its index.json lists chunks and the writer config."""
+    index = Path(directory) / "index.json"
+    try:
+        record = json.loads(index.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(record, dict) and isinstance(record.get("chunks"), list) and isinstance(record.get("config"), dict)
+
+
+def corpus_files(source):
+    """Raw documents under ``source`` and the LitData output directories skipped there.
+
+    A shared corpus can hold another run's prepared chunks (SemanticLogKV writes litdata_<key>_ctx<N>/ into its
+    data_dir); their index.json is not a document. Symlinked directories are not followed.
+    """
+    files, skipped = [], []
+    for directory, subdirectories, names in os.walk(source):
+        directory = Path(directory)
+        if "index.json" in names and is_litdata_output(directory):
+            skipped.append(directory)
+            subdirectories.clear()
+            continue
+        subdirectories.sort()
+        files += [directory / name for name in names if Path(name).suffix in {".parquet", ".jsonl", ".json"}]
+    return sorted(files), sorted(skipped)
+
+
 def tokenize_file(path, tokenizer_dir):
     from ._vendor.semanticlogkv.litgpt.tokenizer import Tokenizer
 
@@ -163,16 +191,20 @@ def prepare_data(cfg):
     source = Path(cfg["data_dir"])
     if not source.is_dir():
         raise FileNotFoundError(f"Local corpus does not exist: {source}")
-    files = sorted(p for p in source.rglob("*") if p.suffix in {".parquet", ".jsonl", ".json"})
+    files, skipped = corpus_files(source)
+    for directory in skipped:
+        print(f"Skipping prepared LitData chunks, not raw documents: {directory}", flush=True)
     if not files:
-        raise FileNotFoundError(f"No local parquet/jsonl/json documents in {source}")
+        raise FileNotFoundError(f"No local parquet/jsonl/json documents in {source}"
+                                + (f" (skipped LitData outputs: {[str(d) for d in skipped]})" if skipped else ""))
     destination = Path(cfg["tokenized_dir"])
     if destination.exists() and any(destination.iterdir()):
         raise FileExistsError(f"Refusing to overwrite tokenized data: {destination}")
     record = {"schema": 1, "context_length": cfg["context_length"],
               "tokenizer": tokenizer_identity(cfg["base_checkpoint_dir"]),
               "documents": {str(p.relative_to(source)): {"sha256": sha256(p), "bytes": p.stat().st_size} for p in files},
-              "data_dir": str(source), "text_fields_in_priority_order": ["text", "chapter", "content", "code", "messages"],
+              "data_dir": str(source), "skipped_litdata_outputs": [str(d.relative_to(source)) for d in skipped],
+              "text_fields_in_priority_order": ["text", "chapter", "content", "code", "messages"],
               "bos": False, "eos": True, "preparer_sha256": sha256(__file__)}
     destination.mkdir(parents=True, exist_ok=True)
     optimize(fn=partial(tokenize_file, tokenizer_dir=cfg["base_checkpoint_dir"]),
@@ -198,7 +230,7 @@ def validate_prepared_data(cfg, verify_source=False):
         raise ValueError("Prepared data came from a different raw corpus; choose a new tokenized_dir")
     if verify_source:
         source = Path(cfg["data_dir"])
-        files = sorted(p for p in source.rglob("*") if p.suffix in {".parquet", ".jsonl", ".json"})
+        files, _ = corpus_files(source)
         actual = {str(p.relative_to(source)): {"sha256": sha256(p), "bytes": p.stat().st_size} for p in files}
         if actual != record["documents"]:
             raise ValueError("Raw corpus changed since preparation; choose a new tokenized_dir")

@@ -88,7 +88,7 @@ python -m hybrid_csa.budget --tokens 32768
 
 真实 Qwen 几何的静态参数计数：压缩器 **160,727,040**，indexer **19,031,040**，共 **179,758,080** 个新增可训练参数。这里“小量适配”指较少训练 token/步数，不是 LoRA 级别的小参数量。运行 manifest 会记录实际配置下的参数数目。
 
-语料仅使用指定本地 JSON/JSONL/Parquet。字段优先级为 text/chapter/content/code，messages 则显式拼成角色段落；空或不兼容记录直接报错。BOS 关闭、每文档追加 EOS，跨文档打包。记录原始文件哈希、tokenizer 哈希、prepare 参数和 index 哈希。每阶段重新开始数据迭代和 AdamW；token 数是包含阶段重读的 exposure 数，**不是独立语料 token 数**。阶段内数据不足会失败，不静默循环。
+语料仅使用指定本地 JSON/JSONL/Parquet；语料目录中 LitData 写出的目录（`index.json` 含 `chunks` 与 `config`，如 SemanticLogKV 放在共享 prolong 目录里的 `litdata_<key>_ctx32768/`）是别的作业的打包结果，不当作文档，整个跳过并记入数据 manifest 的 `skipped_litdata_outputs`。字段优先级为 text/chapter/content/code，messages 则显式拼成角色段落；空或不兼容记录直接报错。BOS 关闭、每文档追加 EOS，跨文档打包。记录原始文件哈希、tokenizer 哈希、prepare 参数和 index 哈希。每阶段重新开始数据迭代和 AdamW；token 数是包含阶段重读的 exposure 数，**不是独立语料 token 数**。阶段内数据不足会失败，不静默循环。
 
 训练与评测都在已有的 torch218 中运行，不安装本项目或任何包。训练只用 PyTorch、LitData 与 PyArrow，torch218 已有
 （2026-10-16 快照：torch 2.11.0+cu128、litdata 0.2.61、pyarrow 23.0.1、lightning 2.6.1）；精确版本写入训练 manifest。
