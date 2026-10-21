@@ -267,3 +267,29 @@ def test_prepare_reuses_once_and_propagates_errors(tmp_path, clean_env, monkeypa
     monkeypatch.setattr(train, "validate_prepared_data", fail)
     with pytest.raises(RuntimeError, match="corpus changed"):
         train.prepare_distributed(cfg)
+
+
+def test_preflight_records_a_missing_optional_package_but_refuses_a_missing_required_one(monkeypatch):
+    from hybrid_csa import preflight
+
+    installed = {"pandas": "2.3.3", "lm-eval": "0.4.11"}  # e.g. torch218 on the platform has no xlsxwriter
+    def version(name):
+        if name not in installed:
+            raise preflight.importlib.metadata.PackageNotFoundError(name)
+        return installed[name]
+    monkeypatch.setattr(preflight.importlib.metadata, "version", version)
+    assert preflight.package_versions(("pandas", "xlsxwriter")) == {"pandas": "2.3.3", "xlsxwriter": None}
+    with pytest.raises(RuntimeError, match="no installed datasets"):
+        preflight.package_versions(("lm-eval", "datasets", "xlsxwriter"))
+
+
+def test_pipeline_reports_missing_optional_packages(launcher, monkeypatch, tmp_path):
+    launch, _ = launcher
+    executable = tmp_path / "torch218-python"
+    source = executable.read_text().replace(
+        "print(json.dumps(dict(visible_gpus=2,",
+        "print(json.dumps(dict(missing_optional={'xlsxwriter': 'inference_metrics.xlsx is skipped'}, visible_gpus=2,")
+    executable.write_text(source)
+    result, calls = launch("--backend", "dense")
+    assert result.returncode == 0, result.stderr
+    assert "[preflight eval] xlsxwriter is not installed: inference_metrics.xlsx is skipped" in result.stdout
