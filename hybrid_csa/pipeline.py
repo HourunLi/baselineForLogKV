@@ -90,8 +90,23 @@ def topology(visible=None):
     return dict(nodes=nodes, rank=rank, gpus=gpus, address=address, ports=ports)
 
 
+def training_gpus(training, topo):
+    """Processes per node for training: the most GPUs whose total divides the recipe's global batch.
+
+    The recipe (global batch, steps, token budget) stays fixed; with more GPUs than it can use, training takes
+    fewer of them and evaluation still uses all.
+    """
+    for gpus in range(topo["gpus"], 0, -1):
+        world = topo["nodes"] * gpus
+        if training["global_batch_size"] % (training["micro_batch_size"] * world) == 0:
+            return gpus
+    raise ValueError(f"global_batch_size {training['global_batch_size']} with micro_batch_size "
+                     f"{training['micro_batch_size']} cannot be split over {topo['nodes']} nodes; "
+                     "use a node count that divides it, or change the training YAML and record the new budget")
+
+
 def distributed_command(python, topo, phase, module, arguments):
-    processes = 1 if phase == "prepare" else topo["gpus"]
+    processes = {"prepare": 1, "train": topo.get("train_gpus")}.get(phase) or topo["gpus"]
     command = [python, "-m", "torch.distributed.run", "--nnodes", str(topo["nodes"]),
                "--nproc_per_node", str(processes)]
     if topo["nodes"] == 1:
@@ -196,8 +211,13 @@ def execute(plan):
     topo = topology(min(record["visible_gpus"] for record in records.values()))
     plan["topology"] = topo
     if plan["training"]:
-        accumulation_steps(plan["training"]["global_batch_size"], plan["training"]["micro_batch_size"],
-                           topo["nodes"] * topo["gpus"])
+        cfg = plan["training"]
+        topo["train_gpus"] = training_gpus(cfg, topo)
+        world = topo["nodes"] * topo["train_gpus"]
+        print(f"[train] {topo['train_gpus']} of {topo['gpus']} GPUs per node, {world} processes: global batch "
+              f"{cfg['global_batch_size']} = micro batch {cfg['micro_batch_size']} x {world} processes x "
+              f"{accumulation_steps(cfg['global_batch_size'], cfg['micro_batch_size'], world)} accumulation steps; "
+              f"evaluation uses {topo['gpus']} GPUs per node", flush=True)
     env["LITGPT_EXPECTED_WORLD_SIZE"] = str(topo["nodes"] * topo["gpus"])
     env["NNODES"] = str(topo["nodes"])  # LitData must not infer nodes from all visible GPUs.
     env.pop("GLOBAL_RANK", None)  # torchrun supplies each worker's rank; avoid a stale parent value.
