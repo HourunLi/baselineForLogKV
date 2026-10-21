@@ -9,6 +9,27 @@ from pathlib import Path
 import sys
 
 
+# Recorded when present. The reference evaluator writes its optional inference_metrics.xlsx with it and, when it is
+# missing, prints a warning and skips that file; results and per-sample logs do not depend on it.
+OPTIONAL_PACKAGES = {"xlsxwriter": "inference_metrics.xlsx is skipped; results and per-sample logs are unaffected"}
+
+
+def package_versions(names):
+    """Exact installed versions; an optional package may be absent, a required one may not."""
+    versions, missing = {}, []
+    for name in names:
+        try:
+            versions[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            versions[name] = None
+            if name not in OPTIONAL_PACKAGES:
+                missing.append(name)
+    if missing:
+        raise RuntimeError(f"{sys.executable} has no installed {', '.join(missing)}; "
+                           "run in SemanticLogKV's torch218 without changing its packages")
+    return versions
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--phase", choices=("train", "eval"), required=True)
@@ -41,8 +62,9 @@ def main():
             from ._vendor.semanticlogkv.litgpt.tokenizer import Tokenizer
             Tokenizer(args.base)
             packages += ("litdata", "pyarrow")
-    result = {"python_executable": sys.executable, "python": sys.version,
-              "versions": {name: importlib.metadata.version(name) for name in packages},
+    versions = package_versions(packages)
+    result = {"python_executable": sys.executable, "python": sys.version, "versions": versions,
+              "missing_optional": {name: OPTIONAL_PACKAGES[name] for name in packages if versions[name] is None},
               "installed_packages": {d.metadata["Name"]: d.version for d in importlib.metadata.distributions()},
               "visible_gpus": torch.cuda.device_count(), "torch_cuda": torch.version.cuda,
               "gpu": torch.cuda.get_device_name(0)}

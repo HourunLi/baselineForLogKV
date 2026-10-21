@@ -191,6 +191,8 @@ def execute(plan):
         print(f"[preflight {phase}] {shlex.join(command)}", flush=True)
         records[phase] = json.loads(subprocess.run(command, check=True, capture_output=True, text=True,
                                                   cwd=BASELINE_ROOT, env=env).stdout)
+        for name, effect in records[phase].get("missing_optional", {}).items():
+            print(f"[preflight {phase}] {name} is not installed: {effect}", flush=True)
     topo = topology(min(record["visible_gpus"] for record in records.values()))
     plan["topology"] = topo
     if plan["training"]:
