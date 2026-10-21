@@ -96,3 +96,32 @@ def test_preparation_skips_and_records_litdata_chunks_and_verifies_the_same_file
         stream.write("\n")
     with pytest.raises(ValueError, match="files or sizes changed"):
         validate_prepared_data(cfg, verify_source=True)
+
+
+def test_empty_documents_are_skipped_counted_and_recorded(tmp_path):
+    pytest.importorskip("litdata")
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    base, source = tmp_path / "base", tmp_path / "raw"
+    base.mkdir()
+    source.mkdir()
+    tokenizer = Tokenizer(WordLevel({"[UNK]": 0, "[EOS]": 1, "hello": 2, "world": 3}, unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = Whitespace()
+    tokenizer.save(str(base / "tokenizer.json"))
+    (base / "tokenizer_config.json").write_text(json.dumps({"eos_token": "[EOS]", "tokenizer_class": "PreTrainedTokenizerFast"}))
+    texts = ["hello world " * 8, None, "hello " * 8, "   ", "world " * 8]  # two empty documents
+    pq.write_table(pa.table({"text": texts}), source / "train-00000-of-00002.parquet")
+    (source / "train-00001-of-00002.jsonl").write_text(
+        "\n".join(json.dumps({"text": t}) for t in ["hello world " * 8, ""]) + "\n")
+    assert len(list(tokenize_file(source / "train-00000-of-00002.parquet", base))) == 3
+    cfg = dict(base_checkpoint_dir=str(base), data_dir=str(source), tokenized_dir=str(tmp_path / "packed"),
+               context_length=7, prepare_workers=2, seed=42, micro_batch_size=1, num_workers=0)
+    prepare_data(cfg)
+    record = validate_prepared_data(cfg, verify_source=True)
+    assert record["skipped_empty_documents"] == {"train-00000-of-00002.parquet": 2, "train-00001-of-00002.jsonl": 1}
+    # A malformed record still stops preparation, naming the file and row.
+    pq.write_table(pa.table({"text": ["hello", None, "world"], "chapter": [None, 5, None]}),
+                   source / "train-00000-of-00002.parquet")
+    with pytest.raises(Exception, match="row 2"):
+        list(tokenize_file(source / "train-00000-of-00002.parquet", base))

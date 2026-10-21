@@ -16,6 +16,7 @@ from pathlib import Path
 import platform
 import shutil
 import subprocess
+import tempfile
 import time
 
 import yaml
@@ -104,6 +105,22 @@ def tokenizer_identity(directory):
     return files
 
 
+TEXT_FIELDS = ("text", "chapter", "content", "code")
+
+
+def is_empty_document(record):
+    """A record whose supported fields are all present-but-empty (None, blank text, no messages).
+
+    Such documents carry no text; they are skipped and counted (SemanticLogKV's reader of the same corpus skips
+    them too). A record without any supported field, or with a field of another type, is malformed instead.
+    """
+    if not isinstance(record, dict):
+        return False
+    present = [record[name] for name in TEXT_FIELDS + ("messages",) if name in record]
+    return bool(present) and all(value is None or (isinstance(value, str) and not value.strip())
+                                 or (isinstance(value, list) and not value) for value in present)
+
+
 def text_from_record(record, source):
     """Explicit local corpus schema: never skip a malformed/empty document silently."""
     if not isinstance(record, dict):
@@ -151,34 +168,48 @@ def corpus_files(source):
     return sorted(files), sorted(skipped)
 
 
-def tokenize_file(path, tokenizer_dir):
+def tokenize_file(path, tokenizer_dir, empty_log=None):
+    """Token ids per document; empty documents are skipped and their count written to ``empty_log``."""
     from ._vendor.semanticlogkv.litgpt.tokenizer import Tokenizer
 
     tokenizer = Tokenizer(tokenizer_dir)
     path = Path(path)
+    empty = 0
+    for record, source in read_records(path):
+        if is_empty_document(record):
+            empty += 1
+            continue
+        yield tokenizer.encode(text_from_record(record, source), bos=False, eos=True)
+    if empty_log is not None:
+        # One small file per input: LitData runs this in worker processes on the preparing node.
+        name = hashlib.sha256(str(path).encode()).hexdigest() + ".json"
+        (Path(empty_log) / name).write_text(json.dumps({"path": str(path), "empty_documents": empty}))
+
+
+def read_records(path):
+    """``(record, source)`` for every document of a parquet, JSON-array or JSON-lines file."""
     if path.suffix == ".parquet":
         import pyarrow.parquet as pq
         parquet = pq.ParquetFile(path)
-        columns = [name for name in ("text", "chapter", "content", "code", "messages")
-                   if name in parquet.schema_arrow.names]
+        columns = [name for name in TEXT_FIELDS + ("messages",) if name in parquet.schema_arrow.names]
         if not columns:
             raise ValueError(f"Missing supported document column in {path}")
+        number = 0
         for batch in parquet.iter_batches(batch_size=256, columns=columns):
             for row in batch.to_pylist():
-                yield tokenizer.encode(text_from_record(row, str(path)), bos=False, eos=True)
+                number += 1
+                yield row, f"{path} row {number}"
     else:
         with path.open(encoding="utf-8") as source:
             first = next((line for line in source if line.strip()), "")
             source.seek(0)
             if first.lstrip().startswith("["):
-                rows = json.load(source)
-                for row in rows:
-                    yield tokenizer.encode(text_from_record(row, str(path)), bos=False, eos=True)
+                for number, row in enumerate(json.load(source), 1):
+                    yield row, f"{path} item {number}"
             else:
                 for number, line in enumerate(source, 1):
                     if line.strip():
-                        row = json.loads(line)
-                        yield tokenizer.encode(text_from_record(row, f"{path}:{number}"), bos=False, eos=True)
+                        yield json.loads(line), f"{path}:{number}"
 
 
 def prepare_data(cfg):
@@ -212,10 +243,18 @@ def prepare_data(cfg):
               "text_fields_in_priority_order": ["text", "chapter", "content", "code", "messages"],
               "bos": False, "eos": True, "preparer_sha256": sha256(__file__)}
     destination.mkdir(parents=True, exist_ok=True)
-    optimize(fn=partial(tokenize_file, tokenizer_dir=cfg["base_checkpoint_dir"]),
-             inputs=[str(p) for p in files], output_dir=str(destination),
-             num_workers=min(cfg["prepare_workers"], len(files)), chunk_bytes="200MB",
-             item_loader=TokensLoader(block_size=cfg["context_length"] + 1))
+    with tempfile.TemporaryDirectory(prefix="hybrid_csa_empty_") as empty_log:
+        optimize(fn=partial(tokenize_file, tokenizer_dir=cfg["base_checkpoint_dir"], empty_log=empty_log),
+                 inputs=[str(p) for p in files], output_dir=str(destination),
+                 num_workers=min(cfg["prepare_workers"], len(files)), chunk_bytes="200MB",
+                 item_loader=TokensLoader(block_size=cfg["context_length"] + 1))
+        counts = [json.loads(entry.read_text()) for entry in Path(empty_log).glob("*.json")]
+    if len(counts) != len(files):
+        raise RuntimeError(f"Preparation reported {len(counts)} of {len(files)} input files")
+    record["skipped_empty_documents"] = {str(Path(entry["path"]).relative_to(source)): entry["empty_documents"]
+                                         for entry in sorted(counts, key=lambda e: e["path"]) if entry["empty_documents"]}
+    total = sum(record["skipped_empty_documents"].values())
+    print(f"Skipped {total} empty documents (no text) in {len(record['skipped_empty_documents'])} files", flush=True)
     record["index_sha256"] = sha256(destination / "index.json")
     (destination / DATA_MANIFEST).write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
     print(f"Prepared offline token data: {destination}")
