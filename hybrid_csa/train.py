@@ -345,6 +345,30 @@ def make_loader(cfg):
     return loader, record
 
 
+def load_base_config(path):
+    """The Base's LitGPT config as the evaluator reads it, plus the names of the keys it ignores.
+
+    The bundled evaluator drops keys its Config does not define (the original Base's model_config.yaml carries
+    ``research_breakpoint_schedule``), so training does the same and both build one architecture. Only empty
+    values may be dropped; a key with content the snapshot cannot apply stops training instead.
+    """
+    import dataclasses
+    from ._vendor.semanticlogkv.litgpt.config import Config
+
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path} is empty or not a mapping")
+    known = {field.name for field in dataclasses.fields(Config)}
+    ignored = sorted(key for key in raw if key not in known)
+    applied = [key for key in ignored if raw[key] not in (None, "", [], {})]
+    if applied:
+        raise ValueError(f"{path} sets {applied}, which this LitGPT snapshot does not implement; the evaluator would "
+                         "ignore them, so check what they mean before training on this Base")
+    if ignored:
+        print(f"Ignoring empty {ignored} in {path}, as the evaluator does", flush=True)
+    return Config(**{key: value for key, value in raw.items() if key in known}), ignored
+
+
 def accumulation_steps(global_batch_size, micro_batch_size, world_size):
     divisor = micro_batch_size * world_size
     if global_batch_size % divisor:
@@ -444,7 +468,6 @@ def train_stage(model, cfg, stage, loader, device, world_size=1, rank=0):
 
 def run(cfg, adapter=None, start_stage="compressor"):
     import torch
-    from ._vendor.semanticlogkv.litgpt.config import Config
     from ._vendor.semanticlogkv.litgpt.model import GPT
     from .checkpoint import load_adapter, save_adapter
     from .model import HybridCSAModel
@@ -463,12 +486,13 @@ def run(cfg, adapter=None, start_stage="compressor"):
         accumulation_steps(cfg["global_batch_size"], cfg["micro_batch_size"], world)
         torch.manual_seed(cfg["seed"])
         base = Path(cfg["base_checkpoint_dir"])
-        config = Config.from_file(base / "model_config.yaml")
+        config, ignored_config_keys = load_base_config(base / "model_config.yaml")
         if cfg["context_length"] > config.block_size:
             raise ValueError("Training context exceeds original model context")
         gpt = GPT(config)
         state = torch.load(base / "lit_model.pth", map_location="cpu", weights_only=True, mmap=True)
-        gpt.load_state_dict(state, strict=True)
+        # A Fabric checkpoint wraps the weights, as the evaluator also accepts (verify_checkpoint_keys).
+        gpt.load_state_dict(state.get("model", state), strict=True)
         del state
         gpt.requires_grad_(False)
         gpt.to(device=device, dtype=torch.bfloat16)
@@ -501,7 +525,8 @@ def run(cfg, adapter=None, start_stage="compressor"):
                   "git_commit": revision, "code_sha256": {str(p.relative_to(BASELINE_ROOT)): sha256(p) for p in sorted((BASELINE_ROOT / "hybrid_csa").rglob("*.py"))},
                   "tokenized_data": data_record, "adapter_input": parent_adapter,
                   "resume_semantics": "adapter weights only; optimizer and data iterator restart; not exact resume",
-                  "frozen_original_base": True, "training_corpus_purpose": "general language modeling, no NIAH tuning",
+                  "frozen_original_base": True, "base_config_ignored_keys": ignored_config_keys,
+                  "training_corpus_purpose": "general language modeling, no NIAH tuning",
                   "adapter_parameter_count": sum(p.numel() for _, p in model.adapter_named_parameters()),
                   "original_parameter_count": sum(p.numel() for p in model.parameters()) - sum(p.numel() for _, p in model.adapter_named_parameters()),
                   "completed_stages": [], "optimizer_steps": 0, "stage_steps": {name: 0 for name in STAGES}}
