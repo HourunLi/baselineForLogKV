@@ -142,3 +142,22 @@ def test_all_three_stages_backpropagate_on_real_tiny_gpt():
         assert result["global_tokens"] == 15
     for parameter, original in frozen:
         assert torch.equal(parameter, original)
+
+
+def test_base_config_is_read_as_the_evaluator_reads_it(tmp_path):
+    """The original Base's model_config.yaml carries research_breakpoint_schedule, which the snapshot lacks."""
+    import dataclasses
+    import yaml
+    from hybrid_csa import evaluate
+    from hybrid_csa._vendor.semanticlogkv.litgpt.config import Config
+
+    raw = dataclasses.asdict(Config(name="tiny", block_size=64, n_layer=2, n_embd=32, n_head=4, n_query_groups=2,
+                                    head_size=8, vocab_size=32, padded_vocab_size=32, norm_qk=True))
+    path = tmp_path / "model_config.yaml"
+    path.write_text(yaml.safe_dump({**raw, "research_breakpoint_schedule": []}))
+    config, ignored = train.load_base_config(path)
+    reference = evaluate.load_evaluator()._config_from_yaml_and_overrides(str(path), None)
+    assert ignored == ["research_breakpoint_schedule"] and dataclasses.asdict(config) == dataclasses.asdict(reference)
+    path.write_text(yaml.safe_dump({**raw, "research_breakpoint_schedule": [{"layer": 3, "step": 100}]}))
+    with pytest.raises(ValueError, match="research_breakpoint_schedule"):
+        train.load_base_config(path)
