@@ -145,7 +145,7 @@ def test_all_three_stages_backpropagate_on_real_tiny_gpt():
 
 
 def test_base_config_is_read_as_the_evaluator_reads_it(tmp_path):
-    """The original Base's model_config.yaml carries research_breakpoint_schedule, which the snapshot lacks."""
+    """The original Base's model_config.yaml carries SemanticLogKV research keys the snapshot's Config lacks."""
     import dataclasses
     import yaml
     from hybrid_csa import evaluate
@@ -153,11 +153,12 @@ def test_base_config_is_read_as_the_evaluator_reads_it(tmp_path):
 
     raw = dataclasses.asdict(Config(name="tiny", block_size=64, n_layer=2, n_embd=32, n_head=4, n_query_groups=2,
                                     head_size=8, vocab_size=32, padded_vocab_size=32, norm_qk=True))
+    research = {"research_breakpoint_schedule": [], "use_research": True, "research_swa_size": 4096,
+                "research_prefill_swa_layers": [1, 2], "research_prefill_identity_layers": [0],
+                "research_enable_flash_attn": True, "research_separate_parameter": False}
     path = tmp_path / "model_config.yaml"
-    path.write_text(yaml.safe_dump({**raw, "research_breakpoint_schedule": []}))
+    path.write_text(yaml.safe_dump({**raw, **research}))
     config, ignored = train.load_base_config(path)
     reference = evaluate.load_evaluator()._config_from_yaml_and_overrides(str(path), None)
-    assert ignored == ["research_breakpoint_schedule"] and dataclasses.asdict(config) == dataclasses.asdict(reference)
-    path.write_text(yaml.safe_dump({**raw, "research_breakpoint_schedule": [{"layer": 3, "step": 100}]}))
-    with pytest.raises(ValueError, match="research_breakpoint_schedule"):
-        train.load_base_config(path)
+    assert dataclasses.asdict(config) == dataclasses.asdict(reference) == raw
+    assert ignored == research
