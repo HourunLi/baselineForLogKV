@@ -69,6 +69,24 @@ def verify_prepared_base(path: Path) -> dict:
     return manifest
 
 
+def lit_config_as_evaluated(model_config: dict, path: Path):
+    """The LitGPT config the bundled evaluator builds from this file, and the keys (with values) it drops.
+
+    The evaluator drops every key its Config does not define, whatever the value: the original Base's
+    model_config.yaml carries SemanticLogKV research switches (use_research, research_swa_size,
+    research_breakpoint_schedule, ...), so the evaluated Base is the plain dense model, and so is this export.
+    """
+    import dataclasses
+
+    from models._vendor.semanticlogkv.litgpt.config import Config
+
+    known = {field.name for field in dataclasses.fields(Config)}
+    ignored = {key: model_config[key] for key in sorted(model_config) if key not in known}
+    if ignored:
+        warnings.warn(f"Ignoring keys the evaluator also ignores in {path}: {ignored}", stacklevel=2)
+    return Config(**{key: value for key, value in model_config.items() if key in known}), ignored
+
+
 def validate_config(lit_config, hf_config: Qwen3Config) -> None:
     """Refuse configs that change weight interpretation or transformer math."""
     pairs = {
@@ -115,8 +133,6 @@ def prepare_base(
     experiment_config: Path = DEFAULT_EXPERIMENT_CONFIG,
     output: Path = BASELINE_ROOT / "outputs/semanticlogkv_base",
 ) -> dict:
-    from models._vendor.semanticlogkv.litgpt.config import Config
-
     config_path = Path(experiment_config).expanduser().resolve(strict=True)
     output = Path(output).expanduser().resolve()
     if output.exists():
@@ -137,19 +153,10 @@ def prepare_base(
             raise ValueError("The source HF config must identify model_type=qwen3")
     with (source / "model_config.yaml").open(encoding="utf-8") as stream:
         model_config = yaml.safe_load(stream)
-    if model_config is None:
-        raise ValueError(f"{source / 'model_config.yaml'} is empty")
-    # An empty experiment schedule has no effect on dense Base conversion.
-    # Keep the source file untouched so provenance hashes still cover it.
-    if "research_breakpoint_schedule" in model_config:
-        schedule = model_config.pop("research_breakpoint_schedule")
-        if schedule not in (None, [], {}):
-            raise ValueError(
-                "Non-empty research_breakpoint_schedule in source model_config.yaml; "
-                "its semantics must be checked before converting this checkpoint as a dense Base"
-            )
-        warnings.warn("Ignoring empty research_breakpoint_schedule for dense Base conversion", stacklevel=2)
-    lit_config = Config(**model_config)
+    if not isinstance(model_config, dict):
+        raise ValueError(f"{source / 'model_config.yaml'} is empty or not a mapping")
+    # The source file stays untouched, so provenance hashes still cover it.
+    lit_config, ignored_config_keys = lit_config_as_evaluated(model_config, source / "model_config.yaml")
     hf_config = Qwen3Config.from_pretrained(source, local_files_only=True)
     source_weights = torch.load(source / "lit_model.pth", map_location="cpu", weights_only=True, mmap=True)
     if "model" in source_weights:
@@ -172,6 +179,7 @@ def prepare_base(
         "experiment_config": str(config_path),
         "experiment_config_sha256": sha256_file(config_path),
         "source_model_name": lit_config.name,
+        "source_config_ignored_keys": ignored_config_keys,
         "converter": "models.qwen3.convert_lit_to_hf.copy_weights_qwen_3 (from LitGPT 0.5.12)",
         "converter_sha256": sha256_file(Path(convert_lit_to_hf.__file__)),
     }

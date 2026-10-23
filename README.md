@@ -62,7 +62,7 @@ python -m models.qwen3.prepare_base
 
 默认读取项目内 `configs/experiment_qwen1.7b_32k.yaml`（SemanticLogKV 实验 `arc_attach_alpha_beta_k12_b128_2k` 继承链的平铺快照，只保留 Base、32K 窗口和 LogKV 对照参数），使用其中 **原始 `ckpt_dir`**（可用 `DMS_BASE_CHECKPOINT` 覆盖），不使用 SemanticLogKV CPT 的输出。`--experiment-config` 只接受项目内文件。输出到 `outputs/semanticlogkv_base`，两份训练配置均指向此处。输出目录已存在时拒绝覆盖。
 
-转换使用项目内 `models/qwen3/convert_lit_to_hf.py`（改编自 LitGPT 0.5.12 的 Qwen3 映射），严格校验参数、绑定 embedding 和模型配置，原样复制 tokenizer，保存来源、实验 YAML、转换器及输出文件 SHA-256。训练启动前验证已转换文件；来源信息随 DMS 模型导出，并在正式评测前与当前比较 Base 再核对。没有 manifest 的旧模型不能直接进入正式对比；早先用相邻 LitGPT 转换的产物（manifest v1）仍按同样哈希校验。
+转换使用项目内 `models/qwen3/convert_lit_to_hf.py`（改编自 LitGPT 0.5.12 的 Qwen3 映射），严格校验参数、绑定 embedding 和模型配置（原始 Base 的 `model_config.yaml` 带有 SemanticLogKV 研究分支的 `use_research`、`research_swa_size`、`research_breakpoint_schedule` 等开关；按评测器的同一规则丢弃 LitGPT Config 没有的全部字段，与取值无关，因为评测器同样忽略它们，被评测的 Base 是普通 dense 结构；丢弃的字段及取值写入 manifest 的 `source_config_ignored_keys`），原样复制 tokenizer，保存来源、实验 YAML、转换器及输出文件 SHA-256。训练启动前验证已转换文件；来源信息随 DMS 模型导出，并在正式评测前与当前比较 Base 再核对。没有 manifest 的旧模型不能直接进入正式对比；早先用相邻 LitGPT 转换的产物（manifest v1）仍按同样哈希校验。
 
 当前配置的权重与测试缓存是服务器 `/home/ma-user/...` 路径，本地 Mac 未存放这些真实文件。应在同样挂载这些目录的 CUDA 机器执行；不会因文件缺失自动下载替代版本。完整说明见 [评测对齐记录](docs/SEMANTICLOGKV_ALIGNMENT.md)。
 

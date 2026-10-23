@@ -113,20 +113,31 @@ def test_empty_legacy_schedule_preserves_source_and_weights(source, tmp_path, sc
         torch.testing.assert_close(weights, expected[name], rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("field,value,error", [
-    ("research_breakpoint_schedule", [{"step": 10}], ValueError),
-    ("unknown_architecture_option", True, TypeError),
-])
-def test_active_schedule_and_unknown_fields_are_rejected(source, tmp_path, field, value, error):
-    path, _, _, experiment = source
+def test_research_switches_are_dropped_exactly_as_the_evaluator_drops_them(source, tmp_path):
+    """The original Base's model_config.yaml carries SemanticLogKV research switches with values."""
+    from models.qwen3 import evaluate
+    from models.qwen3.prepare_base import lit_config_as_evaluated
+
+    path, model, _, experiment = source
     config_path = path / "model_config.yaml"
-    config = yaml.safe_load(config_path.read_text())
-    config[field] = value
-    config_path.write_text(yaml.safe_dump(config))
+    plain = yaml.safe_load(config_path.read_text())
+    research = {"research_breakpoint_schedule": [{"step": 10}], "use_research": True, "research_swa_size": 4096,
+                "research_prefill_swa_layers": [1], "research_prefill_identity_layers": [0],
+                "research_enable_flash_attn": True, "research_separate_parameter": False}
+    config_path.write_text(yaml.safe_dump({**plain, **research}))
+    with pytest.warns(UserWarning, match="use_research"):
+        lit_config, ignored = lit_config_as_evaluated(yaml.safe_load(config_path.read_text()), config_path)
+    reference = evaluate.load_evaluator()._config_from_yaml_and_overrides(str(config_path), None)
+    assert asdict(lit_config) == asdict(reference) == asdict(Config(**plain)) and ignored == research
     output = tmp_path / "prepared"
-    with pytest.raises(error, match=field):
-        prepare_base(experiment, output)
-    assert not output.exists()
+    with pytest.warns(UserWarning, match="use_research"):
+        manifest = prepare_base(experiment, output)
+    assert manifest["source_config_ignored_keys"] == research and verify_prepared_base(output) == manifest
+    restored = Qwen3ForCausalLM.from_pretrained(output, local_files_only=True).eval()
+    expected = {}
+    copy_weights_qwen_3(model.config, expected, model.state_dict())
+    for name, weights in restored.state_dict().items():
+        torch.testing.assert_close(weights, expected[name], rtol=0, atol=0)
 
 
 def test_missing_weights_and_config_mismatch_are_rejected(source):

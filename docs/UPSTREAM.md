@@ -61,7 +61,7 @@
 - `dms/cache.py`：prefill 时把近期窗口的 contiguous KV 计入 CR；上游仅计 paged 部分，会在尚未开始 decode 时高估压缩率。淘汰和缓存更新算法保持原样。
 - `models/qwen3/check_env.py`、`infer.py`、`scripts/`：显式环境检查、Base 续写、训练和可选评测入口。训练与评测都只要求 transformers>=4.51 及实际用到的 CUDA、FlexAttention 接口，评测另需 FlashAttention。`scripts/train.sh`、`scripts/evaluate.sh` 与 `majob.sh` 设置 SemanticLogKV 的 CUDA 12.8 库路径。
 - `pyproject.toml`：同时打包 `dms` 和 `models`（含私有评测快照）。核心依赖只写 torch218 满足的下限（`transformers>=4.51` 与快照所需的 lightning 等），训练数据管线所需的 `datasets>=4.7`、numpy 也只写下限；不声明 accelerate、sentencepiece，也不再有上游固定版本的训练 extra；`[eval]` 为 `lm-eval[ruler,longbench,ifeval]>=0.4.9`、`datasets>=4.7`、pandas、xlsxwriter，只用于另建环境。
-- `prepare_base.py`：读取项目内实验 YAML 的原始 Base，用私有转换器精确转换，复制 tokenizer 并记录文件哈希；训练前验证产物，来源随 DMS config 导出。
+- `prepare_base.py`：读取项目内实验 YAML 的原始 Base，用私有转换器精确转换，复制 tokenizer 并记录文件哈希；训练前验证产物，来源随 DMS config 导出。源 `model_config.yaml` 中 LitGPT Config 没有的字段（SemanticLogKV 的 research 开关）按评测器的规则全部丢弃并记入 manifest。
 - `semanticlogkv_eval.py`、`evaluate.py`、`compare_results.py`、`config.py`：在项目内私有评测快照上接入 DMS，子类继承请求方法，在私有模块实例接入模型/缓存；不修改快照或全局统计函数。任务清单、实验配置、tokenizer、生成/评分与指标均由本项目维护，核对实际样本和比较条件。详细边界见 [评测对齐记录](SEMANTICLOGKV_ALIGNMENT.md)。
 - `majob.sh`：训练平台入口，每节点执行一次，main 与 32K NIAH 分阶段启动，失败即停止；默认取可见卡数，启动前做 CUDA 自检，单节点用 `--standalone`。只有显式 `--train` 时（单节点）先准备 Base 与数据并训练，再评测本次导出的 student。
 - `tests/test_qwen3_base.py`、`test_qwen3_cuda.py`、`test_training_loop.py`：新增本地适配验证；CUDA 测试无设备时明确跳过。`tests/cross_env_check.py`：在一个 transformers 版本中导出、在另一个版本中运行评测接口并逐元素比较。`tests/test_transformers_compat.py`：`DMSCache` 被已安装的 transformers 认作 `Cache`，旧版 mask 替代接受未 padding 的输入、拒绝 padding。
