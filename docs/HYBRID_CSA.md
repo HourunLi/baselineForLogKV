@@ -84,7 +84,7 @@ python -m hybrid_csa.budget --tokens 32768
 | indexer | 32 | indexer | 同上；对 detached 主注意力的 compressed 分布做 KL |
 | sparse | 64 | 压缩器和 indexer | local + top-k；LM CE + 选中项上的 index KL |
 
-训练按评测器的同一规则读取原始 Base 的 `model_config.yaml`：丢弃项目内 LitGPT Config 没有的字段（原始 Base 带有空的 `research_breakpoint_schedule`），使训练与评测构造同一结构；只有值为空的字段可以丢弃，有内容的未知字段直接报错，丢弃的字段名记入训练 manifest 的 `base_config_ignored_keys`。原始 Qwen 参数始终冻结；离散 top-k 不会把 LM 梯度传给 indexer，不能省略 indexer 监督。训练长度大于 `512*4=2048`，才真正进入 top-k 截断。新增参数和 gate/attention logits/softmax 保持 FP32；主干 BF16，按块计算 CE，使用 activation checkpointing。
+训练按评测器的同一规则读取原始 Base 的 `model_config.yaml`：丢弃项目内 LitGPT Config 没有的全部字段，与取值无关（原始 Base 带有 SemanticLogKV 研究分支的 `use_research`、`research_swa_size`、`research_prefill_swa_layers`、`research_breakpoint_schedule` 等开关，评测器同样全部忽略，因此被评测的 Base 就是普通 dense 结构），使训练与评测构造同一结构；丢弃的字段及取值打印出来，并记入训练 manifest 的 `base_config_ignored_keys`。原始 Qwen 参数始终冻结；离散 top-k 不会把 LM 梯度传给 indexer，不能省略 indexer 监督。训练长度大于 `512*4=2048`，才真正进入 top-k 截断。新增参数和 gate/attention logits/softmax 保持 FP32；主干 BF16，按块计算 CE，使用 activation checkpointing。
 
 真实 Qwen 几何的静态参数计数：压缩器 **160,727,040**，indexer **19,031,040**，共 **179,758,080** 个新增可训练参数。这里“小量适配”指较少训练 token/步数，不是 LoRA 级别的小参数量。运行 manifest 会记录实际配置下的参数数目。
 

@@ -346,11 +346,11 @@ def make_loader(cfg):
 
 
 def load_base_config(path):
-    """The Base's LitGPT config as the evaluator reads it, plus the names of the keys it ignores.
+    """The Base's LitGPT config exactly as the evaluator reads it, plus the keys (with values) it ignores.
 
-    The bundled evaluator drops keys its Config does not define (the original Base's model_config.yaml carries
-    ``research_breakpoint_schedule``), so training does the same and both build one architecture. Only empty
-    values may be dropped; a key with content the snapshot cannot apply stops training instead.
+    The bundled evaluator drops every key its Config does not define, whatever the value: the original Base's
+    model_config.yaml carries SemanticLogKV research switches (use_research, research_swa_size, ...), so the
+    evaluated Base is the plain dense model. Training must build that same architecture.
     """
     import dataclasses
     from ._vendor.semanticlogkv.litgpt.config import Config
@@ -359,13 +359,9 @@ def load_base_config(path):
     if not isinstance(raw, dict):
         raise ValueError(f"{path} is empty or not a mapping")
     known = {field.name for field in dataclasses.fields(Config)}
-    ignored = sorted(key for key in raw if key not in known)
-    applied = [key for key in ignored if raw[key] not in (None, "", [], {})]
-    if applied:
-        raise ValueError(f"{path} sets {applied}, which this LitGPT snapshot does not implement; the evaluator would "
-                         "ignore them, so check what they mean before training on this Base")
+    ignored = {key: raw[key] for key in sorted(raw) if key not in known}
     if ignored:
-        print(f"Ignoring empty {ignored} in {path}, as the evaluator does", flush=True)
+        print(f"Ignoring keys the evaluator also ignores in {path}: {ignored}", flush=True)
     return Config(**{key: value for key, value in raw.items() if key in known}), ignored
 
 
