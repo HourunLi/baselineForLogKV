@@ -26,9 +26,10 @@ def test_backported_yarn_matches_transformers(factor):
     from chunkkv._vendor.semanticlogkv.litgpt.model import build_rope_cache
 
     hf = transformers.Qwen3Config(head_dim=128, hidden_size=2048, num_attention_heads=16, rope_theta=1e6,
-                                  max_position_embeddings=32768,
+                                  max_position_embeddings=int(32768 * factor),
                                   rope_scaling=dict(rope_type="yarn", factor=factor, beta_fast=32, beta_slow=1,
                                                     original_max_position_embeddings=32768))
+    # max_position_embeddings = original x factor: transformers 4.51 (torch218) takes the factor from that ratio.
     inv_freq, attention_factor = ROPE_INIT_FUNCTIONS["yarn"](hf, "cpu")
     angles = torch.outer(torch.arange(int(32768 * factor) + 1024).float(), inv_freq).repeat(1, 2)
     cos, sin = build_rope_cache(angles.size(0), 128, base=1000000, extra_config=dict(

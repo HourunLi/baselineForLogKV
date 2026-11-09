@@ -365,7 +365,7 @@ datasets 写的单行 JSON。`--quarantine` 不会移动这类条目，修复方
 
 ## 验证记录
 
-2026-11-09 64K / 128K 长文本与流式 ChunkKV。CPU 开发环境（torch 2.15、transformers 5.22、lm-eval 0.4.13，不是 torch218）中
+2026-11-09 64K / 128K 长文本与流式 ChunkKV。CPU 上两组包版本（torch218 的 transformers 4.51.3、lm-eval 0.4.11、datasets 4.8.4，以及 transformers 5.22、lm-eval 0.4.13；torch 2.15，非 torch218 本身）中
 `python -m pytest -q tests/chunkkv`：**90 passed、1 skipped**（改动前 75 passed）。新增用例：补进快照的 YaRN 与 transformers 一致
 （factor 2 与 4）；流式 ChunkKV 在预算放得下全部 token 时与 LitGPT dense 推理一致；预算 20、窗口 4、块长 8 时每次前向后每层不超过
 预算、窗口为最新 token、`reuse_layers=2` 的同组层选择相同；整块选择按分数并保留窗口；64K / 128K 的预算由字节换算为 19,286 / 20,916 条；
