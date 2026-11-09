@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Training-platform entry point for training-free CaM evaluation on the prepared original Base.
-# Run once per node: main suite (47 entries), then NIAH (3 entries, 32768 only); a failed stage stops the job.
+# Run once per node: main suite (47 entries), then NIAH (3 entries, 32768 only); a config with context: 64k or
+# 128k runs the long suite (BABILong, long_ppl), then RULER (13 tasks). A failed stage stops the job.
 set -eo pipefail
 cd "$(dirname "$0")"
 
@@ -21,7 +22,7 @@ fi
 for arg in "$@"; do
     case "$arg" in
         --suite|--suite=*|--tasks|--tasks=*|--config|--config=*|--print-config)
-            echo "majob.sh runs both full suites; $arg is not allowed here (use models.cam.evaluate)." >&2
+            echo "majob.sh runs the full suites of the config's context; $arg is not allowed here (use models.cam.evaluate)." >&2
             exit 2 ;;
     esac
 done
@@ -32,6 +33,11 @@ if [[ -z "${CAM_PYTHON:-}" ]]; then
     CAM_PYTHON=$(python -c 'import sys; print(sys.executable)')
 fi
 set -u
+# Runtime library order of SemanticLogKV's eval.sh/majob.sh (as on the other baseline branches): a training job's
+# default LD_LIBRARY_PATH can reach an older libcuda first ("driver ... too old"); torch218's cu128 build needs these.
+export PATH=/usr/local/cuda-12.8/bin:${PATH}
+export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/local/cuda-12.8/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export NCCL_NVLS_ENABLE=${NCCL_NVLS_ENABLE:-0} NCCL_NET_PLUGIN=${NCCL_NET_PLUGIN:-none}
 GPUS_PER_NODE=${MA_NUM_GPUS:-${NPROC_PER_NODE:-${LOCAL_WORLD_SIZE:-8}}}
 NUM_NODES=${MA_NUM_HOSTS:-${GROUP_WORLD_SIZE:-1}}
 NODE_RANK=${VC_TASK_INDEX:-${NODE_RANK:-${GROUP_RANK:-0}}}
@@ -63,10 +69,19 @@ export LITGPT_EXPECTED_WORLD_SIZE=$((NUM_NODES * GPUS_PER_NODE))
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 export NCCL_IB_TIMEOUT=${NCCL_IB_TIMEOUT:-22}
 
+# The YAML's top-level context: key (32k when absent) picks the stages.
+CONTEXT=$(sed -n -E 's/^context:[[:space:]]*["'"'"']?([0-9a-z]+)["'"'"']?[[:space:]]*(#.*)?$/\1/p' "$CONFIG_FILE" | tail -n 1)
+case "${CONTEXT:-32k}" in
+    32k) SUITES=(main niah) ;;
+    64k|128k) SUITES=(long ruler) ;;
+    *) echo "Unknown context '$CONTEXT' in $CONFIG_FILE (32k, 64k or 128k)" >&2; exit 2 ;;
+esac
+
 echo "Python=$CAM_PYTHON node=$NODE_RANK/$NUM_NODES GPUs/node=$GPUS_PER_NODE world_size=$LITGPT_EXPECTED_WORLD_SIZE"
-for suite in main niah; do
+echo "Context ${CONTEXT:-32k}: suites ${SUITES[*]}"
+for suite in "${SUITES[@]}"; do
     port=$EVAL_MASTER_PORT
-    [[ "$suite" != niah ]] || port=$NIAH_MASTER_PORT
+    [[ "$suite" != "${SUITES[1]}" ]] || port=$NIAH_MASTER_PORT
     echo "Evaluating $suite at $MASTER_ADDR:$port using $CONFIG_FILE"
     "$CAM_PYTHON" -m torch.distributed.run \
         --nnodes "$NUM_NODES" --nproc_per_node "$GPUS_PER_NODE" \

@@ -1,0 +1,15 @@
+# Training-free online CaM on the original Qwen3-1.7B-Base at SemanticLogKV's 128k long-context protocol, same memory.
+# majob.sh runs the 'long' suite (BABILong, long-document perplexity), then the 'ruler' suite (13 RULER tasks).
+model: outputs/semanticlogkv_base
+experiment_config: configs/experiment_qwen1.7b_32k.yaml
+evaluation_config: configs/eval_suites.yaml
+context: 128k                 # window, RULER length and data from the evaluation config's contexts
+seed: 42
+prefill_chunk_size: 2048     # tokens per forward through the model (SemanticLogKV's prefill_block)
+merge_interval: 2048         # one merge step per prompt chunk (1 = the official per-token path, far too slow here)
+start_size: 32
+merge_size: 16
+# Persistent bytes of the LogKV cache the comparison run allocates at this window, measured with SemanticLogKV's
+# eval_long128k_baseline.yaml: 2,403,505,664 bytes (85,839,488 per layer x 28). Each kept entry costs raw K + V (bf16) and an fp32 score
+# per KV head and layer; recent_size is what is left after the sinks.
+budget_bytes: 2403505664

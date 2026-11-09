@@ -20,14 +20,15 @@ def args(**overrides):
 
 
 def test_resolve_shared_defaults_and_explicit_smoke_options(tmp_path):
-    experiment, model, output, tasks, lengths, options = resolve_run(args(output=tmp_path))
+    experiment, model, output, tasks, lengths, options, context, long_context, _ = resolve_run(args(output=tmp_path))
+    assert context == "32k" and long_context is None and options["merge_interval"] == 1  # per-token CaM
     assert experiment == ROOT / "configs/experiment_qwen1.7b_32k.yaml"
     assert model.name == "semanticlogkv_base" and output == tmp_path / "main"
     assert len(tasks.split(",")) == 47 and lengths is None
     assert options["start_size"] + options["recent_size"] == 2048
-    _, _, _, tasks, lengths, _ = resolve_run(args(suite="niah"))
+    _, _, _, tasks, lengths, *_ = resolve_run(args(suite="niah"))
     assert tasks == "niah_single_1,niah_single_2,niah_single_3" and lengths == [32768]
-    _, _, _, tasks, lengths, options = resolve_run(args(suite=None, tasks="niah_single_2", recent_size=100))
+    _, _, _, tasks, lengths, options, *_ = resolve_run(args(suite=None, tasks="niah_single_2", recent_size=100))
     assert tasks == "niah_single_2" and lengths is None and options["recent_size"] == 100
     with pytest.raises(ValueError, match="requires --model"):
         resolve_run(args(backend="logkv"))

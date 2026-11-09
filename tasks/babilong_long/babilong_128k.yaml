@@ -1,0 +1,13 @@
+# BABILong qa1-qa5 at 128k tokens (lm-eval's babilong_longctx at one length).
+group: babilong_128k
+task:
+  - babilong_qa1_128k
+  - babilong_qa2_128k
+  - babilong_qa3_128k
+  - babilong_qa4_128k
+  - babilong_qa5_128k
+aggregate_metric_list:
+  - metric: acc
+    weight_by_size: True
+metadata:
+  version: 0.0

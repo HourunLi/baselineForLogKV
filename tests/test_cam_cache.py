@@ -22,7 +22,7 @@ def tiny_model():
 
 def run(model, ids):
     with torch.no_grad():
-        return model(ids, use_cache=False, attention_mask={"full_attention": None}).logits
+        return model(ids, use_cache=False).logits
 
 
 @pytest.mark.parametrize("start,recent,merge", [(-1, 16, 16), (0, 0, 1), (0, 1, 0), (2, 3, 4)])
@@ -150,13 +150,15 @@ def test_chunking_reset_and_future_tokens_do_not_change_prefix_outputs():
     assert all(cache.keys.shape[2] == 4 and cache.processed_tokens == 10 for cache in caches)
 
 
-def test_external_masks_caches_and_training_are_rejected():
+def test_external_caches_and_training_are_rejected_and_masks_ignored():
     model = tiny_model()
-    install_cam_attention(model, 0, 2, merge_size=2)
+    caches = install_cam_attention(model, 0, 2, merge_size=2)
     attn = model.model.layers[0].self_attn
-    hidden = torch.zeros(1, 1, 32)
-    with pytest.raises(ValueError, match="unpadded"):
-        attn(hidden, attention_mask=torch.ones(1, 1))
+    hidden = torch.randn(1, 1, 32)
+    # A causal mask Transformers builds for the forward (4.51 does for eager models) changes nothing.
+    plain = attn(hidden)[0]
+    caches[0].reset()
+    torch.testing.assert_close(attn(hidden, attention_mask=torch.zeros(1, 1, 1, 1))[0], plain, atol=0, rtol=0)
     with pytest.raises(ValueError, match="owns its KV cache"):
         attn(hidden, past_key_values=object())
     with pytest.raises(ValueError, match="owns its KV cache"):

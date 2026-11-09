@@ -1,4 +1,9 @@
-"""Qwen3 wrappers for strict online CaM and an identical-weight Full KV control."""
+"""Qwen3 wrappers for strict online CaM and an identical-weight Full KV control.
+
+Written against the evaluation environment's transformers (torch218: 4.51.3) and newer releases alike: the
+dtype goes in as ``torch_dtype``, the Full KV cache is a plain ``DynamicCache()``, and no attention-mask
+mapping is passed (CaM attends causally over its own cache and ignores a mask built for the forward).
+"""
 
 import torch
 from torch import nn
@@ -11,21 +16,27 @@ from .attention import install_cam_attention
 
 class CaMModel(nn.Module):
     def __init__(self, model, max_seq_length, *, start_size=32, recent_size=2016,
-                 merge_size=16, seed=42, prefill_chunk_size=256, dense=False):
+                 merge_size=16, seed=42, prefill_chunk_size=256, dense=False, merge_interval=1):
         super().__init__()
-        if not 0 < max_seq_length <= model.config.max_position_embeddings:
+        # CaM's RoPE positions are cache slots, at most the cache plus one forward, so its requests may run past
+        # the trained window (64K / 128K); Full KV keeps absolute positions and stays within it.
+        if max_seq_length <= 0 or (dense and max_seq_length > model.config.max_position_embeddings):
             raise ValueError("Comparison context exceeds the Qwen3 position window")
+        if not dense and start_size + recent_size + merge_interval > model.config.max_position_embeddings:
+            raise ValueError("CaM's cache plus one merge step must fit the Qwen3 position window")
         if prefill_chunk_size < 1:
             raise ValueError("prefill_chunk_size must be positive")
-        if model.config.model_type != "qwen3" or model.config.rope_scaling or model.model.has_sliding_layers:
+        if (model.config.model_type != "qwen3" or getattr(model.config, "rope_scaling", None)
+                or getattr(model.model, "has_sliding_layers", False)):
             raise ValueError("Expected dense Qwen3 without sliding layers or RoPE extensions")
         self.hf_model = model.eval()
         self.max_seq_length = max_seq_length
         self.prefill_chunk_size = prefill_chunk_size
         self.dense = dense
         self.start_size, self.recent_size = start_size, recent_size
+        self.merge_interval = merge_interval
         self.layers = [] if dense else install_cam_attention(
-            model, start_size, recent_size, merge_size, seed,
+            model, start_size, recent_size, merge_size, seed, merge_interval,
         )
         self.cache = None
         self.processed_tokens = 0
@@ -43,8 +54,8 @@ class CaMModel(nn.Module):
         else:
             raise ValueError("Supported devices: CUDA for evaluation, CPU for small checks")
         model, loading = Qwen3ForCausalLM.from_pretrained(
-            checkpoint_dir, local_files_only=True, dtype=dtype,
-            attn_implementation="sdpa" if options.get("dense") else "eager",
+            checkpoint_dir, local_files_only=True, torch_dtype=dtype,
+            attn_implementation="sdpa",  # CaM replaces the attention; sdpa lets HF skip the causal mask
             output_loading_info=True,
         )
         if loading["missing_keys"] or loading["unexpected_keys"] or loading["mismatched_keys"]:
@@ -55,7 +66,7 @@ class CaMModel(nn.Module):
         self.processed_tokens = 0
         for layer in self.layers:
             layer.reset()
-        self.cache = DynamicCache(config=self.hf_model.config) if self.dense else True
+        self.cache = DynamicCache() if self.dense else True
 
     def clear_kv_cache(self):
         for layer in self.layers:
@@ -82,9 +93,6 @@ class CaMModel(nn.Module):
                           cache_position=expected[start:end], use_cache=self.dense)
             if self.dense:
                 kwargs["past_key_values"] = self.cache
-            else:
-                # CaM performs causal attention internally. Avoid HF allocating an N x N mask.
-                kwargs["attention_mask"] = {"full_attention": None}
             hidden = self.hf_model.model(**kwargs).last_hidden_state
             if end > lm_head_start:
                 logits.append(self.hf_model.lm_head(hidden[:, max(0, lm_head_start - start):]))
@@ -97,7 +105,10 @@ class CaMModel(nn.Module):
         config = self.hf_model.config
         groups = config.num_hidden_layers * config.num_key_value_heads
         if self.dense:
-            tensors = [t for layer in self.cache.layers for t in (layer.keys, layer.values)]
+            if hasattr(self.cache, "layers"):  # transformers >= 4.56
+                tensors = [t for layer in self.cache.layers for t in (layer.keys, layer.values)]
+            else:  # 4.51 (torch218)
+                tensors = [*self.cache.key_cache, *self.cache.value_cache]
             retained = processed_tokens * groups
             recent, exact = retained, 0
             score_bytes = 0
