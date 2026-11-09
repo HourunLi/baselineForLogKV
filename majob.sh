@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Training-platform entry point for Base + ChunkKV evaluation (no CPT). Run once per node:
-# main suite (47 entries), then NIAH (3 entries, 32768 only); a failed stage stops the job.
+# main suite (47 entries), then NIAH (3 entries, 32768 only); with --context 64k|128k the long suite
+# (BABILong, long_ppl), then RULER (13 tasks), streaming at the LogKV cache's memory. A failed stage stops the job.
 set -eo pipefail
 cd "$(dirname "$0")"
 
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
     echo "Usage: bash majob.sh [configs/chunkkv/experiment_qwen1.7b_32k.yaml] [evaluation options]"
-    echo "Runs main benchmarks and 32K NIAH. Default environment: torch218."
+    echo "Runs main benchmarks and 32K NIAH, or with --context 64k|128k the long suite and RULER at that length."
+    echo "Default environment: torch218."
     echo "Set CHUNKKV_PYTHON to an existing interpreter to skip conda activation."
     exit 0
 fi
@@ -16,8 +18,13 @@ if [[ $# -gt 0 && "$1" != -* ]]; then
     shift
 fi
 [[ -f "$CONFIG_FILE" ]] || { echo "Missing experiment YAML: $CONFIG_FILE" >&2; exit 2; }
-# The task lists, NIAH lengths and experiment YAML are fixed for a formal run.
+# The task lists, NIAH lengths and experiment YAML are fixed for a formal run; --context picks the stages.
+CONTEXT=32k
+previous=
 for arg in "$@"; do
+    [[ "$previous" == --context ]] && CONTEXT=$arg
+    [[ "$arg" == --context=* ]] && CONTEXT=${arg#--context=}
+    previous=$arg
     case "$arg" in
         --suite|--suite=*|--tasks|--tasks=*|--evaluation-config|--evaluation-config=*|\
         --experiment-config|--experiment-config=*|--semantic-config|--semantic-config=*|--print-config)
@@ -97,15 +104,22 @@ export LITGPT_EXPECTED_WORLD_SIZE=$((NUM_NODES * GPUS_PER_NODE))
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 export NCCL_IB_TIMEOUT=${NCCL_IB_TIMEOUT:-22}
 
+case "$CONTEXT" in
+    32k) SUITES=(main niah) ;;
+    64k|128k) SUITES=(long ruler) ;;
+    *) echo "Unknown --context '$CONTEXT' (32k, 64k or 128k)" >&2; exit 2 ;;
+esac
+
 echo "Python=$CHUNKKV_PYTHON node=$NODE_RANK/$NUM_NODES GPUs/node=$GPUS_PER_NODE (visible $VISIBLE_GPUS) world_size=$LITGPT_EXPECTED_WORLD_SIZE"
-for suite in main niah; do
+echo "Context $CONTEXT: suites ${SUITES[*]}"
+for suite in "${SUITES[@]}"; do
     if (( NUM_NODES == 1 )); then
         # A fixed port may already be taken on the node; standalone rendezvous binds a free one.
         rendezvous=(--standalone)
         echo "Evaluating $suite on one node (free local port) using $CONFIG_FILE"
     else
         port=$EVAL_MASTER_PORT
-        [[ "$suite" != niah ]] || port=$NIAH_MASTER_PORT
+        [[ "$suite" != "${SUITES[1]}" ]] || port=$NIAH_MASTER_PORT
         rendezvous=(--nnodes "$NUM_NODES" --node_rank "$NODE_RANK" --master_addr "$MASTER_ADDR" --master_port "$port")
         echo "Evaluating $suite at $MASTER_ADDR:$port using $CONFIG_FILE"
     fi

@@ -1,0 +1,10 @@
+# Streaming ChunkKV at SemanticLogKV's 64k long-context protocol (chunkkv.evaluate --context 64k), same memory.
+chunk_size: 10      # paper default chunk size
+window_size: 64     # observation window, kept verbatim (KVPress SnapKV scorer default)
+reuse_layers: 1     # layer-wise index reuse depth (Algorithm 2); 1 disables reuse
+streaming: true     # select after every prompt chunk and decode step: never more than budget + one chunk
+prefill_chunk_size: 2048   # tokens per forward through the model (SemanticLogKV's prefill_block)
+# Persistent bytes of the LogKV cache the comparison run allocates at this window, measured with SemanticLogKV's
+# eval_long64k_baseline.yaml: 2,216,205,824 bytes (79,150,208 per layer x 28). Each kept entry costs K + V (bf16) in every KV group and layer plus
+# one int64 position per layer.
+budget_bytes: 2216205824

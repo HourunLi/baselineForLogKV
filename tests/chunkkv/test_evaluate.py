@@ -45,14 +45,17 @@ def test_backends_share_task_inputs_and_only_logkv_budget_reads_method_flags(tmp
         runner.build_eval_kwargs(*common, None, "logkv", tasks, 4, out)
 
 
+ONE_SHOT = dict(streaming=False, prefill_chunk_size=None)  # the 32K settings: compress once after prefill
+
+
 def test_chunkkv_options_merge_yaml_and_cli(tmp_path):
     path = tmp_path / "chunkkv.yaml"
     path.write_text("chunk_size: 8\nbudget: logkv\nkeep_ratio: null\n")
     base = dict(budget=None, keep_ratio=None, chunk_size=None, window_size=None, reuse_layers=None)
     assert runner.load_chunkkv_options(path, base) == dict(
-        chunk_size=8, window_size=64, budget="logkv", keep_ratio=None, reuse_layers=1)
+        chunk_size=8, window_size=64, budget="logkv", keep_ratio=None, reuse_layers=1, **ONE_SHOT)
     assert runner.load_chunkkv_options(path, {**base, "budget": "2048", "reuse_layers": 2}) == dict(
-        chunk_size=8, window_size=64, budget=2048, keep_ratio=None, reuse_layers=2)
+        chunk_size=8, window_size=64, budget=2048, keep_ratio=None, reuse_layers=2, **ONE_SHOT)
     assert runner.load_chunkkv_options(path, {**base, "keep_ratio": 0.1})["budget"] is None
     with pytest.raises(ValueError, match="window"):
         runner.load_chunkkv_options(path, {**base, "budget": "32"})
@@ -63,7 +66,8 @@ def test_chunkkv_options_merge_yaml_and_cli(tmp_path):
     with pytest.raises(ValueError, match="Unknown"):
         runner.load_chunkkv_options(path, base)
     shipped = runner.load_chunkkv_options(runner.DEFAULT_CHUNKKV_CONFIG, base)
-    assert shipped == dict(chunk_size=10, window_size=64, budget="logkv", keep_ratio=None, reuse_layers=1)
+    assert shipped == dict(chunk_size=10, window_size=64, budget="logkv", keep_ratio=None, reuse_layers=1,
+                           **ONE_SHOT)
 
 
 def test_reference_suites_share_task_inputs_and_niah_lengths(tmp_path):
