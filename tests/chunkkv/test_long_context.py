@@ -152,3 +152,17 @@ def test_platform_launcher_runs_the_long_stages_for_a_long_context(tmp_path):
     assert all("--context 64k" in call for call in calls)
     refused = subprocess.run(command[:2] + ["--context", "96k"], cwd=tmp_path, env=env, capture_output=True, text=True)
     assert refused.returncode == 2 and "Unknown --context" in refused.stderr
+
+
+def test_long_tasks_reach_lm_eval_through_a_task_manager(monkeypatch):
+    pytest.importorskip("lm_eval")
+    import lm_eval.tasks
+
+    seen = {}
+    monkeypatch.setattr(lm_eval.tasks, "TaskManager", lambda include_path, metadata: (include_path, metadata))
+    harness = SimpleNamespace(simple_evaluate=lambda **kwargs: seen.update(kwargs), other=1)
+    evaluator = SimpleNamespace(evaluator=harness)
+    runner.install_long_tasks(evaluator, runner.LONG_TASKS_DIR)
+    evaluator.evaluator.simple_evaluate(tasks=["long_ppl_64k"], metadata={"pretrained": "base"})
+    assert seen["task_manager"] == (str(runner.LONG_TASKS_DIR), {"pretrained": "base"})
+    assert evaluator.evaluator.other == 1
