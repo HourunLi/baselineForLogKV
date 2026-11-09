@@ -227,8 +227,8 @@ def install_long_tasks(evaluator, include_path):
             # lm-eval forwards ``metadata`` to tasks only through a TaskManager it is given.
             kwargs["task_manager"] = TaskManager(include_path=str(include_path), metadata=kwargs.get("metadata"))
         return harness.simple_evaluate(*args, **kwargs)
-    evaluator.evaluator = SimpleNamespace(**{name: getattr(harness, name) for name in dir(harness)
-                                             if not name.startswith("__")}, simple_evaluate=simple_evaluate)
+    members = {name: getattr(harness, name) for name in dir(harness) if not name.startswith("__")}
+    evaluator.evaluator = SimpleNamespace(**{**members, "simple_evaluate": simple_evaluate})
 
 
 def run_evaluation(evaluator, kwargs, backend, contract, resolved=None, result_metadata=None, include_path=None):

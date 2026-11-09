@@ -132,3 +132,22 @@ def test_platform_launcher_runs_the_long_stages_of_a_long_config(tmp_path):
     assert result.returncode == 0, result.stderr
     calls = (tmp_path / "calls").read_text().splitlines()
     assert [call.split("--suite ")[1].split()[0] for call in calls] == ["long", "ruler"]
+
+
+def test_long_tasks_reach_lm_eval_through_a_task_manager(monkeypatch):
+    pytest.importorskip("lm_eval")
+    from types import SimpleNamespace
+
+    import lm_eval.tasks
+
+    from models.cam.evaluate import LONG_TASKS_DIR
+    from models.qwen3.evaluate import install_long_tasks
+
+    seen = {}
+    monkeypatch.setattr(lm_eval.tasks, "TaskManager", lambda include_path, metadata: (include_path, metadata))
+    harness = SimpleNamespace(simple_evaluate=lambda **kwargs: seen.update(kwargs), other=1)
+    evaluator = SimpleNamespace(evaluator=harness)
+    install_long_tasks(evaluator, LONG_TASKS_DIR)
+    evaluator.evaluator.simple_evaluate(tasks=["long_ppl_64k"], metadata={"pretrained": "base"})
+    assert seen["task_manager"] == (str(LONG_TASKS_DIR), {"pretrained": "base"})
+    assert evaluator.evaluator.other == 1
