@@ -9,6 +9,12 @@ Per layer, the last ``window_size`` prompt queries score every older key
 pooling); the top-``capacity`` older entries plus the window are kept. The
 capacity follows a pyramid: lower layers keep more, upper layers less, with the
 average close to ``max_capacity_prompt`` entries per layer (window included).
+
+Streaming (``settings.streaming``): the model feeds the prompt in chunks; after every forward (a prompt chunk
+or a decode step) the layer's entries are scored by the forward's last ``window_size`` queries (all of them
+when fewer), pooled along the kept entries in position order, and the layer keeps its newest
+``window_size`` entries plus the best ``stream_capacity(layer)`` older ones. Layer budgets are the pyramid of
+an unbounded prompt, so a layer never holds more than its budget plus one chunk.
 """
 
 from __future__ import annotations
@@ -72,6 +78,27 @@ def keep_topk(key_states: torch.Tensor, value_states: torch.Tensor, scores: torc
             torch.cat((past_v, value_states[:, :, -window_size:]), dim=2))
 
 
+def streaming_scores(query_states: torch.Tensor, key_states: torch.Tensor, older: int, kernel_size: int,
+                     pooling: str, agg: str) -> torch.Tensor:
+    """Attention of the last ``n`` query positions (theirs at the end of the ``L`` entries, causal), summed
+    over those queries, for the first ``older`` entries, then pooled along them as KVCache-Factory does."""
+    B, H, n, D = query_states.shape
+    H_kv, L = key_states.size(1), key_states.size(2)
+    groups = H // H_kv
+    queries = query_states.reshape(B, H_kv, groups, n, D)
+    attn = torch.matmul(queries, key_states.unsqueeze(2).transpose(-1, -2)) / math.sqrt(D)
+    attn = attn.reshape(B, H, n, L)
+    hidden = torch.ones(n, L, dtype=torch.bool, device=attn.device).tril(diagonal=L - n).logical_not()
+    attn = attn.masked_fill(hidden, torch.finfo(attn.dtype).min)
+    attn = F.softmax(attn, dim=-1, dtype=torch.float32).to(query_states.dtype)
+    scores = reduce_group_scores(attn[..., :older].sum(dim=-2), groups, agg)
+    if pooling == "avgpool":
+        return F.avg_pool1d(scores, kernel_size=kernel_size, padding=kernel_size // 2, stride=1)
+    if pooling == "maxpool":
+        return F.max_pool1d(scores, kernel_size=kernel_size, padding=kernel_size // 2, stride=1)
+    raise ValueError(f"pooling must be one of {POOLINGS}, got {pooling!r}")
+
+
 class PyramidKVCompressor(PyramidKVSettings):
     """PyramidKV settings and layer budgets (see :class:`PyramidKVSettings`) plus prompt compression."""
 
@@ -87,3 +114,14 @@ class PyramidKVCompressor(PyramidKVSettings):
                                            self.kernel_size, self.pooling, self.gqa_score_agg)
         keys, values = keep_topk(key_states, value_states, scores, capacity, self.window_size)
         return keys, values, capacity, self.window_size
+
+    def stream_evict(self, layer_idx: int, query_states: torch.Tensor, key_states: torch.Tensor,
+                     value_states: torch.Tensor):
+        """Keys and values a streaming layer keeps after a forward, or None while it is within budget."""
+        capacity = self.stream_capacity(layer_idx)
+        if key_states.size(2) <= capacity + self.window_size:
+            return None
+        observed = query_states[:, :, -min(self.window_size, query_states.size(2)):]
+        older = key_states.size(2) - self.window_size
+        scores = streaming_scores(observed, key_states, older, self.kernel_size, self.pooling, self.gqa_score_agg)
+        return keep_topk(key_states, value_states, scores, capacity, self.window_size)

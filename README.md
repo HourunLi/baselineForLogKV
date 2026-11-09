@@ -5,7 +5,7 @@
 - PyramidKV 的选择规则移植自 [KVCache-Factory](https://github.com/Zefan-Cai/KVCache-Factory)（MIT），见 [LICENSE](LICENSE)。
 - 评测侧的模型、tokenizer、KV cache、生成、打分、指标和结果格式全部在本仓库实现。**不 import、不加载 litgpt / SemanticLogKV 的任何代码**，只依赖 PyTorch、tokenizers、lm-eval 等通用库。
 - 与 SemanticLogKV 对齐的内容是“行为”：同一份原始 Base 权重、同一 tokenizer 规则、同一 lm-eval 任务与缓存、同样的截断/生成/打分规则、同样的 KV 槽位与速度指标定义、同样的结果文件布局。
-- 统一实现规则见 [AGENTS.md](AGENTS.md) 与 [Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md)，评测环境、路径、依赖写法与已知坑见 [Baseline 环境与避坑清单](docs/BASELINE_ENVIRONMENT.md)。正式评测只用 32K 窗口，完整任务为项目内 [configs/eval_suites.yaml](configs/eval_suites.yaml) 维护的 47 个 main 入口和 3 个 NIAH（仅 `[32768]`），由 `majob.sh` 分两阶段运行。
+- 统一实现规则见 [AGENTS.md](AGENTS.md) 与 [Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md)，评测环境、路径、依赖写法与已知坑见 [Baseline 环境与避坑清单](docs/BASELINE_ENVIRONMENT.md)。正式评测为 32K 窗口，完整任务为项目内 [configs/eval_suites.yaml](configs/eval_suites.yaml) 维护的 47 个 main 入口和 3 个 NIAH（仅 `[32768]`），由 `majob.sh` 分两阶段运行；另有 64K / 128K 长文本评测，PyramidKV 在其中流式运行、与 SemanticLogKV 同内存，见[下文](#64k--128k-长文本流式同内存)。
 
 ## KVCache-Factory 是怎么比较不同方法的
 
@@ -138,6 +138,44 @@ bash majob.sh configs/qwen3_1.7b_32k_pyramidkv.yaml --output outputs/pyramidkv-3
 
 脚本导出 `KV_BASELINE_EXPECTED_WORLD_SIZE=节点数×每节点 GPU`，评测入口发现实际进程数不同时报错。所有节点需读到同一路径的代码、Base、离线缓存，并写同一输出目录。
 平台上建议设置 `TMPDIR=/tmp`，让进程内 map/filter 的临时文件落在节点本地盘。
+
+## 64K / 128K 长文本（流式、同内存）
+
+口径与 SemanticLogKV 的 `eval_long{64k,128k}_*.yaml` 相同（[规范第 6.1 节](docs/BASELINE_IMPLEMENTATION_GUIDE.md)）：`--context 64k|128k` 从
+`configs/eval_suites.yaml` 取模型窗口（66560 / 132096）、YaRN（factor 2 / 4，原长 32768）与 RULER 长度（65536 / 131072）；`long` 阶段跑
+BABILong qa1–qa5 与长文档困惑度（PG19 测试集的末尾 4096 个 token），`ruler` 阶段跑全部 13 个 RULER 任务，每任务前 100 条。BABILong 与困惑度的
+任务文件逐字复制自 SemanticLogKV（`tasks/`，来源与哈希见 `tasks/SOURCE.json`），困惑度选出的文档缓存与 SemanticLogKV 共用。
+
+| | 64K | 128K |
+|---|---|---|
+| 配置 | `configs/qwen3_1.7b_64k_pyramidkv.yaml` | `configs/qwen3_1.7b_128k_pyramidkv.yaml` |
+| 预算字节（SemanticLogKV 该窗口的已分配持久缓存） | 2,216,205,824 | 2,403,505,664 |
+| 平均每层每个 KV head 的条目（K、V 为 bf16，512 字节） | 19,321 | 20,954 |
+| 第 0 层 / 第 27 层（含观察窗 64） | 37,616 / 1,031 | 40,800 / 1,110 |
+| 实际持久 K/V 字节 | 2,216,173,568 | 2,403,287,040 |
+
+**流式 PyramidKV**（`streaming: true`）：模型按 `prefill_chunk_size`（2048，与 SemanticLogKV 的 prefill_block 相同）逐块前向；每块读
+[保留条目 + 本块（因果）]，之后用本块最后 `window_size` 个 query（解码时为当前一个）对保留的较早条目打分（窗口内求和，沿位置顺序做 1-D
+pooling，与 KVCache-Factory 相同），每层保留最近 `window_size` 个条目与分数最高的较早条目。各层预算是无限长 prompt 下的金字塔（`beta` 控制坡度），
+平均为 `max_capacity_prompt`；`--budget-bytes` 取使全部层的 K/V 不超出给定字节的最大平均预算。任何时刻每层不超过自己的预算加一个块；按块前向时
+激活与工作区也只随块长增长。一次前向就覆盖整段长 prompt 时，选择结果与 KVCache-Factory 的 `compress()` 逐元素相同（有测试）。
+32K 配置仍是 KVCache-Factory 的语义（整段预填充后压缩一次），不受影响。
+
+长文本配置的观察窗为 64（KVPress 的 SnapKV 默认值，与 chunkKV 分支相同），不用 KVCache-Factory runner 的 8：RULER 的问题在 prompt
+末尾（lm-eval 生成前缀 "The special magic number for {query} mentioned in the provided text is"），8 个 token 只覆盖
+" mentioned in the provided text is" 和被问的键的最后一两个 token。
+
+```bash
+bash majob.sh configs/qwen3_1.7b_64k_pyramidkv.yaml --output outputs/pyramidkv-64k   # long 阶段，然后 ruler 阶段
+bash majob.sh configs/qwen3_1.7b_128k_pyramidkv.yaml --output outputs/pyramidkv-128k
+bash scripts/evaluate.sh configs/qwen3_1.7b_64k_pyramidkv.yaml --suite ruler --limit 4 # 小样本检查
+```
+
+`LONG_PPL_DATA`（环境变量优先，否则配置的 `long_ppl_data`）指向 PG19 测试集；BABILong 读共享离线缓存，或 `BABILONG_DATASET` 指向的本地副本。
+结果的 `cache_budget` 记录预算字节、每层条目数与固定分配的持久字节，`kv_compression` 记录实际保留条目与压缩比。
+
+与 32K 结果相比的说明：32K 的默认预算 2048 条远小于 SemanticLogKV 在 32K 的已分配持久缓存（1,937.8 MiB，相当于每层每个 KV head
+17,716 个 K/V 条目），两者不是同内存比较；观察窗 8 对 RULER 偏弱（见上）。代码本身未发现错误。
 
 ### 与 SemanticLogKV 横向对比
 

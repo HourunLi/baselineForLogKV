@@ -20,7 +20,8 @@ class PyramidKVSettings:
     name = "pyramidkv"
 
     def __init__(self, num_hidden_layers: int, max_capacity_prompt: int = 2048, window_size: int = 8,
-                 kernel_size: int = 7, pooling: str = "maxpool", beta: int = 20, gqa_score_agg: str = "mean"):
+                 kernel_size: int = 7, pooling: str = "maxpool", beta: int = 20, gqa_score_agg: str = "mean",
+                 streaming: bool = False):
         if window_size < 1 or max_capacity_prompt - window_size <= 0:
             raise ValueError("PyramidKV requires 0 < window_size < max_capacity_prompt")
         if kernel_size < 1 or kernel_size % 2 == 0:
@@ -38,11 +39,25 @@ class PyramidKVSettings:
         self.pooling = pooling
         self.beta = beta
         self.gqa_score_agg = gqa_score_agg
+        # Streaming PyramidKV selects after every forward, prompt chunks included, against fixed layer budgets.
+        self.streaming = bool(streaming)
 
     def config(self) -> dict:
         return dict(method=self.name, max_capacity_prompt=self.max_capacity_prompt, window_size=self.window_size,
                     kernel_size=self.kernel_size, pooling=self.pooling, beta=self.beta,
-                    gqa_score_agg=self.gqa_score_agg)
+                    gqa_score_agg=self.gqa_score_agg, streaming=self.streaming)
+
+    def stream_capacity(self, layer_idx: int) -> int:
+        """Older entries a streaming layer keeps besides the window: the pyramid of an unbounded prompt."""
+        budget = self.max_capacity_prompt - self.window_size
+        min_num = budget // self.beta
+        max_num = budget * 2 - min_num
+        steps = (max_num - min_num) // (self.num_hidden_layers - 1) if self.num_hidden_layers > 1 else 0
+        return max_num - layer_idx * steps
+
+    def stream_schedule(self) -> list[int]:
+        """Entries per layer (older + window) that a streaming cache never exceeds."""
+        return [self.stream_capacity(layer) + self.window_size for layer in range(self.num_hidden_layers)]
 
     def layer_capacity(self, layer_idx: int, q_len: int) -> int | None:
         """Older entries kept in ``layer_idx`` for a ``q_len``-token prompt; ``None`` keeps everything."""
@@ -61,6 +76,8 @@ class PyramidKVSettings:
 
     def budget_schedule(self, q_len: int) -> list[int]:
         """Total entries per layer (selected + window) for a prompt of ``q_len`` tokens."""
+        if self.streaming:
+            return [min(q_len, entries) for entries in self.stream_schedule()]
         out = []
         for layer in range(self.num_hidden_layers):
             capacity = self.layer_capacity(layer, q_len)
