@@ -1,0 +1,42 @@
+{
+ "source_project": "SemanticLogKV (HourunLi/LogKV)",
+ "source_branch": "niahLogKV",
+ "source_commit": "4615501",
+ "source_paths": {
+  "tasks/babilong_long": "eval_tasks/babilong_long",
+  "tasks/long_ppl": "eval_tasks/long_ppl"
+ },
+ "license": "Apache-2.0",
+ "changes": "none: verbatim copies, so prompts, data selection and scoring equal SemanticLogKV's long-context stages",
+ "sha256": {
+  "tasks/babilong_long/_babilong_long_common": "1738640c2d85285c875b72ca87da4efbeacce1c18a918a5ae412b7e6827607f1",
+  "tasks/babilong_long/_qa1_base": "4159e7ab623285adcd4e47bd46ee28f1272c828a16a5459eb0ca8812a1a2a21f",
+  "tasks/babilong_long/_qa2_base": "dbe0f4ab6679edc2965ca42a6340eb381ca61e871fe8bbd924bba3d8930cfd36",
+  "tasks/babilong_long/_qa3_base": "9b85ff7bda179db3239cfa8c70909a0bf0fb98199260abf6ba09d063578bd0d3",
+  "tasks/babilong_long/_qa4_base": "a003addb59d9faf0020a96458119682110bd421f8ffaef54a70445fdceec3844",
+  "tasks/babilong_long/_qa5_base": "6f589df3300770c163172eb5d325d50211cf366f29059e4889b241d5ee723851",
+  "tasks/babilong_long/babilong_128k.yaml": "37f8af58f559f2ff9ba75b91e0a74eb30beb7ae620c5bc6964d40e6dd47a33d0",
+  "tasks/babilong_long/babilong_32k.yaml": "4f717621e5fe5134462243deba347c040ed2c44a41a86bf2afb370de75740bba",
+  "tasks/babilong_long/babilong_64k.yaml": "d0652d4a044d057d2f14eb4aca49b53ba0701b1581f007699aa321484ddcf237",
+  "tasks/babilong_long/babilong_long_utils.py": "9e206ad3ad6297d8728eb4e6297d5663651da826543c3eb2acf3ebcd9327ef6a",
+  "tasks/babilong_long/babilong_qa1_128k.yaml": "8f0dfb6f879d1e58bacb3c63ba66547e063fa143928c0731402c8a6079d18c2f",
+  "tasks/babilong_long/babilong_qa1_32k.yaml": "8ad50162065bc688973591a709ea87292f887d4ebbc0ed1da7beefa57c65a959",
+  "tasks/babilong_long/babilong_qa1_64k.yaml": "45c9b4305f2cd09b0d4444d0a587c023f48751ee7625060050930df0dd6d1d42",
+  "tasks/babilong_long/babilong_qa2_128k.yaml": "b5da475009f02e5cc7487ff91fa2ecf20e3740d4a24f6a0e89e03ccb11d77828",
+  "tasks/babilong_long/babilong_qa2_32k.yaml": "8f338c146c02be270b9e6580b522513be385539c67135512b20bc375396441ef",
+  "tasks/babilong_long/babilong_qa2_64k.yaml": "9ae08031e842a4e56119f9d5badcd9e323a67c87649c43085e8b443b1e94665c",
+  "tasks/babilong_long/babilong_qa3_128k.yaml": "c2a53c43f31f2d198d2968ac937ad93142b996b194b60dc7f76f0ec074a1c0d9",
+  "tasks/babilong_long/babilong_qa3_32k.yaml": "ec24a0a21d2859638489cb95c81a04e7d74c1cc90d23a54fc4ced9c3838c57b5",
+  "tasks/babilong_long/babilong_qa3_64k.yaml": "684151e43522403a9096575b29d4092ae4e5d30c4b3c570ccd2bec4757a75dfa",
+  "tasks/babilong_long/babilong_qa4_128k.yaml": "dc957efb6c82ea0e1d19c2d14eba5abca15cceb748900a29235aeaf6f9417a9f",
+  "tasks/babilong_long/babilong_qa4_32k.yaml": "a8b4f59561f9df7af1d08f881e44a6188c8b807ce79dfb4ec80fc3bb0cae6f03",
+  "tasks/babilong_long/babilong_qa4_64k.yaml": "40937aad20b770a17bd797c3cc513b5dc80860de79378495b94901b8b87e81e9",
+  "tasks/babilong_long/babilong_qa5_128k.yaml": "ad28efeed5719e1519905aa8243104043221e35180c0af0e46ced79a11bdc48c",
+  "tasks/babilong_long/babilong_qa5_32k.yaml": "6fe8663b9e262c66e9979b66d6235187e10272d6213ab32a5afa184ff019a5ca",
+  "tasks/babilong_long/babilong_qa5_64k.yaml": "16d9e9b05e0d031931f1f3ce61bdb774fc68717887bc1a1e5dfba5b6fd8ea824",
+  "tasks/long_ppl/long_ppl_128k.yaml": "d7e96ce2e96b5e4a9b5d9ded890fd0d5af6e8ae7ddc1fcaec558a0cf63d22290",
+  "tasks/long_ppl/long_ppl_32k.yaml": "a3c3d0ce7b4fb8adc58bd8b1a734e868c14f525c790403f3f8b317f0be74a2bb",
+  "tasks/long_ppl/long_ppl_64k.yaml": "6e632bb826502bb2c9013b0dd19a03575bd1c6fbbabe57d03bdddd7699862cc3",
+  "tasks/long_ppl/long_ppl_utils.py": "ec23f7e120746563e0e36ad2ed72dc0cd28957c12f79b424278ba20c2623741a"
+ }
+}

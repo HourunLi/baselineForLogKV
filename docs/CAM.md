@@ -15,7 +15,13 @@
 3. 长度超过 S+R 后，淘汰索引 e=S。以 `p=clip(A[e]/mean(A[e+1:e+1+M]), 0, 1)` 抽一次 Bernoulli；若选中，则把 `V[e]/M` 加到后续 M 个 V。
 4. 删除该 K/V 及对应 A；不合并 K，不转移 A。当前 token 的输出使用合并前状态。
 
-返回缓存至多 S+R 条目，稳态 attention 会临时读取 S+R+1 条目。`recent_size >= merge_size`。零除规则沿用官方：0/0 概率为零，正无穷裁为一。位置使用官方 streaming 路线的 **cache-relative RoPE**；原始位置仍由共享生成接口传入并检查连续性，不能将两种位置政策混为一谈。
+以上是 `merge_interval: 1`（32K 默认）：一次前向的投影可以按块计算，合并仍逐 token 进行，结果与块长无关。`merge_interval: n` 把每 n 个 token
+作为一步：这 n 个 query 读该步之前的缓存加本步 token（因果），各条目累加本步全部 query 的注意力，然后按顺序淘汰超出预算的条目：受害者仍依次
+为索引 S 处的条目，概率用本步之后的分数，每个受害者的 V 带着它之前受害者并入的部分继续并入后续 M 个条目（这条连锁用一次单位下三角求解精确算出，
+与逐个淘汰相同，有测试）。与逐 token 相比的差别只在步内：本步的 query 看不到本步内的淘汰与合并，缓存在步内最多多出 n 个条目，抽样序列也随步长不同。
+64K / 128K 用 n=2048（与 SemanticLogKV 的 prefill_block 相同）；逐 token 在这些长度上每个请求要做数百万次小张量运算，无法在评测时间内完成。
+
+返回缓存至多 S+R 条目，稳态 attention 会临时读取 S+R+n 条目。`recent_size >= merge_size`。零除规则沿用官方：0/0 概率为零，正无穷裁为一。位置使用官方 streaming 路线的 **cache-relative RoPE**；原始位置仍由共享生成接口传入并检查连续性，不能将两种位置政策混为一谈。
 
 Qwen3 适配明确包含：Q/K normalization、共享 GQA 的概率聚合、FP32 累计分数。随机数为每层独立 generator（seed + layer_index），每个请求重置；rank 或投影 chunk 大小不决定抽样次序。以上细节写入结果，实验名称建议 **CaM-online / Qwen3-GQA**，不宣称原论文的原样复现。
 
@@ -29,10 +35,13 @@ CaM 没有可训练参数，**不需要 CPT**。默认对比原始 Qwen3-1.7B-Ba
 
 ## 安装与小样本运行
 
-在项目根目录、已有 BF16 CUDA PyTorch 的环境中执行。依赖沿用共享评测环境：`transformers==4.57.3`、`lm-eval==0.4.9`、`datasets<4`（评测入口启动时检查）。私有评测快照所需的 lightning 等已列入本项目依赖，不再安装相邻 LitGPT。CaM 本身无 FlashAttention/Triton 依赖。
+在 SemanticLogKV 的评测环境 torch218（lm-eval 0.4.11、datasets 4.8.4、transformers 4.51.3）中、项目根目录用 `python -m` 执行，不安装本项目，
+也不改动其中任何包。评测入口启动时只检查代码与共享缓存的最低要求（`lm-eval>=0.4.9`、`datasets>=4.7`），精确版本写进结果。模型代码按
+transformers 4.51.3 的接口写成，也兼容更新的版本（`torch_dtype` 传精度、Full KV 用无参 `DynamicCache()`、不传按层类型的 mask 字典）。
+2026-11-09 之前本分支要求 `transformers==4.57.3`、`lm-eval==0.4.9`、`datasets<4`，在 torch218 中启动即失败。CaM 本身无 FlashAttention/Triton 依赖。
 
 ```bash
-python -m pip install -e '.[eval,test]'
+source /home/ma-user/anaconda3/bin/activate torch218
 
 # 仅首次需要；已有同一 Base 输出目录时跳过此命令，禁止覆盖旧结果
 python -m models.qwen3.prepare_base
@@ -91,6 +100,31 @@ python -m models.qwen3.compare_results \
 将 TIMESTAMP 替换为实际文件名。检查器验证原始 Base、tokenizer、评测代码/版本、任务/长度和实际样本/prompt/目标/生成参数一致（协议一致性），并单独列出后端、实际评测权重与预算（方法差异）；不要求模型回答相同，也不证明等训练或等内存预算。三方应都从本分支 `models.cam.evaluate` 运行；与其他项目入口的结果相比可能因适配代码指纹不同而拒绝，不能跳过该核对。
 
 当前实现分块计算投影与 MLP，attention 按 token 顺序执行以保证真实在线更新，避免 NxN attention 矩阵。它没有专用 CaM CUDA 内核，32K prefill 会慢于向量化 Full KV；速度是当前实现的测量值，不能据此断言 CaM 算法本身更慢。只在小样本检查有研究价值后再扩大评测。
+
+## 64K / 128K 长文本（流式、同内存）
+
+口径与 SemanticLogKV 的 `eval_long{64k,128k}_*.yaml` 相同（[规范第 6.1 节](BASELINE_IMPLEMENTATION_GUIDE.md)）：配置的 `context: 64k|128k`
+从 `configs/eval_suites.yaml` 的 `contexts` 取请求窗口（66560 / 132096）、RULER 长度（65536 / 131072）与 PG19 测试集路径；`long` 阶段跑
+BABILong qa1–qa5 与长文档困惑度，`ruler` 阶段跑全部 13 个 RULER 任务，每任务前 100 条。BABILong 与困惑度的任务文件逐字复制自 SemanticLogKV
+（`tasks/`，来源与哈希见 `tasks/SOURCE.json`），只在本项目的私有评测实例里交给 lm-eval 的 `TaskManager`；困惑度选出的文档缓存与 SemanticLogKV 共用。
+长文本只跑 CaM 后端：SemanticLogKV 与 Full KV 用它自己的 `eval_long*` 配置评测。
+
+CaM 的 RoPE 位置是缓存槽位（官方 streaming 路线），最多为缓存加一步，因此不需要 YaRN，也不受 Qwen3 训练窗口限制；其他基线用绝对位置加 YaRN。
+
+| | 64K | 128K |
+|---|---|---|
+| 配置 | `configs/cam_qwen3_1.7b_64k.yaml` | `configs/cam_qwen3_1.7b_128k.yaml` |
+| 预算字节（SemanticLogKV 该窗口的已分配持久缓存） | 2,216,205,824 | 2,403,505,664 |
+| 每层每个 KV head 的条目（原始 K、V 为 bf16，加 fp32 分数，516 字节） | 19,173（sink 32 + recent 19,141） | 20,794（32 + 20,762） |
+| 合并步长 / 预填充块长 | 2048 / 2048 | 2048 / 2048 |
+
+```bash
+bash majob.sh configs/cam_qwen3_1.7b_64k.yaml --output outputs/cam-64k     # long，然后 ruler
+bash majob.sh configs/cam_qwen3_1.7b_128k.yaml --output outputs/cam-128k
+python -m models.cam.evaluate --config configs/cam_qwen3_1.7b_64k.yaml --suite ruler --limit 4 --output outputs/cam-64k-check
+```
+
+`budget_bytes` 需要已准备 Base 的 `config.json` 来换算条目数；结果的 `method_metadata.cam` 记录 context、预算字节与容量。
 
 ## 验证
 

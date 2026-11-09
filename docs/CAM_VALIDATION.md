@@ -1,5 +1,30 @@
 # CaM 验证记录
 
+
+## 2026-11-09：适配 torch218；64K / 128K 长文本与按块合并
+
+在 CPU 上用 torch218 的包版本（transformers 4.51.3、lm-eval 0.4.11、datasets 4.8.4、tokenizers 0.21.4；torch 2.15，非 torch218 本身）
+执行 `python -m pytest -q`：**59 passed**。改动前同一组版本下 8 failed（`lm-eval==0.4.9` 启动检查、transformers 4.51 没有
+`has_sliding_layers`、mask 字典 `'dict' object has no attribute 'dim'`），即本分支此前在 torch218 中无法运行。
+
+新增与改动的检查：
+
+| 检查 | 结果 |
+|---|---|
+| 原有逐 token 测试（公式、真实删除、chunk/reset 等价、因果性、无淘汰与 Qwen3 对齐、共享请求链路） | 全部通过（`merge_interval: 1`） |
+| 一步淘汰 5 个受害者（固定 Bernoulli 结果）与逐个淘汰 | K、V、分数一致 |
+| `merge_interval: 8`、预算放得下全部 token | 与 Qwen3 dense logits 一致 |
+| `merge_interval: 8`、预算 8 | 每步之后每层不超过 8 条 |
+| CaM 可超过训练窗口（位置为缓存槽位），Full KV 不可 | 通过 |
+| 64K / 128K 配置解析（Qwen3-1.7B 的 `config.json`） | 19,173 / 20,794 条；`long` 与 `ruler` 任务、样本 100、窗口与 RULER 长度；拒绝 dense/logkv 后端与 32K 套件 |
+| `majob.sh`（模拟解释器） | 64K 配置依次启动 `long` 与 `ruler` |
+
+### 未验证
+
+- torch218 本身中的运行；真实 Qwen3-1.7B 权重、CUDA 上的数值、显存与速度（`merge_interval: 2048` 的实际吞吐）。
+- 服务器离线缓存中 BABILong（64k / 128k 配置）、PG19 与 RULER 问答文件的实际读取；任何评测结果。
+- `majob.sh` 仍按旧方式决定每节点进程数（缺省 8），单节点不用 `--standalone`。
+
 ## 2026-10-15：项目独立化与统一评测协议
 
 改动：移除分支内的 DMS 方法代码；移除运行时对相邻 `../litgpt` 的全部依赖（评测代码、实验 YAML、`eval.sh`、

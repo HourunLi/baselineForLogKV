@@ -24,6 +24,11 @@ import yaml
 from .config import RUNTIME_ROOT, load_experiment_config
 
 DEFAULT_HF_CACHE = "/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache"
+# Requirements of the bundled protocol code and the shared offline cache, not a target environment: evaluation
+# adapts to SemanticLogKV's environment (torch218: lm-eval 0.4.11, datasets 4.8.4, transformers 4.51.3).
+# lm-eval 0.4.9 is the oldest release the protocol was checked against; the cache's IFEval entry uses the Json
+# feature type, which datasets reads from 4.7 on. Results record the exact versions.
+EVAL_LM_EVAL_MIN, EVAL_DATASETS_MIN = (0, 4, 9), (4, 7)
 TOKENIZER_NAMES = ("tokenizer.json", "tokenizer.model", "tokenizer_config.json", "special_tokens_map.json",
                    "added_tokens.json", "vocab.json", "merges.txt", "chat_template.jinja",
                    "generation_config.json")
@@ -42,13 +47,23 @@ def configure_environment():
     )
 
 
+def check_environment():
+    """Fail early when the installed packages cannot run the protocol or read the shared cache."""
+    for name, minimum, needed_by in (("lm-eval", EVAL_LM_EVAL_MIN, "The bundled evaluation protocol"),
+                                     ("datasets", EVAL_DATASETS_MIN, "The shared offline cache")):
+        found = importlib.metadata.version(name)
+        if tuple(int(part) for part in re.findall(r"\d+", found)[:len(minimum)]) < minimum:
+            raise RuntimeError(f"{needed_by} needs {name}>={'.'.join(map(str, minimum))}, found {found}; "
+                               "evaluate in SemanticLogKV's environment (torch218) without changing its packages")
+
+
 def load_evaluator(root=RUNTIME_ROOT):
     """Private evaluator instance with imports confined to the bundled runtime."""
-    if importlib.metadata.version("lm-eval") != "0.4.9":
-        raise RuntimeError("Shared evaluation requires lm-eval==0.4.9")
-    if int(importlib.metadata.version("datasets").split(".")[0]) >= 4:
-        raise RuntimeError("Use the shared evaluation environment (datasets<4)")
+    check_environment()
     configure_environment()
+    from models.cam.hf_cache_patch import apply_patch as skip_unfinished_downloads
+
+    skip_unfinished_downloads()  # offline loads ignore folders of downloads still running or interrupted
     spec = importlib.util.spec_from_file_location("models._vendor.semanticlogkv._evaluation", root / "eval.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -61,8 +76,30 @@ def load_evaluator(root=RUNTIME_ROOT):
     return module
 
 
-def load_eval_suite(path, suite):
+LONG_SUITES = ("long", "ruler")
+
+
+def load_context(path, context):
+    """Window, RULER length, long tasks, limit and data of a long context (None for 32k)."""
+    if context == "32k":
+        return None
+    config = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    try:
+        entry = dict(config["contexts"][context])
+    except (KeyError, TypeError) as error:
+        raise ValueError(f"{path} defines no long context {context!r}") from error
+    entry.update(ruler_tasks=list(config.get("ruler_tasks") or []), limit=config.get("long_limit"))
+    return entry
+
+
+def load_eval_suite(path, suite, context="32k"):
     """Read the project-owned snapshot of the reference shell scripts' task groups."""
+    if suite in LONG_SUITES:
+        entry = load_context(path, context)
+        tasks = entry["ruler_tasks"] if suite == "ruler" else list(entry["long_tasks"])
+        if not tasks:
+            raise ValueError(f"Evaluation suite {suite} has no tasks for {context} in {path}")
+        return ",".join(tasks), [int(entry["ruler_length"])]
     config = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     tasks = config["niah_tasks" if suite == "niah" else "main_tasks"]
     if suite == "longbench":
@@ -73,15 +110,19 @@ def load_eval_suite(path, suite):
     return ",".join(tasks), lengths
 
 
-def build_eval_kwargs(evaluator, source_config, model, backend, tasks, limit, output, max_seq_lengths=None):
+def build_eval_kwargs(evaluator, source_config, model, backend, tasks, limit, output, max_seq_lengths=None,
+                      long_context=None):
     source = load_experiment_config(source_config)
     # Preserve the configured spelling (including trailing slash) used by RULER metadata/cache keys.
     base = source["ckpt_dir"]
     context_length = int(source["context_length"])
     if context_length <= 0:
         raise ValueError("Experiment context_length must be positive")
+    if long_context is not None:  # SemanticLogKV's long-context window (eval_long*.yaml)
+        context_length = int(long_context["max_seq_length"])
     metadata = None
-    if any(task.startswith(("niah_", "ruler_")) for task in tasks.split(",")):
+    # long_ppl builds its samples with the tokenizer named in the same metadata.
+    if any(task.startswith(("niah_", "ruler_", "long_ppl")) for task in tasks.split(",")):
         lengths = [context_length] if max_seq_lengths is None else max_seq_lengths
         if not lengths or any(not isinstance(n, int) or n <= 0 or n > context_length for n in lengths):
             raise ValueError("NIAH lengths must be positive and within the experiment context_length")
@@ -173,7 +214,24 @@ def evaluated_model(evaluator, checkpoint_dir, backend):
     }
 
 
-def run_evaluation(evaluator, kwargs, backend, contract, resolved=None, result_metadata=None):
+def install_long_tasks(evaluator, include_path):
+    """Hand lm-eval a TaskManager that also finds the long-context task files, in this evaluator instance only."""
+    from types import SimpleNamespace
+
+    from lm_eval.tasks import TaskManager
+
+    harness = evaluator.evaluator
+
+    def simple_evaluate(*args, **kwargs):
+        if kwargs.get("task_manager") is None:
+            # lm-eval forwards ``metadata`` to tasks only through a TaskManager it is given.
+            kwargs["task_manager"] = TaskManager(include_path=str(include_path), metadata=kwargs.get("metadata"))
+        return harness.simple_evaluate(*args, **kwargs)
+    evaluator.evaluator = SimpleNamespace(**{name: getattr(harness, name) for name in dir(harness)
+                                             if not name.startswith("__")}, simple_evaluate=simple_evaluate)
+
+
+def run_evaluation(evaluator, kwargs, backend, contract, resolved=None, result_metadata=None, include_path=None):
     """Keep reference main's lifecycle/output, then attach baseline-owned provenance."""
     output = Path(kwargs["output_path"]).resolve()
     kwargs = {**kwargs, "output_path": str(output)}
@@ -183,6 +241,8 @@ def run_evaluation(evaluator, kwargs, backend, contract, resolved=None, result_m
     output.mkdir(parents=True, exist_ok=True)
     is_main = int(os.environ.get("RANK", "0")) == 0
     before = set(output.glob("eval_results_[0-9]*.json")) if is_main else set()
+    if include_path is not None:
+        install_long_tasks(evaluator, include_path)
     import datasets
 
     # map/filter caches otherwise share a filename across ranks on the mounted cache.
@@ -200,9 +260,8 @@ def run_evaluation(evaluator, kwargs, backend, contract, resolved=None, result_m
             raise
         raise RuntimeError(
             f"An offline cache entry under {os.environ.get('HF_DATASETS_CACHE')} was written by a newer "
-            f"`datasets` than the installed {importlib.metadata.version('datasets')}. The shared protocol "
-            "reads entries readable by datasets<4: repair or restore that entry instead of upgrading "
-            "datasets or switching data."
+            f"`datasets` than the installed {importlib.metadata.version('datasets')}: the environment has been "
+            "downgraded. Evaluate in torch218 (datasets 4.8.4) instead of converting the cache or switching data."
         ) from exc
     finally:
         os.chdir(previous_dir)

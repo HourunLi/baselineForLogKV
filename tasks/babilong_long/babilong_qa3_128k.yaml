@@ -1,0 +1,6 @@
+# BABILong qa3 at 128k tokens: lm-eval's babilong_qa3 with the context length in the task name.
+include: _qa3_base
+task: babilong_qa3_128k
+dataset_kwargs:
+  qa_split: qa3
+  length: 128k

@@ -57,3 +57,38 @@ niah_tasks:
 - niah_single_3
 niah_max_seq_lengths:
 - 32768
+
+# Long-context stages (64K / 128K): SemanticLogKV's eval_long{64k,128k}_*.yaml (HourunLi/LogKV niahLogKV@4615501).
+# --context 64k|128k fixes the model window (block_size there), YaRN (rope_adjustments there) and the RULER
+# length; the 'long' suite is its main stage (BABILong and long-document perplexity, task files under tasks/),
+# the 'ruler' suite its NIAH stage (all 13 RULER tasks). Every task takes the first long_limit samples.
+# long_ppl_data is PG19's test set as SemanticLogKV uses it (LONG_PPL_DATA in the environment wins).
+# CaM's RoPE positions are cache slots, so the cam backend uses the window but no rope_scaling.
+ruler_tasks:
+- niah_single_1
+- niah_single_2
+- niah_single_3
+- niah_multikey_1
+- niah_multikey_2
+- niah_multikey_3
+- niah_multivalue
+- niah_multiquery
+- ruler_vt
+- ruler_cwe
+- ruler_fwe
+- ruler_qa_squad
+- ruler_qa_hotpot
+long_limit: 100
+contexts:
+  64k:
+    max_seq_length: 66560
+    ruler_length: 65536
+    rope_scaling: {factor: 2.0, beta_fast: 32, beta_slow: 1, original_max_seq_len: 32768}
+    long_tasks: [babilong_64k, long_ppl_32k, long_ppl_64k]
+    long_ppl_data: /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache/hub/datasets--emozilla--pg19-test/snapshots/c5e39bf32e33f9111323aa68d7d9000d22722035
+  128k:
+    max_seq_length: 132096
+    ruler_length: 131072
+    rope_scaling: {factor: 4.0, beta_fast: 32, beta_slow: 1, original_max_seq_len: 32768}
+    long_tasks: [babilong_128k, long_ppl_128k]
+    long_ppl_data: /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache/hub/datasets--emozilla--pg19-test/snapshots/c5e39bf32e33f9111323aa68d7d9000d22722035
