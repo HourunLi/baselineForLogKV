@@ -17,6 +17,13 @@ chunks; the next ``N - 1`` layers reuse those indices (Algorithm 2).
 The window is not entered into the chunk competition and is appended exactly
 once, which is Algorithm 1's "replace the last w selected tokens by the window"
 without duplicated entries; up to ``chunk_size - 1`` budget entries stay unused.
+
+Streaming (``settings.streaming``, the 64K / 128K stages): the model feeds the prompt in chunks and every
+forward (a prompt chunk or a decode step) ends with a selection over the kept entries plus the forward's
+tokens. The forward's last ``window_size`` queries (all of them when fewer) score every entry; the newest
+``window_size`` entries are the window; the older ones form chunks by absolute position (``position //
+chunk_size``, the same grid as the one-shot selection), and the best chunks are kept in score order while
+they fit ``budget - window``. A chunk the window has partly overtaken competes with its older members only.
 """
 
 import math
@@ -63,6 +70,43 @@ def select_chunks(scores: torch.Tensor, chunk_size: int, n_chunks: int) -> torch
     chosen = torch.sort(chunk_scores, descending=True, stable=True).indices[:n_chunks].sort().values
     positions = (chosen[:, None] * chunk_size + torch.arange(chunk_size, device=scores.device)).flatten()
     return positions[positions < prefix]
+
+
+def window_scores(q: torch.Tensor, k: torch.Tensor, scale: float) -> torch.Tensor:
+    """Attention every one of the ``L`` entries receives from the ``n`` queries of ``q``, summed over queries
+    and heads. The queries are the last ``n`` entries' own (causal). ``q``: (B, n_head, n, hs) after RoPE,
+    ``k``: (B, n_query_groups, L, hs) after RoPE. Returns float32 (B, L)."""
+    batch, n_head, n, head_size = q.shape
+    n_groups, length = k.size(1), k.size(2)
+    hidden = torch.ones(n, length, dtype=torch.bool, device=q.device).tril(diagonal=length - n).logical_not()
+    queries = q.float().view(batch, n_groups, n_head // n_groups, n, head_size)
+    scores = torch.zeros(batch, length, device=q.device, dtype=torch.float32)
+    for group in range(n_groups):
+        logits = queries[:, group] @ k[:, group, None].float().transpose(-1, -2) * scale
+        scores += logits.masked_fill(hidden, float("-inf")).softmax(dim=-1).sum(dim=(1, 2))
+    return scores
+
+
+def streaming_keep(scores: torch.Tensor, positions: torch.Tensor, settings: ChunkKVSettings) -> tuple[torch.Tensor, int]:
+    """Indices (position order) of the entries a streaming layer keeps, and how many are chunk tokens.
+
+    ``scores`` and ``positions`` (ascending) describe the layer's ``L`` entries, the forward's tokens last.
+    """
+    length = positions.numel()
+    window = min(settings.window_size, length)
+    older = length - window
+    chunk_ids = torch.div(positions[:older], settings.chunk_size, rounding_mode="floor")
+    _, member_of, sizes = torch.unique_consecutive(chunk_ids, return_inverse=True, return_counts=True)
+    chunk_scores = torch.zeros(sizes.numel(), device=scores.device, dtype=torch.float32)
+    chunk_scores.index_add_(0, member_of, scores[:older].float())
+    # Stable sort: equal scores keep the earlier chunk, as in the one-shot selection.
+    order = torch.sort(chunk_scores, descending=True, stable=True).indices
+    taken = order[torch.cumsum(sizes[order], dim=0) <= settings.budget - window]
+    chosen = torch.zeros(sizes.numel(), dtype=torch.bool, device=scores.device)
+    chosen[taken] = True
+    kept = torch.nonzero(chosen[member_of]).flatten()
+    window_positions = torch.arange(older, length, device=scores.device)
+    return torch.cat((kept, window_positions)), kept.numel()
 
 
 def keep_indices(scores: torch.Tensor, prompt_len: int, settings: ChunkKVSettings) -> tuple[torch.Tensor, int]:

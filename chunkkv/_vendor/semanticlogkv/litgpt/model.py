@@ -1883,16 +1883,17 @@ def build_rope_cache(
             beta_slow = extra_config["beta_slow"]
             original_max_seq_len = extra_config["original_max_seq_len"]
 
-            # Calculate attention scaling factor based on mscale and mscale_all_dim
+            # Attention scaling as transformers' _compute_yarn_parameters: an explicit attention_factor,
+            # else mscale / mscale_all_dim when both are given, else 0.1 * ln(factor) + 1 (the YaRN
+            # paper's temperature, which Qwen's rope_scaling relies on).
             mscale = extra_config.get("mscale")
             mscale_all_dim = extra_config.get("mscale_all_dim")
-            if mscale and mscale_all_dim:
+            if extra_config.get("attention_factor") is not None:
+                attention_scaling = float(extra_config["attention_factor"])
+            elif mscale and mscale_all_dim:
                 attention_scaling = yarn_get_mscale(factor, mscale) / yarn_get_mscale(factor, mscale_all_dim)
-            elif mscale_all_dim:
-                attention_scaling = yarn_get_mscale(factor, mscale_all_dim)
-            elif mscale:
-                attention_scaling = yarn_get_mscale(factor, mscale)
-            # else: attention_scaling remains 1.0
+            else:
+                attention_scaling = yarn_get_mscale(factor, 1.0)
 
             # Create two frequency sets: extrapolation (unscaled) and interpolation (scaled)
             pos_freqs = base ** (torch.arange(0, n_elem, 2, device=device).float() / n_elem)
@@ -1913,7 +1914,7 @@ def build_rope_cache(
                 high_dim = math.ceil(high_dim)
 
             low_dim = max(low_dim, 0)
-            high_dim = min(high_dim, n_elem // 2 - 1)
+            high_dim = min(high_dim, n_elem - 1)
 
             # Create linear ramp factor for blending
             dim_range = torch.arange(n_elem // 2, device=device, dtype=torch.float32)
@@ -1923,9 +1924,11 @@ def build_rope_cache(
             linear_func = (dim_range - low_dim) / (high_dim - low_dim)
             ramp_func = torch.clamp(linear_func, 0.0, 1.0)
 
-            # Blend extrapolation and interpolation frequencies
-            # ramp_func = 0 -> use interpolation (scaled), ramp_func = 1 -> use extrapolation (unscaled)
-            theta_extrapolation_factor = ramp_func
+            # Blend extrapolation and interpolation frequencies: the high-frequency dimensions below
+            # low_dim (more than beta_fast rotations over the original context) keep their frequency,
+            # those above high_dim (under beta_slow rotations) are interpolated, as in YaRN and in
+            # transformers (ramp_func = 0 -> extrapolation, unscaled; 1 -> interpolation, scaled).
+            theta_extrapolation_factor = 1.0 - ramp_func
             theta = (
                 theta_interpolation * (1 - theta_extrapolation_factor)
                 + theta_extrapolation * theta_extrapolation_factor

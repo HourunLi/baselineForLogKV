@@ -45,15 +45,17 @@ def make_chunkkv_lm(evaluator, options):
     """Implement the reference LM interface, inheriting its request and scoring methods.
 
     ``options`` holds ChunkKVSettings fields; ``budget: "logkv"`` sizes the prompt
-    budget from the persistent cache bytes of the experiment's LogKV cache.
+    budget from the persistent cache bytes of the experiment's LogKV cache, ``budget_bytes`` (64K / 128K)
+    from a given byte total: the most entries per layer whose K/V across the KV groups and, when streaming,
+    the shared int64 position fit it.
     """
     class ChunkKVLM(evaluator.LogKVLM):
         def __init__(self, checkpoint_dir, device="cuda", config_overrides=None,
                      log_kv_dense_mode=False, swa_window_size=None, **kwargs):
             if log_kv_dense_mode or swa_window_size is not None:
                 raise ValueError("ChunkKV cannot be combined with LogKV dense/SWA switches")
-            if set(config_overrides or {}) != {"block_size"}:
-                raise ValueError("ChunkKV requires the explicit shared block_size")
+            if set(config_overrides or {}) not in ({"block_size"}, {"block_size", "rope_adjustments"}):
+                raise ValueError("ChunkKV requires the explicit shared block_size (and YaRN for 64K / 128K)")
             # The reference constructor loads tokenizer, LitGPT config and weights;
             # dense mode only means it skips LogKV-specific model setup.
             super().__init__(checkpoint_dir, device=device, config_overrides=config_overrides,
@@ -61,14 +63,21 @@ def make_chunkkv_lm(evaluator, options):
             verify_checkpoint_keys(checkpoint_dir, self.model)
             dtype = next(self.model.parameters()).dtype
             per_token = kv_bytes_per_token(self.config, dtype)
-            budget, source = options.get("budget"), "prompt_ratio"
+            method_options = dict(options)
+            budget_bytes = method_options.pop("budget_bytes", None)
+            # A streaming layer also keeps one int64 position per entry (shared by its KV groups).
+            per_entry = per_token + (self.config.n_layer * 8 if method_options.get("streaming") else 0)
+            budget, source = method_options.get("budget"), "prompt_ratio"
             reference_bytes = None
             if budget == "logkv":
                 reference_bytes = self._reference_logkv_bytes()
-                budget, source = reference_bytes // per_token, "logkv_persistent_bytes"
+                budget, source = reference_bytes // per_entry, "logkv_persistent_bytes"
+            elif budget == "bytes":
+                reference_bytes = int(budget_bytes)
+                budget, source = reference_bytes // per_entry, "budget_bytes"
             elif budget is not None:
                 source = "explicit_tokens"
-            settings = ChunkKVSettings(**{**options, "budget": budget})
+            settings = ChunkKVSettings(**{**method_options, "budget": budget})
             self.model = ChunkKVModel(self.model, settings)
             self.log_kv_dense_mode, self.swa_window_size = False, None
             self.cache_budget = {
@@ -79,6 +88,11 @@ def make_chunkkv_lm(evaluator, options):
                 "decode_tokens": "appended uncompressed after the compressed prompt",
                 "chunkkv": settings.as_dict(),
             }
+            if settings.streaming:
+                # Every layer holds at most `budget` entries for the whole request, decode steps included.
+                self.cache_budget.update(allocation="fixed", persistent_cache_bytes=settings.budget * per_entry,
+                                         bytes_per_entry=per_entry,
+                                         decode_tokens="selected with the prompt: the budget holds throughout")
             if evaluator._is_main():
                 print(f"🧮 ChunkKV cache budget: {self.cache_budget}")
 

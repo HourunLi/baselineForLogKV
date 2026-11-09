@@ -11,6 +11,10 @@ passes the last prompt token, loglikelihood scoring passes the last context
 token. Tokens up to that position are the compressed prompt; the remaining
 continuation is forwarded against the compressed cache. When the prompt fits
 the budget nothing is compressed and the whole call is one dense forward.
+
+With ``settings.streaming`` (64K / 128K) every request is fed ``prefill_chunk_size`` tokens at a time; each
+layer attends over its kept entries plus the chunk and then selects back to the budget
+(``core.streaming_keep``), so it never holds more than budget + one chunk, decode steps included.
 """
 
 import torch
@@ -18,7 +22,7 @@ from torch import nn
 
 from chunkkv._vendor.semanticlogkv.litgpt.model import CausalSelfAttention, apply_rope, apply_rope_interleave
 
-from .core import ChunkKVSettings, keep_indices, observation_scores
+from .core import ChunkKVSettings, keep_indices, observation_scores, streaming_keep, window_scores
 
 
 def check_supported(config) -> None:
@@ -60,7 +64,7 @@ class ChunkKVAttention(nn.Module):
         self.release()
 
     def release(self) -> None:
-        self.keys = self.values = None
+        self.keys = self.values = self.positions = None
         self.length = self.chunk_tokens = 0
 
     def project(self, x, cos, sin):
@@ -90,6 +94,8 @@ class ChunkKVAttention(nn.Module):
 
     def forward(self, x, cos, sin, mask=None, input_pos=None, input_pos_maxp1=None):
         q, k, v = self.project(x, cos, sin)
+        if self.request.settings.streaming:
+            return self.stream(q, k, v, input_pos)
         if self.keys is None:
             # Prompt prefill: the prompt itself always sees its full causal context.
             y = self.attend(q, k, v, None)
@@ -101,6 +107,42 @@ class ChunkKVAttention(nn.Module):
         cached = keys.size(2) - k.size(2)
         visible = torch.ones(k.size(2), keys.size(2), dtype=torch.bool, device=x.device).tril(diagonal=cached)
         return self.attend(q, keys, values, visible[None, None])
+
+    def stream(self, q, k, v, input_pos):
+        """Attend over the kept entries and this forward's tokens, then select back to the budget."""
+        settings = self.request.settings
+        if self.keys is None:
+            shape = (*k.shape[:2], settings.budget + k.size(2), k.size(3))
+            self.keys, self.values = k.new_empty(shape), v.new_empty(shape)
+            self.positions = input_pos.new_empty(settings.budget + k.size(2))
+        before = self.length
+        keys, values = self.append(k, v)
+        if self.positions.numel() < self.keys.size(2):  # append grew the K/V buffers
+            grown = self.positions.new_empty(self.keys.size(2))
+            grown[:before] = self.positions[:before]
+            self.positions = grown
+        self.positions[before:self.length] = input_pos
+        cached = keys.size(2) - k.size(2)
+        visible = torch.ones(k.size(2), keys.size(2), dtype=torch.bool, device=q.device).tril(diagonal=cached)
+        y = self.attend(q, keys, values, visible[None, None])
+        if self.length > settings.budget:
+            request = self.request
+            if request.indices is None or settings.scores_layer(self.layer_idx):
+                config = self.inner.config
+                scale = (config.attention_scores_scalar or config.head_size) ** -0.5 * self.inner.mscale ** 2
+                observed = q[:, :, -min(settings.window_size, q.size(2)):]
+                scores = window_scores(observed, keys, scale)
+                request.indices, request.chunk_tokens = streaming_keep(
+                    scores[0], self.positions[:self.length], settings)
+            # Layers of one reuse group hold the same positions, so the scoring layer's indices apply.
+            keep, n = request.indices, request.indices.numel()
+            self.keys[:, :, :n] = keys.index_select(2, keep)
+            self.values[:, :, :n] = values.index_select(2, keep)
+            self.positions[:n] = self.positions[:self.length].index_select(0, keep)
+            self.length, self.chunk_tokens = n, request.chunk_tokens
+        else:
+            self.chunk_tokens = max(0, self.length - min(settings.window_size, self.length))
+        return y
 
     def compress(self, q, k, v):
         request, settings = self.request, self.request.settings
@@ -182,6 +224,8 @@ class ChunkKVModel(nn.Module):
             raise ValueError("ChunkKV needs contiguous, append-only input positions")
         if self.processed + length > self.max_seq_length:
             raise ValueError("Request exceeds the model window")
+        if self.settings.streaming:
+            return self._stream(idx, input_pos, lm_head_start)
         if self.processed:
             return self._run(idx, input_pos, lm_head_start, compress=False)
         prompt = length if lm_head_start is None else lm_head_start + 1
@@ -195,6 +239,18 @@ class ChunkKVModel(nn.Module):
         rest = self._run(idx[:, prompt:], input_pos[prompt:], 0, compress=False)
         return torch.cat((logits, rest), dim=1)
 
+    def _stream(self, idx, input_pos, lm_head_start):
+        """Forward in chunks of prefill_chunk_size; logits from lm_head_start (relative to this call) on."""
+        start_logits = 0 if lm_head_start is None else lm_head_start
+        chunk, logits = self.settings.prefill_chunk_size, []
+        for start in range(0, idx.size(1), chunk):
+            end = min(start + chunk, idx.size(1))
+            head = max(0, start_logits - start) if end > start_logits else None
+            out = self._run(idx[:, start:end], input_pos[start:end], head, compress=True)
+            if out is not None:
+                logits.append(out)
+        return torch.cat(logits, dim=1)
+
     def _run(self, idx, input_pos, lm_head_start, compress):
         gpt = self.gpt
         self.request.begin(compress)
@@ -206,6 +262,8 @@ class ChunkKVModel(nn.Module):
         for block in gpt.transformer.h:
             x = block(x, cos, sin, None, input_pos, None)
         self.processed += idx.size(1)
+        if self.settings.streaming and lm_head_start is None:
+            return None  # a prompt chunk before the logits span
         if lm_head_start is not None:
             x = x[:, lm_head_start:]
         return gpt.lm_head(gpt.transformer.ln_f(x))

@@ -82,5 +82,6 @@ def test_settings_validation_and_reuse_schedule():
         ChunkKVSettings(keep_ratio=0)
     settings = ChunkKVSettings(budget=128, reuse_layers=3)
     assert [layer for layer in range(8) if settings.scores_layer(layer)] == [0, 3, 6]
-    assert settings.as_dict() == dict(chunk_size=10, window_size=64, budget=128, keep_ratio=None, reuse_layers=3)
+    assert settings.as_dict() == dict(chunk_size=10, window_size=64, budget=128, keep_ratio=None, reuse_layers=3,
+                                      streaming=False, prefill_chunk_size=None)
     assert math.ceil(0.1 * 32768) == ChunkKVSettings(keep_ratio=0.1).prompt_budget(32768)

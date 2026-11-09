@@ -9,7 +9,8 @@
     "Private module namespace for all local imports and Config model references.",
     "Minimal litgpt package exports Config, GPT and Tokenizer; no API or CLI package.",
     "HF cache BASE accepts CHUNKKV_HF_CACHE.",
-    "Legacy litgpt.prompts class paths resolve to the bundled prompts module."
+    "Legacy litgpt.prompts class paths resolve to the bundled prompts module.",
+    "litgpt/model.py build_rope_cache: SemanticLogKV's YaRN fix (HourunLi/LogKV b749072, as of niahLogKV@4615501) backported for the 64K/128K stages: the ramp keeps the fast dimensions and interpolates the slow ones, the attention temperature defaults to 0.1*ln(factor)+1, and high_dim is clamped to n_elem-1, as transformers' _compute_yarn_parameters does. 32K runs use no rope_adjustments and are unaffected."
   ],
   "source_sha256": {
     "data.py": "de82dcc1680702866190fe304ddcbcfa509c69bd776a90936d2147c74632560c",
@@ -84,5 +85,8 @@
     "litgpt/generate/__init__.py",
     "litgpt/scripts/__init__.py",
     "README.md"
-  ]
+  ],
+  "modified_sha256": {
+    "litgpt/model.py": "515264775d7ab5fcfb980153d5854528c60a08b7cc5f065da737528f60d5cc6f"
+  }
 }

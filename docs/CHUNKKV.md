@@ -94,6 +94,39 @@ ChunkKV 是固定预算方法（与 N 无关），SemanticLogKV 是 `O(log N)`�
 字节对齐给 ChunkKV 的预算相当宽松（参考 LogKV 的持久分配包含空槽、recent 双缓冲、原始 K 副本等）；
 条目对齐更接近论文 "同 KV 条目数" 的比较。建议两者都报，并用 `compare_results` 输出的实际保留比例核对。
 
+## 64K / 128K 长文本（流式、同内存）
+
+口径与 SemanticLogKV 的 `eval_long{64k,128k}_*.yaml` 相同（[规范第 6.1 节](BASELINE_IMPLEMENTATION_GUIDE.md)）：`--context 64k|128k` 从
+`configs/chunkkv/eval_semantic_default.yaml` 的 `contexts` 取模型窗口（66560 / 132096）、YaRN（factor 2 / 4，原长 32768）、RULER 长度
+（65536 / 131072）与 PG19 测试集路径；`long` 阶段跑 BABILong qa1–qa5 与长文档困惑度，`ruler` 阶段跑全部 13 个 RULER 任务，每任务前 100 条。
+BABILong 与困惑度的任务文件逐字复制自 SemanticLogKV（`tasks/`，来源与哈希见 `tasks/SOURCE.json`），只在本项目的私有评测实例里交给
+lm-eval 的 `TaskManager`；困惑度选出的文档缓存与 SemanticLogKV 共用。方法配置默认取 `configs/chunkkv/qwen3_1.7b_<context>.yaml`。
+长文本只跑 ChunkKV 后端：SemanticLogKV 与 Full KV 用它自己的 `eval_long*` 配置评测。
+
+| | 64K | 128K |
+|---|---|---|
+| 预算字节（SemanticLogKV 该窗口的已分配持久缓存） | 2,216,205,824 | 2,403,505,664 |
+| 每条目字节（全部层与 KV group 的 K、V，bf16，加每层一个 int64 位置） | 114,912 | 114,912 |
+| 每层每个 KV head 的条目 | 19,286 | 20,916 |
+
+**流式 ChunkKV**（`streaming: true`）：请求按 `prefill_chunk_size`（2048，与 SemanticLogKV 的 prefill_block 相同）逐块前向；每层读
+[保留条目 + 本块（因果）]，然后用本块最后 `window_size` 个 query（解码时为当前一个）对全部条目打分（窗口内求和、对所有 head 求和，一层一组
+选择），最新 `window_size` 个条目原样保留，较早条目按绝对位置分块（`位置 // chunk_size`，与一次性选择同一网格），按块分数从高到低
+保留放得下 `budget - window` 的整块；被窗口部分越过的块只以较早的成员参与。`reuse_layers` 的层间索引复用照旧（同组各层保存相同位置）。
+任何时刻每层不超过预算加一个块；按块前向时激活与工作区也只随块长增长。32K 配置仍是整段预填充后压缩一次，不受影响。
+
+**YaRN**：参照快照（4fd97c7）的 `build_rope_cache` 有 SemanticLogKV 之后修正的 YaRN 错误（插值方向反了、默认没有注意力温度）。本项目把
+SemanticLogKV 的修正（b749072）补进快照的 `litgpt/model.py`，与 transformers 的 `_compute_yarn_parameters` 一致（有测试），并记录在
+`SOURCE.json` 的 `changes` 与 `modified_sha256`。32K 不用 `rope_adjustments`，不受影响。
+
+```bash
+bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml --context 64k --output outputs/chunkkv-64k    # long，然后 ruler
+bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml --context 128k --output outputs/chunkkv-128k
+python -m chunkkv.evaluate --context 64k --suite ruler --limit 4 --output outputs/chunkkv-64k-check      # 小样本检查
+```
+
+结果的 `cache_budget` 记录预算来源（`budget_bytes`）、每层条目数与固定分配的持久字节，`kv_compression` 记录实际保留条目与压缩比。
+
 ## 可选：同数据 dense CPT 对照（训练接口）
 
 ChunkKV 不需要训练，主表行应为 "Base + ChunkKV"。SemanticLogKV 是在 Base 上做 32K prolong CPT 后的
@@ -331,6 +364,13 @@ python -m chunkkv.check_dataset_cache \
 datasets 写的单行 JSON。`--quarantine` 不会移动这类条目，修复方式取决于检查结果，修改共享缓存前需确认没有其他作业在读写。
 
 ## 验证记录
+
+2026-11-09 64K / 128K 长文本与流式 ChunkKV。CPU 开发环境（torch 2.15、transformers 5.22、lm-eval 0.4.13，不是 torch218）中
+`python -m pytest -q tests/chunkkv`：**90 passed、1 skipped**（改动前 75 passed）。新增用例：补进快照的 YaRN 与 transformers 一致
+（factor 2 与 4）；流式 ChunkKV 在预算放得下全部 token 时与 LitGPT dense 推理一致；预算 20、窗口 4、块长 8 时每次前向后每层不超过
+预算、窗口为最新 token、`reuse_layers=2` 的同组层选择相同；整块选择按分数并保留窗口；64K / 128K 的预算由字节换算为 19,286 / 20,916 条；
+`--context` 的窗口、YaRN、任务、样本数与 metadata；长文本拒绝 dense/logkv 后端；`majob.sh --context 64k` 依次启动 `long` 与 `ruler`。
+未在 torch218、真实权重、CUDA 或服务器离线缓存（BABILong 64k / 128k、PG19、RULER 问答文件）上运行，没有任何 64K / 128K 评测结果。
 
 2026-10-16 单节点训练作业在 main 阶段报 `EADDRINUSE`（`static_tcp_rendezvous.py` 的 `TCPStore`，端口 6001），
 尚未加载模型。单节点改用 `torchrun --standalone` 自动绑定空闲端口；多节点仍用固定端口（见“rendezvous 端口占用”）。

@@ -13,6 +13,10 @@ class ChunkKVSettings:
     # Alternative to ``budget``: ceil(keep_ratio * prompt length) entries.
     keep_ratio: float | None = None
     reuse_layers: int = 1
+    # Streaming: forwards of at most prefill_chunk_size tokens, each followed by a selection back to the
+    # budget, so a layer never holds more than budget + one chunk (the 64K / 128K stages).
+    streaming: bool = False
+    prefill_chunk_size: int | None = None
 
     def __post_init__(self):
         if self.chunk_size < 1 or self.window_size < 1 or self.reuse_layers < 1:
@@ -23,6 +27,10 @@ class ChunkKVSettings:
             raise ValueError("budget must hold the observation window and at least one chunk")
         if self.keep_ratio is not None and not 0 < self.keep_ratio <= 1:
             raise ValueError("keep_ratio must be in (0, 1]")
+        if self.prefill_chunk_size is not None and self.prefill_chunk_size < 1:
+            raise ValueError("prefill_chunk_size must be positive")
+        if self.streaming and (self.budget is None or not self.prefill_chunk_size):
+            raise ValueError("streaming needs a fixed budget and prefill_chunk_size")
 
     def prompt_budget(self, prompt_len: int) -> int:
         if self.budget is not None:

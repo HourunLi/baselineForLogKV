@@ -1,4 +1,10 @@
-"""ChunkKV, SemanticLogKV and Full-KV through the project-owned evaluation runtime."""
+"""ChunkKV, SemanticLogKV and Full-KV through the project-owned evaluation runtime.
+
+``--context 64k|128k`` runs SemanticLogKV's long-context stages with ChunkKV instead of the 32K suites: the
+window, YaRN, RULER length and data come from the evaluation config's ``contexts``, the 'long' suite (BABILong
+and long-document perplexity, task files under ``tasks/``) and the 'ruler' suite (13 RULER tasks) take 100
+samples per task, and the method settings default to ``configs/chunkkv/qwen3_1.7b_<context>.yaml``.
+"""
 
 import argparse
 import ast
@@ -24,8 +30,13 @@ DEFAULT_ROOT = RUNTIME_ROOT
 DEFAULT_CONFIG = DEFAULT_EXPERIMENT_CONFIG
 DEFAULT_CHUNKKV_CONFIG = BASELINE_ROOT / "configs/chunkkv/qwen3_1.7b_32k.yaml"
 DEFAULT_EVALUATION_CONFIG = BASELINE_ROOT / "configs/chunkkv/eval_semantic_default.yaml"
-CHUNKKV_FIELDS = ("chunk_size", "window_size", "budget", "keep_ratio", "reuse_layers")
+CHUNKKV_FIELDS = ("chunk_size", "window_size", "budget", "keep_ratio", "reuse_layers", "streaming",
+                  "prefill_chunk_size", "budget_bytes")
 BACKENDS = ("chunkkv", "logkv", "dense")
+CONTEXTS = ("32k", "64k", "128k")
+SUITES, LONG_SUITES = ("main", "longbench", "niah", "long", "ruler"), ("long", "ruler")
+# Project copies of SemanticLogKV's long-context task files (BABILong by length, long-document perplexity).
+LONG_TASKS_DIR = BASELINE_ROOT / "tasks"
 # Requirements of the bundled protocol code and the shared offline cache, not a target environment:
 # evaluation adapts to SemanticLogKV's environment (torch218: lm-eval 0.4.11, datasets 4.8.4 at the
 # time of writing). lm-eval 0.4.9 is the oldest release the protocol was checked against; the cache's
@@ -62,6 +73,9 @@ def load_evaluator(root=RUNTIME_ROOT):
     # Checked before the evaluator imports them; the exact versions are recorded in every result.
     check_environment()
     configure_environment()
+    from .hf_cache_patch import apply_patch as skip_unfinished_downloads
+
+    skip_unfinished_downloads()  # offline loads ignore folders of downloads still running or interrupted
     spec = importlib.util.spec_from_file_location(
         "chunkkv._vendor.semanticlogkv._evaluation", root / "eval.py")
     module = importlib.util.module_from_spec(spec)
@@ -92,14 +106,27 @@ def load_chunkkv_options(path, overrides):
         options.pop("budget", None)
     if "budget" in given:
         options.pop("keep_ratio", None)
-    options = {**{field.name: field.default for field in fields(ChunkKVSettings)}, **options, **given}
-    if isinstance(options["budget"], str) and options["budget"] != "logkv":
+    if "budget" in given or "keep_ratio" in given:
+        options.pop("budget_bytes", None)
+    options = {**{field.name: field.default for field in fields(ChunkKVSettings)}, "budget_bytes": None,
+               **options, **given}
+    if options["budget_bytes"] is not None:
+        # Entries are sized from the model's K/V (and position) bytes once it is loaded.
+        if options["budget"] not in (None, "bytes") or options["keep_ratio"] is not None:
+            raise ValueError("budget_bytes sets the budget; drop budget and keep_ratio")
+        options["budget"] = "bytes"
+    if isinstance(options["budget"], str) and options["budget"] not in ("logkv", "bytes"):
         options["budget"] = int(options["budget"])
-    byte_matched = options["budget"] == "logkv"
+    byte_matched = options["budget"] in ("logkv", "bytes")
     if byte_matched and options["keep_ratio"] is not None:
         raise ValueError("Set exactly one of budget and keep_ratio")
+    if options["budget"] != "bytes" and options["budget_bytes"] is None:
+        options.pop("budget_bytes")
     # The byte-matched budget needs the loaded model; validate every other field now.
-    ChunkKVSettings(**{**options, **({"budget": None, "keep_ratio": 1.0} if byte_matched else {})})
+    check = {key: value for key, value in options.items() if key != "budget_bytes"}
+    if byte_matched:
+        check.update(budget=10 ** 9) if check.get("streaming") else check.update(budget=None, keep_ratio=1.0)
+    ChunkKVSettings(**check)
     return options
 
 
@@ -118,8 +145,27 @@ def slot_matched_budget(path):
                           "retained_slots_per_layer_group": entries, "requests": stats["request_count"]}
 
 
-def load_eval_suite(path, suite):
+def load_context(path, context):
+    """Window, YaRN, RULER length, long tasks, limit and data of a long context (None for 32k)."""
+    if context == "32k":
+        return None
+    config = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    try:
+        entry = dict(config["contexts"][context])
+    except (KeyError, TypeError) as error:
+        raise ValueError(f"{path} defines no long context {context!r}") from error
+    entry.update(ruler_tasks=list(config.get("ruler_tasks") or []), limit=config.get("long_limit"))
+    return entry
+
+
+def load_eval_suite(path, suite, context="32k"):
     """Read a project-owned snapshot of the reference shell scripts' task groups."""
+    if suite in LONG_SUITES:
+        entry = load_context(path, context)
+        tasks = entry["ruler_tasks"] if suite == "ruler" else list(entry["long_tasks"])
+        if not tasks:
+            raise ValueError(f"Evaluation suite {suite} has no tasks for {context} in {path}")
+        return ",".join(tasks), [int(entry["ruler_length"])]
     config = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     tasks = config["niah_tasks" if suite == "niah" else "main_tasks"]
     if suite == "longbench":
@@ -131,7 +177,7 @@ def load_eval_suite(path, suite):
 
 
 def build_eval_kwargs(evaluator, source_config, model, backend, tasks, limit, output, options=None,
-                      max_seq_lengths=None):
+                      max_seq_lengths=None, long_context=None):
     source = load_experiment_config(source_config)
     # Preserve the configured spelling (including trailing slash) used by RULER metadata/cache keys.
     base = source["ckpt_dir"]
@@ -142,8 +188,13 @@ def build_eval_kwargs(evaluator, source_config, model, backend, tasks, limit, ou
     context_length = int(source["context_length"])
     if context_length <= 0:
         raise ValueError("Experiment context_length must be positive")
+    overrides = {"block_size": context_length}
+    if long_context is not None:  # SemanticLogKV's long-context window and YaRN (eval_long*.yaml)
+        context_length = int(long_context["max_seq_length"])
+        overrides = {"block_size": context_length, "rope_adjustments": dict(long_context["rope_scaling"])}
     metadata = None
-    if any(task.startswith(("niah_", "ruler_")) for task in tasks.split(",")):
+    # long_ppl builds its samples with the tokenizer named in the same metadata.
+    if any(task.startswith(("niah_", "ruler_", "long_ppl")) for task in tasks.split(",")):
         lengths = [context_length] if max_seq_lengths is None else max_seq_lengths
         if not lengths or any(not isinstance(n, int) or n <= 0 or n > context_length for n in lengths):
             raise ValueError("NIAH lengths must be positive and within the experiment context_length")
@@ -164,7 +215,7 @@ def build_eval_kwargs(evaluator, source_config, model, backend, tasks, limit, ou
         kwargs["log_kv_dense_mode"] = True
     kwargs.update(
         checkpoint_dir=str(model), tokenizer_dir=str(base),
-        config_overrides={"block_size": context_length}, benchmark=tasks, limit=limit,
+        config_overrides=overrides, benchmark=tasks, limit=limit,
         metadata=metadata,
         output_path=str(output),
     )
@@ -196,6 +247,7 @@ def comparison_contract(root, source_config, kwargs):
                   ("HF_HOME", "HF_DATASETS_CACHE", "HF_HUB_CACHE", "RULER_CACHE_DIR")},
         "benchmark": kwargs["benchmark"], "metadata": kwargs["metadata"],
         "limit": kwargs["limit"], "max_seq_length": kwargs["config_overrides"]["block_size"],
+        "rope_adjustments": kwargs["config_overrides"].get("rope_adjustments"),
     }
 
 
@@ -236,6 +288,23 @@ def evaluated_model(evaluator, checkpoint_dir):
     return record
 
 
+def install_long_tasks(evaluator, include_path):
+    """Hand lm-eval a TaskManager that also finds the long-context task files, in this evaluator instance only."""
+    from types import SimpleNamespace
+
+    from lm_eval.tasks import TaskManager
+
+    harness = evaluator.evaluator
+
+    def simple_evaluate(*args, **kwargs):
+        if kwargs.get("task_manager") is None:
+            # lm-eval forwards ``metadata`` to tasks only through a TaskManager it is given.
+            kwargs["task_manager"] = TaskManager(include_path=str(include_path), metadata=kwargs.get("metadata"))
+        return harness.simple_evaluate(*args, **kwargs)
+    evaluator.evaluator = SimpleNamespace(**{name: getattr(harness, name) for name in dir(harness)
+                                             if not name.startswith("__")}, simple_evaluate=simple_evaluate)
+
+
 def install_chunkkv_adapter(evaluator, options):
     """Bind ChunkKV only inside this private evaluator instance, not the litgpt package."""
     from .semanticlogkv_eval import compression_snapshot, make_chunkkv_lm
@@ -251,7 +320,8 @@ def install_chunkkv_adapter(evaluator, options):
     evaluator.print = print_backend
 
 
-def run_evaluation(evaluator, kwargs, backend, contract, options=None, budget_reference=None, resolved=None):
+def run_evaluation(evaluator, kwargs, backend, contract, options=None, budget_reference=None, resolved=None,
+                   include_path=None):
     """Keep reference main's lifecycle/output, then attach baseline-owned provenance."""
     output = Path(kwargs["output_path"]).resolve()
     kwargs = {**kwargs, "output_path": str(output)}
@@ -263,6 +333,8 @@ def run_evaluation(evaluator, kwargs, backend, contract, options=None, budget_re
     before = set(output.glob("eval_results_[0-9]*.json")) if is_main else set()
     if backend == "chunkkv":
         install_chunkkv_adapter(evaluator, options)
+    if include_path is not None:
+        install_long_tasks(evaluator, include_path)
     import datasets
 
     # map/filter caches otherwise share a filename across ranks on the mounted cache.
@@ -338,10 +410,14 @@ def main():
     parser.add_argument("--chunk-size", type=int)
     parser.add_argument("--window-size", type=int)
     parser.add_argument("--reuse-layers", type=int, help="layer-wise index reuse depth; 1 disables reuse")
+    parser.add_argument("--context", choices=CONTEXTS, default="32k",
+                        help="32k: the formal 32K suites; 64k/128k: SemanticLogKV's long-context window, YaRN and "
+                             "suites (long, ruler) from --evaluation-config, with the ChunkKV config of that context")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--tasks", help="Comma-separated task names for a diagnostic check (not a formal run)")
-    selection.add_argument("--suite", choices=("main", "longbench", "niah"),
-                           help="Reference task group; outputs go into a same-named subdirectory")
+    selection.add_argument("--suite", choices=SUITES,
+                           help="Reference task group; outputs go into a same-named subdirectory "
+                                "(main/longbench/niah at 32k, long/ruler at 64k/128k)")
     parser.add_argument("--evaluation-config", type=Path, default=DEFAULT_EVALUATION_CONFIG,
                         help="Project-owned task lists and NIAH lengths")
     parser.add_argument("--limit", type=int, help="Same first N samples per task for every method")
@@ -351,10 +427,25 @@ def main():
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be positive")
     lengths = None
+    long_context = load_context(args.evaluation_config, args.context)
+    if long_context is not None:
+        if args.backend != "chunkkv":
+            parser.error("64k/128k run ChunkKV here; evaluate SemanticLogKV and Full KV with its own eval_long configs")
+        if args.chunkkv_config == DEFAULT_CHUNKKV_CONFIG:
+            args.chunkkv_config = BASELINE_ROOT / f"configs/chunkkv/qwen3_1.7b_{args.context}.yaml"
+        if args.limit is None and args.suite in LONG_SUITES:
+            args.limit = long_context["limit"]
+        # Data locations of the long-context task files; the environment wins.
+        for name, key in (("LONG_PPL_DATA", "long_ppl_data"), ("BABILONG_DATASET", "babilong_dataset")):
+            if long_context.get(key) and not os.environ.get(name):
+                os.environ[name] = str(long_context[key])
     if args.suite:
-        args.tasks, lengths = load_eval_suite(args.evaluation_config, args.suite)
+        if (args.suite in LONG_SUITES) != (long_context is not None):
+            parser.error(f"--suite {args.suite} runs at {'64k/128k' if args.suite in LONG_SUITES else '32k'}, "
+                         f"not --context {args.context}")
+        args.tasks, lengths = load_eval_suite(args.evaluation_config, args.suite, args.context)
     elif args.tasks is None:
-        parser.error("Choose --suite main|niah|longbench (reference task lists) or --tasks (diagnostics)")
+        parser.error("Choose --suite main|niah|longbench|long|ruler (reference task lists) or --tasks (diagnostics)")
     options = budget_reference = None
     if args.budget_from_result:
         if args.backend != "chunkkv" or args.budget or args.keep_ratio:
@@ -379,10 +470,13 @@ def main():
         parser.error("Keep evaluation outputs outside the bundled runtime directory")
     evaluator = None if args.print_config else load_evaluator()
     kwargs = build_eval_kwargs(evaluator, source_config, model, args.backend,
-                               args.tasks, args.limit, output, options, max_seq_lengths=lengths)
+                               args.tasks, args.limit, output, options, max_seq_lengths=lengths,
+                               long_context=long_context)
     if args.print_config:
         print(json.dumps({"experiment_config": str(source_config), "runtime_root": str(root),
-                          "suite": args.suite,
+                          "suite": args.suite, "context": args.context,
+                          "chunkkv_config": str(args.chunkkv_config),
+                          "long_ppl_data": os.environ.get("LONG_PPL_DATA") if long_context else None,
                           "backend": args.backend, "chunkkv": options, **kwargs}, ensure_ascii=False, indent=2))
         return
     contract = resolved = None
@@ -391,7 +485,10 @@ def main():
         model_record = evaluated_model(evaluator, kwargs["checkpoint_dir"])
         output.mkdir(parents=True, exist_ok=True)
         launch_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        resolved = {"launch_id": launch_id, "suite": args.suite, "backend": args.backend, "chunkkv": options,
+        resolved = {"launch_id": launch_id, "suite": args.suite, "context": args.context, "backend": args.backend,
+                    "chunkkv_config": str(args.chunkkv_config), "chunkkv": options,
+                    "long_ppl_data": os.environ.get("LONG_PPL_DATA") if long_context else None,
+                    "babilong_dataset": os.environ.get("BABILONG_DATASET") if long_context else None,
                     "budget_reference": budget_reference, "evaluation": kwargs, "evaluated_model": model_record,
                     "environment": runtime_environment(), "comparison_contract": contract}
         # One file per launch: a later run in the same directory never replaces this record.
@@ -401,7 +498,8 @@ def main():
             resolved_path, suffix = output / f"resolved_eval_{launch_id}_{suffix}.yaml", suffix + 1
         resolved_path.write_text(yaml.safe_dump(resolved, allow_unicode=True))
         contract = {**contract, "evaluated_model": model_record}
-    run_evaluation(evaluator, kwargs, args.backend, contract, options, budget_reference, resolved)
+    run_evaluation(evaluator, kwargs, args.backend, contract, options, budget_reference, resolved,
+                   include_path=LONG_TASKS_DIR if long_context is not None else None)
 
 
 if __name__ == "__main__":
