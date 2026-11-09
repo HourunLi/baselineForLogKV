@@ -4,7 +4,11 @@ Same tasks (the project-owned ``configs/eval_suites.yaml`` lists the reference's
 47 main entries and 3 NIAH entries at 32K, defined by the installed lm-eval), same
 offline HF/RULER caches, same prompt/scoring/generation rules, same KV-entry and
 speed metrics and the same result-file layout, so results line up with
-SemanticLogKV runs in the same environment. Run from the project root in
+SemanticLogKV runs in the same environment. ``--context 64k|128k`` switches to
+SemanticLogKV's long-context stages instead: window, YaRN and RULER length from
+``configs/eval_suites.yaml``, the ``long`` suite (BABILong and long-document
+perplexity, task files under ``tasks/``) and the ``ruler`` suite (all 13 RULER
+tasks), 100 samples per task. Run from the project root in
 SemanticLogKV's evaluation environment (torch218), without installing anything
 there. Single GPU or one model per GPU with torchrun; ``majob.sh`` runs both suites:
 
@@ -41,7 +45,12 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_DIR.parent
 DEFAULT_BASE = "/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/"
 DEFAULT_EVAL_SUITES = REPO_ROOT / "configs" / "eval_suites.yaml"
-SUITES = ("main", "longbench", "niah")
+# Project copies of SemanticLogKV's long-context task files (BABILong by length, long-document perplexity).
+LONG_TASKS_DIR = REPO_ROOT / "tasks"
+SUITES = ("main", "longbench", "niah", "long", "ruler")
+CONTEXTS = ("32k", "64k", "128k")
+SHORT_SUITES, LONG_SUITES = ("main", "longbench", "niah"), ("long", "ruler")
+ELEMENT_SIZE = {"bfloat16": 2, "float16": 2, "float32": 4}
 # Requirements of this code and the shared offline cache, not a target environment: evaluation adapts to
 # SemanticLogKV's environment (torch218: lm-eval 0.4.11, datasets 4.8.4 on 2026-10-16). lm-eval 0.4.9 is the
 # oldest release whose LM interface and simple_evaluate this evaluator was checked against; the cache's IFEval
@@ -68,7 +77,17 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--tokenizer-dir", default=None, help="Defaults to --model")
     group.add_argument("--weights-format", choices=("auto", "litgpt", "hf"), default="auto")
     group.add_argument("--suite", choices=SUITES, default=None,
-                       help="Reference task group from --eval-suites; outputs go to <output>/<suite>")
+                       help="Reference task group from --eval-suites; outputs go to <output>/<suite> "
+                            "(main/longbench/niah at 32k; long/ruler at 64k/128k)")
+    group.add_argument("--context", choices=CONTEXTS, default="32k",
+                       help="32k: the formal 32K protocol; 64k/128k: SemanticLogKV's long-context window, YaRN "
+                            "and RULER length from --eval-suites")
+    group.add_argument("--prefill-chunk-size", type=int, default=None,
+                       help="Feed cached forwards through the model this many tokens at a time (streaming)")
+    group.add_argument("--long-ppl-data", default=None,
+                       help="LONG_PPL_DATA for the long_ppl tasks (parquet/jsonl file or folder; env wins if set)")
+    group.add_argument("--babilong-dataset", default=None,
+                       help="BABILONG_DATASET: a local copy of RMT-team/babilong-1k-samples (env wins if set)")
     group.add_argument("--tasks", default=None, help="Comma-separated lm-eval tasks (diagnostics; not with --suite)")
     group.add_argument("--eval-suites", type=Path, default=DEFAULT_EVAL_SUITES,
                        help="Project-owned main/NIAH task lists and NIAH lengths")
@@ -93,8 +112,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def load_eval_suite(path: Path, suite: str) -> tuple[list[str], list[int] | None]:
-    """Task names (and NIAH lengths) of one reference stage from the project-owned list."""
+def load_context(path: Path, context: str) -> dict | None:
+    """Window, YaRN, RULER length, long tasks and sample limit of a long context (None for 32k)."""
+    if context == "32k":
+        return None
+    config = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    try:
+        entry = dict(config["contexts"][context])
+    except (KeyError, TypeError) as error:
+        raise ValueError(f"{path} defines no long context {context!r}") from error
+    entry["ruler_tasks"] = list(config.get("ruler_tasks") or [])
+    entry["limit"] = config.get("long_limit")
+    return entry
+
+
+def load_eval_suite(path: Path, suite: str, context: str = "32k") -> tuple[list[str], list[int] | None]:
+    """Task names (and NIAH/RULER lengths) of one reference stage from the project-owned list."""
+    if suite in LONG_SUITES:
+        entry = load_context(path, context)
+        tasks = entry["ruler_tasks"] if suite == "ruler" else list(entry["long_tasks"])
+        if not tasks or any(not isinstance(task, str) or not task.strip() for task in tasks):
+            raise ValueError(f"Evaluation suite {suite!r} has no valid tasks for {context} in {path}")
+        return tasks, [int(entry["ruler_length"])]
     config = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     tasks = list(config.get("niah_tasks" if suite == "niah" else "main_tasks") or [])
     if suite == "longbench":
@@ -106,7 +145,8 @@ def load_eval_suite(path: Path, suite: str) -> tuple[list[str], list[int] | None
 
 
 def uses_ruler_metadata(tasks: list[str]) -> bool:
-    return any(task.startswith(("niah_", "ruler_")) for task in tasks)
+    # long_ppl builds its samples with the tokenizer named in the same metadata.
+    return any(task.startswith(("niah_", "ruler_", "long_ppl")) for task in tasks)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -126,11 +166,25 @@ def parse_args(argv=None) -> argparse.Namespace:
     args.ruler_pretrained = args.ruler_pretrained or str(args.tokenizer_dir)
     if (args.suite is None) == (args.tasks is None):
         parser.error("Choose exactly one of --suite (reference task group) and --tasks (diagnostics)")
+    args.long_context = load_context(args.eval_suites, args.context)
+    args.rope_scaling = None
+    if args.long_context is not None:
+        window = int(args.long_context["max_seq_length"])
+        if args.max_seq_length not in (32768, window):
+            parser.error(f"--context {args.context} fixes the window at {window}; drop --max-seq-length")
+        args.max_seq_length, args.rope_scaling = window, dict(args.long_context["rope_scaling"])
+        if args.limit is None and args.suite in LONG_SUITES:
+            args.limit = args.long_context["limit"]
+        if args.include_path is None:
+            args.include_path = str(LONG_TASKS_DIR)
     suite_lengths = None
     if args.suite is not None:
         if args.ruler_lengths is not None:
             parser.error("--suite fixes the NIAH lengths; --ruler-lengths applies to --tasks runs only")
-        tasks, suite_lengths = load_eval_suite(args.eval_suites, args.suite)
+        if (args.suite in LONG_SUITES) != (args.long_context is not None):
+            parser.error(f"--suite {args.suite} runs at {'64k/128k' if args.suite in LONG_SUITES else '32k'}, "
+                         f"not --context {args.context}")
+        tasks, suite_lengths = load_eval_suite(args.eval_suites, args.suite, args.context)
         args.tasks = ",".join(tasks)
     task_list = [task.strip() for task in args.tasks.split(",") if task.strip()]
     if not task_list:
@@ -147,6 +201,18 @@ def parse_args(argv=None) -> argparse.Namespace:
     # Like the reference scripts, only NIAH/RULER tasks receive generation metadata.
     args.metadata = ({"pretrained": args.ruler_pretrained, "max_seq_lengths": args.ruler_lengths}
                      if uses_ruler_metadata(task_list) else None)
+    if args.prefill_chunk_size is not None and args.prefill_chunk_size < 1:
+        parser.error("--prefill-chunk-size must be positive")
+    if getattr(args, "streaming", False) and args.method != "fullkv" and not args.prefill_chunk_size:
+        parser.error("--streaming needs --prefill-chunk-size (the prompt is evicted chunk by chunk)")
+    if getattr(args, "budget_bytes", None) and args.method != "fullkv":
+        model_dir = Path(args.model).expanduser()
+        weights_format = detect_weights_format(model_dir) if args.weights_format == "auto" else args.weights_format
+        try:
+            model_config = load_config(model_dir, weights_format)
+        except (FileNotFoundError, OSError) as error:
+            parser.error(f"--budget-bytes needs the model configuration to size entries: {error}")
+        args.max_capacity_prompt = method.budget_from_bytes(args, model_config, ELEMENT_SIZE[args.dtype])
     method.resolve_method_args(args)
     if args.output is None:
         budget = "full" if args.method == "fullkv" else f"b{args.max_capacity_prompt}"
@@ -168,6 +234,11 @@ def evaluation_settings(args, num_hidden_layers: int | None = None) -> dict:
         "include_path": args.include_path,
         "limit": args.limit,
         "max_seq_length": args.max_seq_length,
+        "context": args.context,
+        "rope_scaling": args.rope_scaling,
+        "prefill_chunk_size": args.prefill_chunk_size,
+        "long_ppl_data": os.environ.get("LONG_PPL_DATA") or args.long_ppl_data,
+        "babilong_dataset": os.environ.get("BABILONG_DATASET") or args.babilong_dataset,
         "metadata": args.metadata,
         "loglikelihood_mode": args.loglikelihood_mode,
         "dtype": args.dtype,
@@ -454,6 +525,10 @@ def main(argv=None) -> None:
     check_evaluation_environment()
     # HF libraries read the cache variables at import time.
     configure_hf_environment(args.hf_cache_base, offline=True)
+    # The long-context task files read their data locations from these variables; the environment wins.
+    for name, value in (("LONG_PPL_DATA", args.long_ppl_data), ("BABILONG_DATASET", args.babilong_dataset)):
+        if value and not os.environ.get(name):
+            os.environ[name] = str(value)
     import datasets
     import torch
     import torch.distributed as dist
@@ -462,10 +537,12 @@ def main(argv=None) -> None:
 
     from . import dist_utils as du
     from .data_env import install_dataset_alias_fallback, install_ruler_cache
+    from .hf_cache_patch import apply_patch as skip_unfinished_downloads
     from .lm import CompressedKVLM
 
     install_ruler_cache()
     install_dataset_alias_fallback()
+    skip_unfinished_downloads()
     config = load_config(Path(args.model).expanduser(), weights_format)
     settings = evaluation_settings(args, config.num_hidden_layers)
     output_dir = Path(args.output).expanduser().resolve()
@@ -495,6 +572,7 @@ def main(argv=None) -> None:
             tokenizer_dir=args.tokenizer_dir, max_seq_length=args.max_seq_length, device=device,
             dtype=getattr(torch, args.dtype), weights_format=weights_format,
             loglikelihood_mode=args.loglikelihood_mode, process_group=group,
+            rope_scaling=args.rope_scaling, prefill_chunk_size=args.prefill_chunk_size,
         )
         # map/filter results otherwise share one cache file across ranks on the shared mount.
         # load_dataset still reads the prepared offline source cache; transforms use private temp files.
@@ -520,6 +598,11 @@ def main(argv=None) -> None:
         if du.is_main():
             cache_budget = {"allocation": "dynamic", "persistent_cache_bytes": None,
                             **settings["method_config"]}
+            if args.method != "fullkv" and args.streaming:
+                # Fixed budgets: every layer and stored head holds at most its pyramid budget.
+                cache_budget.update(allocation="fixed", persistent_cache_bytes=method.persistent_bytes(
+                    args, config, ELEMENT_SIZE[args.dtype]), entries_per_layer=method.pyramidkv_settings(
+                    args, config.num_hidden_layers).stream_schedule())
             prov = provenance(args, lm.model_info, hash_weights=not args.no_weight_hash)
             prov.update(world_size=world, device=torch.cuda.get_device_name(device)
                         if device.startswith("cuda") else device,

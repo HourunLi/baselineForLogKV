@@ -83,7 +83,8 @@ class CompressedKVLM(_HarnessLM):
     def __init__(self, checkpoint_dir: str, cache_factory, *, tokenizer_dir: str | None = None,
                  max_seq_length: int = 32768, device: str = "cuda", dtype: torch.dtype = torch.bfloat16,
                  weights_format: str = "auto", loglikelihood_mode: str = "compress_context",
-                 process_group=None, model=None, tokenizer=None):
+                 process_group=None, model=None, tokenizer=None, rope_scaling: dict | None = None,
+                 prefill_chunk_size: int | None = None):
         if _HarnessLM is not object:
             super().__init__()
         if loglikelihood_mode not in LOGLIKELIHOOD_MODES:
@@ -96,7 +97,8 @@ class CompressedKVLM(_HarnessLM):
         self.tokenizer = tokenizer or Tokenizer(tokenizer_dir or checkpoint_dir)
         if model is None:
             model, self.model_info = load_qwen3(checkpoint_dir, max_seq_length, device=device, dtype=dtype,
-                                                weights_format=weights_format)
+                                                weights_format=weights_format, rope_scaling=rope_scaling,
+                                                prefill_chunk_size=prefill_chunk_size)
         else:
             self.model_info = {}
         self.model = model

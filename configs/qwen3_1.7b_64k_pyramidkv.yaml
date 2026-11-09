@@ -1,0 +1,21 @@
+# Streaming PyramidKV on the original Qwen3-1.7B-Base at SemanticLogKV's 64k long-context protocol, same memory.
+# Keys are evaluate.py option names; command-line options override them. majob.sh runs the 'long' suite
+# (BABILong, long-document perplexity) and then the 'ruler' suite (13 RULER tasks) for this context.
+model: /home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/
+context: 64k                   # window, YaRN and RULER length from configs/eval_suites.yaml
+hf_cache_base: /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache
+# PG19's test books, as in SemanticLogKV's long-context runs (LONG_PPL_DATA in the environment wins).
+long_ppl_data: /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache/hub/datasets--emozilla--pg19-test/snapshots/c5e39bf32e33f9111323aa68d7d9000d22722035
+
+method: pyramidkv
+streaming: true                # select after every prompt chunk and decode step: a layer never exceeds its budget + one chunk
+prefill_chunk_size: 2048       # tokens per forward through the model (SemanticLogKV's prefill_block)
+# Persistent bytes of the LogKV cache the comparison run allocates at this window, measured with SemanticLogKV's
+# eval_long64k_baseline.yaml: 2,216,205,824 bytes (79,150,208 per layer x 28). The largest average budget whose pyramid of layer budgets keeps K + V (bf16) within them.
+budget_bytes: 2216205824
+window_size: 64                # observation window, kept verbatim (KVPress SnapKV default; covers RULER's question)
+kernel_size: 7
+pooling: maxpool
+beta: 20
+kv_cache_granularity: kv_head
+gqa_score_agg: mean

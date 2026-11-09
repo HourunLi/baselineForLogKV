@@ -5,11 +5,20 @@ Parameter names follow the LitGPT layout used by SemanticLogKV's original
 import from that project. Hugging Face checkpoints are mapped onto the same
 names. Numerics follow the reference dense path: fp32 RMSNorm statistics, RoPE
 tables cast to the model dtype, grouped K/V expanded with ``repeat_interleave``.
+
+Beyond the 32K the Base was trained for, ``rope_scaling`` applies YaRN as SemanticLogKV's long-context
+evaluation does (HourunLi/LogKV niahLogKV@4615501, ``litgpt/model.py`` ``build_rope_cache``, Apache-2.0,
+itself matching transformers' ``_compute_yarn_parameters``): the frequencies above ``beta_slow`` rotations
+are interpolated by ``factor``, those below ``beta_fast`` kept, a linear ramp between; cos/sin are scaled by
+the attention temperature ``0.1 * ln(factor) + 1``. With ``prefill_chunk_size`` a cached forward runs the
+input through every layer one chunk at a time, so activations and each layer's working K/V stay bounded by
+the chunk however long the request is.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 
@@ -33,10 +42,45 @@ class RMSNorm(nn.Module):
         return (x * self.weight.float()).to(dtype)
 
 
-def build_rope_cache(seq_len: int, head_dim: int, base: float, device=None) -> tuple[torch.Tensor, torch.Tensor]:
+YARN_KEYS = ("factor", "beta_fast", "beta_slow", "original_max_seq_len")
+
+
+def check_rope_scaling(rope_scaling: dict | None) -> dict | None:
+    if not rope_scaling:
+        return None
+    if set(rope_scaling) != set(YARN_KEYS) or float(rope_scaling["factor"]) <= 1:
+        raise ValueError(f"rope_scaling must give exactly {YARN_KEYS} with factor > 1, got {rope_scaling}")
+    return {key: float(rope_scaling[key]) if key != "original_max_seq_len" else int(rope_scaling[key])
+            for key in YARN_KEYS}
+
+
+def yarn_frequencies(head_dim: int, base: float, rope_scaling: dict, device=None) -> tuple[torch.Tensor, float]:
+    """YaRN inverse frequencies and attention temperature (see the module docstring for the source)."""
+    factor, beta_fast, beta_slow = rope_scaling["factor"], rope_scaling["beta_fast"], rope_scaling["beta_slow"]
+    original = rope_scaling["original_max_seq_len"]
+    pos_freqs = base ** (torch.arange(0, head_dim, 2, device=device).float() / head_dim)
+    extrapolation, interpolation = 1.0 / pos_freqs, 1.0 / (factor * pos_freqs)
+
+    def correction_dim(rotations):
+        return (head_dim * math.log(original / (rotations * 2 * math.pi))) / (2 * math.log(base))
+
+    low = max(math.floor(correction_dim(beta_fast)), 0)
+    high = min(math.ceil(correction_dim(beta_slow)), head_dim - 1)
+    if low == high:
+        high += 0.001
+    ramp = torch.clamp((torch.arange(head_dim // 2, device=device, dtype=torch.float32) - low) / (high - low), 0, 1)
+    theta = interpolation * ramp + extrapolation * (1 - ramp)
+    return theta, 0.1 * math.log(factor) + 1.0
+
+
+def build_rope_cache(seq_len: int, head_dim: int, base: float, device=None,
+                     rope_scaling: dict | None = None) -> tuple[torch.Tensor, torch.Tensor]:
     theta = 1.0 / (base ** (torch.arange(0, head_dim, 2, device=device).float() / head_dim))
+    attention_scaling = 1.0
+    if rope_scaling:
+        theta, attention_scaling = yarn_frequencies(head_dim, base, rope_scaling, device)
     angles = torch.outer(torch.arange(seq_len, device=device).float(), theta).repeat(1, 2)
-    return torch.cos(angles), torch.sin(angles)
+    return torch.cos(angles) * attention_scaling, torch.sin(angles) * attention_scaling
 
 
 def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
@@ -107,9 +151,14 @@ class Block(nn.Module):
 class Qwen3(nn.Module):
     """``forward(idx, input_pos, input_pos_maxp1, lm_head_start)`` matches the shared evaluator call shape."""
 
-    def __init__(self, config: Qwen3Config, max_seq_length: int | None = None):
+    def __init__(self, config: Qwen3Config, max_seq_length: int | None = None, rope_scaling: dict | None = None,
+                 prefill_chunk_size: int | None = None):
         super().__init__()
         self.config = config
+        self.rope_scaling = check_rope_scaling(rope_scaling)
+        if prefill_chunk_size is not None and prefill_chunk_size < 1:
+            raise ValueError("prefill_chunk_size must be positive")
+        self.prefill_chunk_size = prefill_chunk_size
         self.transformer = nn.ModuleDict(dict(
             wte=nn.Embedding(config.vocab_size, config.hidden_size),
             h=nn.ModuleList(Block(config, i) for i in range(config.num_hidden_layers)),
@@ -124,14 +173,17 @@ class Qwen3(nn.Module):
 
     @max_seq_length.setter
     def max_seq_length(self, value: int) -> None:
-        if not 0 < value <= self.config.max_position_embeddings:
-            raise ValueError(f"max_seq_length {value} exceeds the model position window "
-                             f"{self.config.max_position_embeddings}")
+        window = self.config.max_position_embeddings
+        if self.rope_scaling:  # YaRN stretches the trained window by its factor
+            window = int(window * self.rope_scaling["factor"])
+        if not 0 < value <= window:
+            raise ValueError(f"max_seq_length {value} exceeds the model position window {window}"
+                             + ("" if self.rope_scaling else " (longer windows need rope_scaling)"))
         self._max_seq_length = value
         device = self.lm_head.weight.device
         if device.type == "meta":
             device = None
-        cos, sin = build_rope_cache(value, self.config.head_dim, self.config.rope_theta, device)
+        cos, sin = build_rope_cache(value, self.config.head_dim, self.config.rope_theta, device, self.rope_scaling)
         dtype = self.lm_head.weight.dtype if self.lm_head.weight.is_floating_point() else torch.float32
         self.register_buffer("cos", cos.to(dtype), persistent=False)
         self.register_buffer("sin", sin.to(dtype), persistent=False)
@@ -170,12 +222,27 @@ class Qwen3(nn.Module):
             if T > self.max_seq_length:
                 raise ValueError(f"Sequence length {T} exceeds max_seq_length {self.max_seq_length}")
             positions = torch.arange(T, device=idx.device)
+        chunk = self.prefill_chunk_size if use_cache else None
+        if not chunk or T <= chunk:
+            return self._run(idx, positions, use_cache, lm_head_start)
+        logits = []
+        for start in range(0, T, chunk):
+            end = min(start + chunk, T)
+            out = self._run(idx[:, start:end], positions[start:end], use_cache,
+                            max(0, lm_head_start - start) if end > lm_head_start else None)
+            if out is not None:
+                logits.append(out)
+        return torch.cat(logits, dim=1)
+
+    def _run(self, idx, positions, use_cache: bool, lm_head_start: int | None) -> torch.Tensor | None:
+        """All layers over ``idx``; logits from ``lm_head_start`` on (None: no logits)."""
         cos, sin = self.cos[positions], self.sin[positions]
         x = self.transformer.wte(idx)
         for block in self.transformer.h:
             x = block(x, cos, sin, use_cache)
-        x = self.transformer.ln_f(x[:, lm_head_start:])
-        return self.lm_head(x)
+        if lm_head_start is None:
+            return None
+        return self.lm_head(self.transformer.ln_f(x[:, lm_head_start:]))
 
 
 _HF_LAYER = re.compile(r"model\.layers\.(\d+)\.(.+)")
@@ -255,7 +322,8 @@ def load_state_dict(directory: Path, weights_format: str) -> dict[str, torch.Ten
 
 
 def load_qwen3(checkpoint_dir, max_seq_length: int, device="cuda", dtype=torch.bfloat16,
-               weights_format: str = "auto") -> tuple[Qwen3, dict]:
+               weights_format: str = "auto", rope_scaling: dict | None = None,
+               prefill_chunk_size: int | None = None) -> tuple[Qwen3, dict]:
     """Strictly load every transformer weight; a silently random tensor would invalidate the comparison."""
     directory = Path(checkpoint_dir).expanduser()
     if weights_format == "auto":
@@ -267,12 +335,14 @@ def load_qwen3(checkpoint_dir, max_seq_length: int, device="cuda", dtype=torch.b
     if tied:
         state["lm_head.weight"] = state["transformer.wte.weight"]
     with torch.device("meta"):
-        model = Qwen3(config, max_seq_length=max_seq_length)
+        model = Qwen3(config, max_seq_length=max_seq_length, rope_scaling=rope_scaling,
+                      prefill_chunk_size=prefill_chunk_size)
     model.load_state_dict(state, strict=True, assign=True)
     model.max_seq_length = max_seq_length  # replace the meta RoPE tables before moving
     model = model.to(device=device, dtype=dtype)
     if tied:
         model.lm_head.weight = model.transformer.wte.weight
     model.max_seq_length = max_seq_length  # fp32 tables cast once to the model dtype, as in the reference
-    info = {"weights_format": weights_format, "tied_lm_head": tied, "config": config.__dict__}
+    info = {"weights_format": weights_format, "tied_lm_head": tied, "config": config.__dict__,
+            "rope_scaling": model.rope_scaling, "prefill_chunk_size": prefill_chunk_size}
     return model.eval(), info

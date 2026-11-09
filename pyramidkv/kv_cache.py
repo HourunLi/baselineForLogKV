@@ -74,8 +74,9 @@ class CompressedKVCache:
 
     def _store(self, k: torch.Tensor, v: torch.Tensor) -> None:
         B, H, L, D = k.shape
-        self._k = k.new_empty(B, H, L + self.growth, D)
-        self._v = v.new_empty(B, H, L + self.growth, D)
+        if self._k is None or self._k.size(2) < L:  # a streaming layer reuses its fixed buffer
+            self._k = k.new_empty(B, H, L + self.growth, D)
+            self._v = v.new_empty(B, H, L + self.growth, D)
         self._k[:, :, :L] = k
         self._v[:, :, :L] = v
         self.length = L
@@ -104,6 +105,8 @@ class CompressedKVCache:
             self.n_kv_heads = k.size(1)
         T = q.size(2)
         k, v = self._layout(q, k, v)
+        if self.compressor is not None and getattr(self.compressor, "streaming", False):
+            return self._stream(q, k, v)
         if self._k is None:
             # Prefill: exact attention over the whole prompt, then compress what is kept.
             y = causal_attention(q, k, v)
@@ -122,6 +125,25 @@ class CompressedKVCache:
         self.processed_tokens += T
         self.num_recent += T
         return causal_attention(q, self.k, self.v)
+
+    def _stream(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        """Append the chunk, attend over the kept entries and the chunk, then select back to the layer budget."""
+        T = q.size(2)
+        if self._k is None:
+            capacity = self.compressor.stream_capacity(self.layer_idx) + self.compressor.window_size
+            self._k = k.new_empty(*k.shape[:2], capacity + T, k.size(3))
+            self._v = v.new_empty(*v.shape[:2], capacity + T, v.size(3))
+            self.prefill_tokens = T
+        self._append(k, v)
+        self.processed_tokens += T
+        y = causal_attention(q, self.k, self.v)
+        kept = self.compressor.stream_evict(self.layer_idx, q, self.k, self.v)
+        if kept is not None:
+            self._store(*kept)
+            self.compressed = True
+        self.num_recent = min(self.length, self.compressor.window_size)
+        self.num_selected = self.length - self.num_recent
+        return y
 
     def snapshot(self) -> dict:
         """Logical entries at the KV-group level used by the shared metric definition."""
