@@ -4,12 +4,12 @@
 
 ## 2026-11-09：64K / 128K 长文本，流式 H2O 与 SemanticLogKV 同内存
 
-在 CPU（torch 2.15、transformers 5.22、lm-eval 0.4.13 的开发环境，不是 torch218）执行：
+在 CPU 上执行，两组包版本结果相同：torch218 的版本（transformers 4.51.3、lm-eval 0.4.11、datasets 4.8.4、tokenizers 0.21.4；torch 2.15，非 torch218 本身），以及 transformers 5.22、lm-eval 0.4.13 的开发环境：
 
 | 检查 | 结果 |
 |---|---|
 | `python -m pytest -q` | **90 passed**（改动前 75 passed） |
-| YaRN cos/sin 与 transformers `_compute_yarn_parameters`（factor 2 与 4，长度到 132096） | factor 4 逐元素相等，factor 2 最大差 1.6e-5 |
+| YaRN cos/sin 与 transformers `_compute_yarn_parameters`（factor 2 与 4，长度到 132096；参照配置的 max_position_embeddings 取原长 × factor，4.51 由此比值取 factor） | factor 4 逐元素相等，factor 2 最大差 1.6e-5 |
 | 分块前向（块长 8）与一次前向、FullKV 缓存 | logits 一致（含跨块的 `lm_head_start`） |
 | 流式 H2O，预算放得下全部 token | 与 FullKV 一致（不淘汰） |
 | 流式 H2O，预算 16、块长 8、70 个 token | 每块之后每层不超过 16 条，缓冲不超过预算加一个块，累计分数随条目保留 |
