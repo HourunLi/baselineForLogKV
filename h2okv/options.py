@@ -18,7 +18,7 @@ class H2OSettings:
     name = "h2o"
 
     def __init__(self, max_capacity_prompt: int = 2048, window_size: int = 8, gqa_score_agg: str = "mean",
-                 decode_evict: bool = False, score_chunk_size: int = 512):
+                 decode_evict: bool = False, score_chunk_size: int = 512, streaming: bool = False):
         if window_size < 1 or max_capacity_prompt - window_size <= 0:
             raise ValueError("H2O requires 0 < window_size < max_capacity_prompt")
         if gqa_score_agg not in GQA_SCORE_AGGS:
@@ -30,11 +30,17 @@ class H2OSettings:
         self.gqa_score_agg = gqa_score_agg
         self.decode_evict = decode_evict
         self.score_chunk_size = score_chunk_size
+        # Streaming H2O evicts after every forward, prompt chunks included, so the cache never exceeds the budget.
+        self.streaming = bool(streaming)
 
     def config(self) -> dict:
         return dict(method=self.name, max_capacity_prompt=self.max_capacity_prompt, window_size=self.window_size,
-                    gqa_score_agg=self.gqa_score_agg, decode_evict=self.decode_evict,
-                    score_chunk_size=self.score_chunk_size)
+                    gqa_score_agg=self.gqa_score_agg, decode_evict=self.decode_evict or self.streaming,
+                    score_chunk_size=self.score_chunk_size, streaming=self.streaming)
+
+    def entry_bytes(self, head_dim: int, element_size: int) -> int:
+        """Persistent bytes of one kept entry in one stored head: K, V and (when kept) the fp32 score."""
+        return 2 * head_dim * element_size + (4 if self.decode_evict or self.streaming else 0)
 
     def budget_schedule(self, q_len: int, num_hidden_layers: int) -> list[int]:
         """H2O uses the same budget in every layer."""

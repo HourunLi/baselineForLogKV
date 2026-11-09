@@ -9,7 +9,9 @@ monkey-patching Transformers.
 
 With H2O decode eviction enabled the cache also keeps each entry's accumulated
 attention score; every later forward computes attention explicitly, adds the
-new probabilities to those scores and evicts back to the budget.
+new probabilities to those scores and evicts back to the budget. A streaming
+compressor does the same from the first forward on: the model feeds the prompt
+in chunks, so the cache never holds more than the budget plus one chunk.
 
 Storage granularity:
 * ``kv_head`` (default): one entry per KV head; per-query-head scores are
@@ -112,6 +114,8 @@ class CompressedKVCache:
             self.n_kv_heads = k.size(1)
         T = q.size(2)
         k, v = self._layout(q, k, v)
+        if self.compressor is not None and getattr(self.compressor, "streaming", False):
+            return self._stream(q, k, v)
         if self._k is None:
             # Prefill: exact attention over the whole prompt, then compress what is kept.
             y = causal_attention(q, k, v)
@@ -141,6 +145,30 @@ class CompressedKVCache:
             self._store(keys, values)
             self.num_recent = self.compressor.window_size
             self.num_selected = self.length - self.num_recent
+        return y
+
+    def _stream(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        """Append the chunk, attend with scores, add them and evict back to the budget."""
+        T = q.size(2)
+        if self._k is None:
+            self._k = k.new_empty(*k.shape[:2], self.compressor.max_capacity_prompt + T, k.size(3))
+            self._v = v.new_empty(*v.shape[:2], self.compressor.max_capacity_prompt + T, v.size(3))
+            self.prefill_tokens = T
+        self._append(k, v)
+        self.processed_tokens += T
+        y, probs = attention_with_scores(q, self.k, self.v, self.compressor.gqa_score_agg,
+                                         self.compressor.score_chunk_size)
+        if self.scores is not None:
+            probs[..., :self.scores.size(-1)] += self.scores
+        self.scores = probs
+        kept = self.compressor.evict(self.scores, self.k, self.v)
+        if kept is not None:
+            keys, values, self.scores = kept
+            self.evicted += self.length - keys.size(2)
+            self._store(keys, values)
+            self.compressed = True
+        self.num_recent = min(self.length, self.compressor.window_size)
+        self.num_selected = self.length - self.num_recent
         return y
 
     def snapshot(self) -> dict:

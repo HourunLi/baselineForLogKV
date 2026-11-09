@@ -1,0 +1,21 @@
+# Long-document perplexity at 64k: the last 4096 tokens of documents cut to 64k, given the tokens before
+# them (eval_tasks/long_ppl/long_ppl_utils.py; data from LONG_PPL_DATA).
+task: long_ppl_64k
+dataset_path: ""
+dataset_name: ""
+output_type: loglikelihood
+test_split: test
+custom_dataset: !function long_ppl_utils.long_ppl_64k
+doc_to_text: "{{context}}"
+doc_to_target: "{{continuation}}"
+target_delimiter: ""
+process_results: !function long_ppl_utils.process_results
+metric_list:
+  - metric: ppl
+    aggregation: !function long_ppl_utils.perplexity
+    higher_is_better: false
+  - metric: bits_per_byte
+    aggregation: !function long_ppl_utils.bits_per_byte
+    higher_is_better: false
+metadata:
+  version: 1.0

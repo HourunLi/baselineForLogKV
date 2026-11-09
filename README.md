@@ -5,7 +5,7 @@
 - H2O 的 prompt 压缩规则移植自 [KVCache-Factory](https://github.com/Zefan-Cai/KVCache-Factory)（MIT），见 [LICENSE](LICENSE)；可选的 decode 期淘汰按 [H2O 原实现](https://github.com/FMInference/H2O) 的 real-drop 策略自行实现。
 - 评测侧的模型、tokenizer、KV cache、生成、打分、指标和结果格式全部在本仓库实现。**不 import、不加载 litgpt / SemanticLogKV 的任何代码**，只依赖 PyTorch、tokenizers、lm-eval 等通用库。
 - 与 SemanticLogKV 对齐的内容是“行为”：同一份原始 Base 权重、同一 tokenizer 规则、同一 lm-eval 任务与缓存、同样的截断/生成/打分规则、同样的 KV 槽位与速度指标定义、同样的结果文件布局。
-- 统一实现规则见 [AGENTS.md](AGENTS.md) 与 [Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md)，评测环境、路径、依赖写法与已知坑见 [Baseline 环境与避坑清单](docs/BASELINE_ENVIRONMENT.md)。正式评测只用 32K 窗口，完整任务为项目内 [configs/eval_suites.yaml](configs/eval_suites.yaml) 维护的 47 个 main 入口和 3 个 NIAH（仅 `[32768]`），由 `majob.sh` 分两阶段运行。
+- 统一实现规则见 [AGENTS.md](AGENTS.md) 与 [Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md)，评测环境、路径、依赖写法与已知坑见 [Baseline 环境与避坑清单](docs/BASELINE_ENVIRONMENT.md)。正式评测为 32K 窗口，完整任务为项目内 [configs/eval_suites.yaml](configs/eval_suites.yaml) 维护的 47 个 main 入口和 3 个 NIAH（仅 `[32768]`），由 `majob.sh` 分两阶段运行；另有 64K / 128K 长文本评测，H2O 在其中流式运行、与 SemanticLogKV 同内存，见[下文](#64k--128k-长文本流式同内存)。
 
 ## KVCache-Factory 是怎么比较不同方法的
 
@@ -142,6 +142,38 @@ bash majob.sh configs/qwen3_1.7b_32k_h2o.yaml --output outputs/h2o-32k-full     
 
 脚本导出 `KV_BASELINE_EXPECTED_WORLD_SIZE=节点数×每节点 GPU`，评测入口发现实际进程数不同时报错。所有节点需读到同一路径的代码、Base、离线缓存，并写同一输出目录。
 平台上建议设置 `TMPDIR=/tmp`，让进程内 map/filter 的临时文件落在节点本地盘。
+
+## 64K / 128K 长文本（流式、同内存）
+
+口径与 SemanticLogKV 的 `eval_long{64k,128k}_*.yaml` 相同（[规范第 6.1 节](docs/BASELINE_IMPLEMENTATION_GUIDE.md)）：`--context 64k|128k` 从
+`configs/eval_suites.yaml` 取模型窗口（66560 / 132096）、YaRN（factor 2 / 4，原长 32768）与 RULER 长度（65536 / 131072）；`long` 阶段跑
+BABILong qa1–qa5 与长文档困惑度（PG19 测试集的末尾 4096 个 token），`ruler` 阶段跑全部 13 个 RULER 任务，每任务前 100 条。BABILong 与困惑度的
+任务文件逐字复制自 SemanticLogKV（`tasks/`，来源与哈希见 `tasks/SOURCE.json`），困惑度选出的文档缓存与 SemanticLogKV 共用。
+
+| | 64K | 128K |
+|---|---|---|
+| 配置 | `configs/qwen3_1.7b_64k_h2o.yaml` | `configs/qwen3_1.7b_128k_h2o.yaml` |
+| 预算字节（SemanticLogKV 该窗口的已分配持久缓存） | 2,216,205,824 | 2,403,505,664 |
+| 每层每个 KV head 的条目（K、V 为 bf16，另有 fp32 累计分数，共 516 字节） | 19,173 | 20,794 |
+| heavy hitters / 最近 token | 9,587 / 9,586 | 10,397 / 10,397 |
+
+**流式 H2O**（`streaming: true`）：模型按 `prefill_chunk_size`（2048，与 SemanticLogKV 的 prefill_block 相同）逐块前向；每块读
+[保留条目 + 本块（因果）]，把本块各 query 的注意力概率累加到每个条目的分数上，然后淘汰回预算：保留最近 `window_size` 个 token 与其余分数
+最高的条目。解码每一步同样处理。任何时刻每层缓存不超过预算加一个块；按块前向时激活与打分工作区也只随块长增长（打分按 `score_chunk_size`
+个 query 分块）。这是 H2O 原论文的 real-drop 规则用在分块预填充上；`window_size: half` 即原论文 heavy hitters 与最近 token 各占一半预算。
+32K 配置仍是 KVCache-Factory 的语义（整段预填充后压缩一次、最近窗口 8），不受影响。
+
+```bash
+bash majob.sh configs/qwen3_1.7b_64k_h2o.yaml --output outputs/h2o-64k        # long 阶段，然后 ruler 阶段
+bash majob.sh configs/qwen3_1.7b_128k_h2o.yaml --output outputs/h2o-128k
+bash scripts/evaluate.sh configs/qwen3_1.7b_64k_h2o.yaml --suite ruler --limit 4 # 小样本检查
+```
+
+`LONG_PPL_DATA`（环境变量优先，否则配置的 `long_ppl_data`）指向 PG19 测试集；BABILong 读共享离线缓存，或 `BABILONG_DATASET` 指向的本地副本。
+结果的 `cache_budget` 记录预算字节、条目数与固定分配的持久字节，`kv_compression` 记录实际保留条目与压缩比。
+
+与 32K 结果相比的两点说明：32K 的默认预算 2048 条远小于 SemanticLogKV 在 32K 的已分配持久缓存（1,937.8 MiB，相当于每层每个 KV head
+17,716 个 K/V 条目），两者不是同内存比较；KVCache-Factory 的最近窗口 8 对 H2O 偏弱（原论文为预算的一半）。代码本身未发现错误。
 
 ### 与 SemanticLogKV 横向对比
 
