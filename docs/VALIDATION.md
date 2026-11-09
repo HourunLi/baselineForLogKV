@@ -2,6 +2,26 @@
 
 只记录本分支实际执行过的检查。配置检查、CPU 局部测试与真实模型/全量评测分开表述。
 
+## 2026-11-09：64K / 128K 长文本，流式 H2O 与 SemanticLogKV 同内存
+
+在 CPU（torch 2.15、transformers 5.22、lm-eval 0.4.13 的开发环境，不是 torch218）执行：
+
+| 检查 | 结果 |
+|---|---|
+| `python -m pytest -q` | **90 passed**（改动前 75 passed） |
+| YaRN cos/sin 与 transformers `_compute_yarn_parameters`（factor 2 与 4，长度到 132096） | factor 4 逐元素相等，factor 2 最大差 1.6e-5 |
+| 分块前向（块长 8）与一次前向、FullKV 缓存 | logits 一致（含跨块的 `lm_head_start`） |
+| 流式 H2O，预算放得下全部 token | 与 FullKV 一致（不淘汰） |
+| 流式 H2O，预算 16、块长 8、70 个 token | 每块之后每层不超过 16 条，缓冲不超过预算加一个块，累计分数随条目保留 |
+| 分块打分与一次打分 | 输出与累计分数一致 |
+| 长文本配置解析（Qwen3-1.7B 结构，只读配置） | 64K：窗口 66560、YaRN ×2、19,173 条（最近 9,586）；128K：132096、×4、20,794 条；`long` 与 `ruler` 任务、样本 100、metadata 正确 |
+| `majob.sh`（模拟解释器） | 64K 配置依次启动 `long` 与 `ruler`；拒绝 `--context` |
+
+### 未验证
+
+- torch218 中的运行；真实 Qwen3-1.7B 权重、CUDA 上的数值、显存与速度。
+- 服务器离线缓存中 BABILong（64k / 128k 配置）、PG19 与 RULER 问答文件的实际读取；任何 64K / 128K 评测结果。
+
 ## 2026-10-19：`--print-config` 独立性测试不再依赖机器上是否有 Base
 
 PyramidKV 在服务器 torch218 上同一测试 5 项失败（用户运行）；本分支的测试相同，（推断）在服务器上会同样失败，本分支尚未在服务器上运行。失败的都是 `tests/test_standalone.py` 的 `--print-config` 测试：

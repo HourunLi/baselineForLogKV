@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # One model per GPU on one machine; NPROC_PER_NODE selects the number of local GPUs (default 1).
 # Runs from the project root with the active interpreter (SemanticLogKV's torch218) or H2O_PYTHON.
-# Pass --suite main|niah|longbench for a reference task group or --tasks for a diagnostic check.
+# Pass --suite main|niah|longbench (32K configs) or long|ruler (64K / 128K configs) for a reference task
+# group, or --tasks for a diagnostic check.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 CONFIG=${1:?Usage: bash scripts/evaluate.sh configs/qwen3_1.7b_32k_h2o.yaml --suite niah [--limit 4] [--method fullkv] ...}

@@ -17,6 +17,10 @@ cache (FMInference/H2O): accumulated scores keep growing with each new query and
 once the cache exceeds the budget, the lowest-scoring entries outside the recent
 window are evicted so the cache stays at ``max_capacity_prompt``. KVCache-Factory
 (the default here) compresses only once, after prefill.
+
+``streaming=True`` applies that policy from the first prompt chunk on: the model feeds the prompt in chunks
+(``prefill_chunk_size``), every chunk attends to the kept entries plus itself, adds its attention to the
+scores and evicts back to the budget, so no forward ever holds more than the budget plus one chunk.
 """
 
 from __future__ import annotations
@@ -65,19 +69,33 @@ def accumulated_attention(query_states: torch.Tensor, key_states: torch.Tensor, 
 
 
 def attention_with_scores(query_states: torch.Tensor, key_states: torch.Tensor, value_states: torch.Tensor,
-                          agg: str) -> tuple[torch.Tensor, torch.Tensor]:
-    """Explicit attention of the last ``T`` positions over the cache, also returning Σ_queries probabilities."""
+                          agg: str, chunk_size: int | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    """Explicit attention of the last ``T`` positions over the cache, also returning Σ_queries probabilities.
+
+    Queries are taken ``chunk_size`` at a time (all at once when None), so a long prompt chunk never
+    materialises its whole T x L probability matrix; the result does not depend on the chunking.
+    """
     B, H, T, D = query_states.shape
     H_kv, L = key_states.size(1), key_states.size(2)
     groups = H // H_kv
     queries = query_states.reshape(B, H_kv, groups, T, D)
-    scores = torch.matmul(queries, key_states.transpose(-1, -2).unsqueeze(2)) / math.sqrt(D)
-    if T > 1:
-        future = torch.ones(T, L, dtype=torch.bool, device=scores.device).tril(diagonal=L - T).logical_not()
-        scores = scores.masked_fill(future, torch.finfo(scores.dtype).min)
-    probs = F.softmax(scores, dim=-1, dtype=torch.float32)
-    output = torch.matmul(probs.to(value_states.dtype), value_states.unsqueeze(2)).reshape(B, H, T, D)
-    return output, reduce_group_scores(probs.sum(dim=-2), groups, agg)
+    keys_t = key_states.transpose(-1, -2).unsqueeze(2)
+    step = T if chunk_size is None else chunk_size
+    outputs, total = [], None
+    for start in range(0, T, step):
+        end = min(start + step, T)
+        scores = torch.matmul(queries[:, :, :, start:end], keys_t) / math.sqrt(D)
+        if T > 1:
+            # Query start + i sits at cache position L - T + start + i.
+            future = torch.ones(end - start, L, dtype=torch.bool, device=scores.device).tril(
+                diagonal=L - T + start).logical_not()
+            scores = scores.masked_fill(future, torch.finfo(scores.dtype).min)
+        probs = F.softmax(scores, dim=-1, dtype=torch.float32)
+        outputs.append(torch.matmul(probs.to(value_states.dtype), value_states.unsqueeze(2)))
+        summed = probs.sum(dim=-2)
+        total = summed if total is None else total + summed
+    output = torch.cat(outputs, dim=3).reshape(B, H, T, D)
+    return output, reduce_group_scores(total, groups, agg)
 
 
 def keep_heavy_hitters(scores: torch.Tensor, capacity: int, window_size: int, *tensors: torch.Tensor):

@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Training-platform entry point: run once per node. Evaluates the main suite, then 32K NIAH;
-# a failed stage stops the job.
+# Training-platform entry point: run once per node. At 32K (the default) it evaluates the main suite, then
+# NIAH; with a 64K / 128K config (context: in the YAML) the long suite, then RULER. A failed stage stops the job.
 set -eo pipefail
 cd "$(dirname "$0")"
 
 usage="Usage: bash majob.sh [configs/qwen3_1.7b_32k_h2o.yaml] [evaluation options, e.g. --limit 4 --output DIR]"
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
     echo "$usage"
-    echo "Runs configs/eval_suites.yaml: main (47 entries), then NIAH (3 entries, 32768 only)."
+    echo "Runs configs/eval_suites.yaml: main (47 entries), then NIAH (3 entries, 32768 only);"
+    echo "a config with context: 64k or 128k runs the long suite (BABILong, long_ppl), then RULER (13 tasks)."
     echo "Default environment: conda torch218; set H2O_PYTHON to use an existing interpreter."
     exit 0
 fi
@@ -23,8 +24,8 @@ for arg in "$@"; do
     case "$arg" in
         --suite|--suite=*|--tasks|--tasks=*|--eval-suites|--eval-suites=*|--include-path|--include-path=*|\
         --ruler-lengths|--ruler-lengths=*|--ruler-pretrained|--ruler-pretrained=*|\
-        --max-seq-length|--max-seq-length=*|--print-config)
-            echo "majob.sh runs the fixed main and NIAH suites; $arg is not allowed here." >&2
+        --max-seq-length|--max-seq-length=*|--context|--context=*|--print-config)
+            echo "majob.sh runs the fixed suites of the config's context; $arg is not allowed here." >&2
             echo "Use scripts/evaluate.sh for selected tasks or diagnostics." >&2
             exit 2 ;;
     esac
@@ -101,19 +102,29 @@ export KV_BASELINE_EXPECTED_WORLD_SIZE=$((NUM_NODES * GPUS_PER_NODE))
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 export NCCL_IB_TIMEOUT=${NCCL_IB_TIMEOUT:-22}
 
+# The YAML's top-level context: key (32k when absent) picks the stages.
+CONTEXT=$(sed -n -E 's/^context:[[:space:]]*["'"'"']?([0-9a-z]+)["'"'"']?[[:space:]]*(#.*)?$/\1/p' "$CONFIG_FILE" | tail -n 1)
+CONTEXT=${CONTEXT:-32k}
+case "$CONTEXT" in
+    32k) SUITES=(main niah) ;;
+    64k|128k) SUITES=(long ruler) ;;
+    *) echo "Unknown context '$CONTEXT' in $CONFIG_FILE (32k, 64k or 128k)" >&2; exit 2 ;;
+esac
+
 echo "Python=$H2O_PYTHON node=$NODE_RANK/$NUM_NODES GPUs/node=$GPUS_PER_NODE (visible $VISIBLE_GPUS) world_size=$KV_BASELINE_EXPECTED_WORLD_SIZE"
-for suite in main niah; do
+echo "Context $CONTEXT: suites ${SUITES[*]}"
+for suite in "${SUITES[@]}"; do
     if (( NUM_NODES == 1 )); then
         # A fixed port may already be taken on the node; standalone rendezvous binds a free one.
         rendezvous=(--standalone)
         echo "Evaluating suite '$suite' on one node (free local port) using $CONFIG_FILE"
     else
         port=$EVAL_MASTER_PORT
-        [[ "$suite" != niah ]] || port=$NIAH_MASTER_PORT
+        [[ "$suite" != "${SUITES[1]}" ]] || port=$NIAH_MASTER_PORT
         rendezvous=(--nnodes "$NUM_NODES" --node_rank "$NODE_RANK" --master_addr "$MASTER_ADDR" --master_port "$port")
         echo "Evaluating suite '$suite' at $MASTER_ADDR:$port using $CONFIG_FILE"
     fi
-    # set -e stops here when a stage fails, so NIAH never runs after a failed main stage.
+    # set -e stops here when a stage fails, so the second stage never runs after a failed first one.
     "$H2O_PYTHON" -m torch.distributed.run "${rendezvous[@]}" --nproc_per_node "$GPUS_PER_NODE" \
         -m h2okv.evaluate --config "$CONFIG_FILE" --suite "$suite" "$@"
 done

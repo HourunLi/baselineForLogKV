@@ -1,0 +1,6 @@
+# BABILong qa4 at 32k tokens: lm-eval's babilong_qa4 with the context length in the task name.
+include: _qa4_base
+task: babilong_qa4_32k
+dataset_kwargs:
+  qa_split: qa4
+  length: 32k
