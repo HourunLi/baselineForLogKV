@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "semanticlogkv-snapkv-baseline"
+version = "0.1.0"
+description = "SnapKV (ported from KVCache-Factory) on Qwen3 under SemanticLogKV's evaluation contract"
+requires-python = ">=3.10"
+# Lower bounds of what the code imports; SemanticLogKV's evaluation environment (torch218) satisfies all of
+# them, and none excludes a version it has.
+dependencies = [
+    "torch>=2.1",
+    "tokenizers>=0.19",
+    "safetensors>=0.4",
+    "PyYAML>=6.0",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+# Evaluation runs in SemanticLogKV's existing environment (torch218) from the project root, without
+# installing this project there, so nothing in it changes; this extra is for a separate environment only.
+# These are the requirements the code and the shared offline cache impose (its IFEval entry uses the Json
+# feature type of datasets>=4.7), and snapkv.evaluate checks them at start-up. Each result records the exact
+# versions, and compare_results refuses files whose versions differ. transformers comes with lm-eval; the
+# ruler/longbench/ifeval extras cover the NIAH, LongBench(-E) and IFEval entries of the full suite.
+eval = ["lm-eval[ruler,longbench,ifeval]>=0.4.9", "datasets>=4.7", "pandas>=1.5", "xlsxwriter>=3"]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["snapkv*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
