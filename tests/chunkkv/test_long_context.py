@@ -144,13 +144,13 @@ def test_long_task_files_are_verbatim_copies():
 
 def test_platform_launcher_runs_the_long_stages_for_a_long_context(tmp_path):
     env = {**platform_launcher_env(tmp_path), "MA_NUM_GPUS": "4"}
-    command = ["bash", str(runner.BASELINE_ROOT / "majob.sh"), "--context", "64k", "--limit", "4"]
+    command = ["bash", str(runner.BASELINE_ROOT / "majob.sh"), "--legacy", "--context", "64k", "--limit", "4"]
     done = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
     calls = (tmp_path / "calls").read_text().splitlines()
     assert [call.split("--suite ")[1].split()[0] for call in calls] == ["long", "ruler"]
     assert all("--context 64k" in call for call in calls)
-    refused = subprocess.run(command[:2] + ["--context", "96k"], cwd=tmp_path, env=env, capture_output=True, text=True)
+    refused = subprocess.run(command[:3] + ["--context", "96k"], cwd=tmp_path, env=env, capture_output=True, text=True)
     assert refused.returncode == 2 and "Unknown --context" in refused.stderr
 
 

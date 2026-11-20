@@ -1,5 +1,8 @@
 # ChunkKV baseline：实现与 SemanticLogKV 对齐口径
 
+本页描述原 SemanticLogKV 对照。当前完整评测使用原始 Base 权重的 ChunkKV 和 niahLogKV 的六档预算，见 [niahLogKV 对照说明](NIAH_CHUNKKV.md)。
+
+
 更新：2026-10-15。分支：`chunkKV`（自 `DMS` 分支创建；现只保留 ChunkKV 项目，DMS 在其自己的分支维护）。统一规则见
 [AGENTS.md](../AGENTS.md) 与 [Baseline 实现规范](BASELINE_IMPLEMENTATION_GUIDE.md)。论文：
 [ChunkKV, arXiv:2502.00299v5](https://arxiv.org/html/2502.00299v5)。
@@ -151,7 +154,7 @@ causal attention。固定改动只有：`run_eval: ""`、`save_ckpt: true`、`re
 
 ## 运行
 
-完整入口 `scripts/chunkkv_evaluate_all.sh` 对齐当前 `eval.sh` / `majob.sh` 的默认任务列表：
+完整入口 `scripts/chunkkv_evaluate_all.sh --legacy` 对齐当前 `eval.sh` / `majob.sh` 的默认任务列表：
 
 - `main`：14 个通用任务入口、20 个 LongBench、13 个 LongBench-E，共 47 个入口。`mmlu` 等任务组会由 harness 进一步展开。
 - `niah`：`niah_single_1,niah_single_2,niah_single_3`，仅评测 32768 tokens。
@@ -170,14 +173,14 @@ cd /workspace/baselineForLogKV/chunkKV
 python -m chunkkv.evaluate --suite main --print-config
 python -m chunkkv.evaluate --suite niah --print-config
 # 各任务先用 4 条样本检查完整评测流程；默认加载原始 Base
-bash scripts/chunkkv_evaluate_all.sh --limit 4 --output outputs/cmp-chunkkv
+bash scripts/chunkkv_evaluate_all.sh --legacy --limit 4 --output outputs/cmp-chunkkv
 # 同一套任务评测 SemanticLogKV CPT 权重，便于核对实际输入
-bash scripts/chunkkv_evaluate_all.sh --backend logkv --model /path/to/semanticlogkv/ckpt --limit 4 --output outputs/cmp-logkv
+bash scripts/chunkkv_evaluate_all.sh --legacy --backend logkv --model /path/to/semanticlogkv/ckpt --limit 4 --output outputs/cmp-logkv
 # 以双方 main 阶段本次生成的真实文件名替换 TIMESTAMP；niah 阶段同样核对
 python -m chunkkv.compare_results outputs/cmp-chunkkv/main/eval_results_TIMESTAMP.json outputs/cmp-logkv/main/eval_results_TIMESTAMP.json
 
 # 全量评测
-bash scripts/chunkkv_evaluate_all.sh --output outputs/chunkkv-full
+bash scripts/chunkkv_evaluate_all.sh --legacy --output outputs/chunkkv-full
 # 如只需 LongBench/LongBench-E，选择同一配置中的 33 个任务
 bash scripts/chunkkv_evaluate.sh --suite longbench --output outputs/chunkkv-longbench
 ```
@@ -254,7 +257,7 @@ bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml \
 所有节点需能读取同一路径下的代码、Base checkpoint、完整评测缓存，并使用同一输出路径。
 无需额外共享文件 barrier：每个阶段的 torchrun rendezvous 负责节点汇合；main 失败则不进入 NIAH。
 默认缓存与权重路径沿用前文的 `/workspace/...`，缓存需提前准备齐全（评测默认离线）。
-输出分别位于指定目录的 `main/`、`niah/`。普通单机终端仍可使用 `scripts/chunkkv_evaluate_all.sh`。
+输出分别位于指定目录的 `main/`、`niah/`。普通单机终端仍可使用 `scripts/chunkkv_evaluate_all.sh --legacy`。
 
 该入口为 CUDA GPU 作业设计；每张卡持有完整模型、分担评测样本。增加 GPU 数能分摊任务，
 不会降低单条 32K 输入的单卡显存需求。LongBench 的 32K 指上下文上限，NIAH 只生成/评测 32768 长度。

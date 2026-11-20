@@ -1,0 +1,35 @@
+# RULER's niah_multiquery at 1m with its four keys asked one per turn on one cache, the context cached before
+# any question is known (eval_tasks/niah_turns/niah_turns_utils.py; eval.py LogKVLM._generate_turns).
+task: niah_turns_1m
+dataset_path: ""
+dataset_name: ""
+output_type: generate_until
+test_split: test
+custom_dataset: !function niah_turns_utils.niah_turns_1m
+doc_to_text: "{{input}}"
+doc_to_target: "{{outputs}}"
+process_results: !function niah_turns_utils.process_results
+metric_list:
+  - metric: acc
+    aggregation: mean
+    higher_is_better: true
+  - metric: turn1
+    aggregation: mean
+    higher_is_better: true
+  - metric: turn2
+    aggregation: mean
+    higher_is_better: true
+  - metric: turn3
+    aggregation: mean
+    higher_is_better: true
+  - metric: turn4
+    aggregation: mean
+    higher_is_better: true
+generation_kwargs:
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 32
+  until: []
+  turn_separator: "<|turn|>"
+metadata:
+  version: 1.0

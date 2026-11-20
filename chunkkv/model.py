@@ -108,40 +108,51 @@ class ChunkKVAttention(nn.Module):
         visible = torch.ones(k.size(2), keys.size(2), dtype=torch.bool, device=x.device).tril(diagonal=cached)
         return self.attend(q, keys, values, visible[None, None])
 
+    def allocate_stream_cache(self):
+        weight = self.inner.qkv.weight
+        config = self.inner.config
+        shape = (1, config.n_query_groups, self.request.settings.budget, config.head_size)
+        self.keys, self.values = weight.new_empty(shape), weight.new_empty(shape)
+        self.positions = torch.empty(shape[2], dtype=torch.long, device=weight.device)
+
     def stream(self, q, k, v, input_pos):
         """Attend over the kept entries and this forward's tokens, then select back to the budget."""
         settings = self.request.settings
         if self.keys is None:
-            shape = (*k.shape[:2], settings.budget + k.size(2), k.size(3))
-            self.keys, self.values = k.new_empty(shape), v.new_empty(shape)
-            self.positions = input_pos.new_empty(settings.budget + k.size(2))
-        before = self.length
-        keys, values = self.append(k, v)
-        if self.positions.numel() < self.keys.size(2):  # append grew the K/V buffers
-            grown = self.positions.new_empty(self.keys.size(2))
-            grown[:before] = self.positions[:before]
-            self.positions = grown
-        self.positions[before:self.length] = input_pos
-        cached = keys.size(2) - k.size(2)
-        visible = torch.ones(k.size(2), keys.size(2), dtype=torch.bool, device=q.device).tril(diagonal=cached)
-        y = self.attend(q, keys, values, visible[None, None])
-        if self.length > settings.budget:
+            self.allocate_stream_cache()
+        end = self.length + k.size(2)
+        if end <= settings.budget:
+            self.positions[self.length:end] = input_pos
+            keys, values = self.append(k, v)
+            self.chunk_tokens = max(0, end - settings.window_size)
+        else:
+            # Only this layer needs space for incoming tokens during attention/selection.
+            keys = torch.cat((self.keys[:, :, :self.length], k), dim=2)
+            values = torch.cat((self.values[:, :, :self.length], v), dim=2)
+            positions = torch.cat((self.positions[:self.length], input_pos))
+
+        # The new tokens occupy the right edge of this position-ordered cache.
+        # The fused CUDA path accepts grouped K/V directly, including for YaRN.
+        from torch.nn.attention.bias import causal_lower_right
+
+        config = self.inner.config
+        scale = (config.attention_scores_scalar or config.head_size) ** -0.5 * self.inner.mscale ** 2
+        mask = causal_lower_right(q.size(2), end) if 1 < q.size(2) < end else None
+        y = torch.nn.functional.scaled_dot_product_attention(
+            q, keys, values, attn_mask=mask, is_causal=q.size(2) == end, scale=scale,
+            enable_gqa=q.size(1) != keys.size(1))
+        y = self.inner.proj(y.transpose(1, 2).reshape(q.size(0), q.size(2), -1))
+        if end > settings.budget:
             request = self.request
             if request.indices is None or settings.scores_layer(self.layer_idx):
-                config = self.inner.config
-                scale = (config.attention_scores_scalar or config.head_size) ** -0.5 * self.inner.mscale ** 2
                 observed = q[:, :, -min(settings.window_size, q.size(2)):]
                 scores = window_scores(observed, keys, scale)
-                request.indices, request.chunk_tokens = streaming_keep(
-                    scores[0], self.positions[:self.length], settings)
-            # Layers of one reuse group hold the same positions, so the scoring layer's indices apply.
+                request.indices, request.chunk_tokens = streaming_keep(scores[0], positions, settings)
             keep, n = request.indices, request.indices.numel()
             self.keys[:, :, :n] = keys.index_select(2, keep)
             self.values[:, :, :n] = values.index_select(2, keep)
-            self.positions[:n] = self.positions[:self.length].index_select(0, keep)
+            self.positions[:n] = positions.index_select(0, keep)
             self.length, self.chunk_tokens = n, request.chunk_tokens
-        else:
-            self.chunk_tokens = max(0, self.length - min(settings.window_size, self.length))
         return y
 
     def compress(self, q, k, v):
@@ -183,14 +194,14 @@ class ChunkKVAttention(nn.Module):
 class ChunkKVModel(nn.Module):
     """LitGPT ``GPT`` with a ChunkKV request cache and the same forward interface."""
 
-    def __init__(self, gpt, settings: ChunkKVSettings):
+    def __init__(self, gpt, settings: ChunkKVSettings, attention_type=CausalSelfAttention):
         super().__init__()
         check_supported(gpt.config)
         self.gpt = gpt
         self.settings = settings
         self.request = _Request(settings)
         for block in gpt.transformer.h:
-            if type(block.attn) is not CausalSelfAttention:
+            if type(block.attn) is not attention_type:
                 raise TypeError("ChunkKV expects LitGPT CausalSelfAttention layers")
             block.attn = ChunkKVAttention(block.attn, self.request)
         self.processed = None
@@ -205,7 +216,11 @@ class ChunkKVModel(nn.Module):
 
     def reset_cache(self) -> None:
         for attn in self.attentions:
-            attn.release()
+            if self.settings.streaming:
+                attn.length = attn.chunk_tokens = 0
+            else:
+                attn.release()
+        self.request.begin(False)
         self.processed = 0
 
     def release_cache(self) -> None:
@@ -249,7 +264,7 @@ class ChunkKVModel(nn.Module):
             out = self._run(idx[:, start:end], input_pos[start:end], head, compress=True)
             if out is not None:
                 logits.append(out)
-        return torch.cat(logits, dim=1)
+        return logits[0] if len(logits) == 1 else torch.cat(logits, dim=1)
 
     def _run(self, idx, input_pos, lm_head_start, compress):
         gpt = self.gpt
@@ -261,6 +276,8 @@ class ChunkKVModel(nn.Module):
             x = x * torch.tensor(gpt.config.n_embd**0.5, dtype=x.dtype)
         for block in gpt.transformer.h:
             x = block(x, cos, sin, None, input_pos, None)
+        if self.settings.streaming:
+            self.request.indices = None  # per-forward selection workspace
         self.processed += idx.size(1)
         if self.settings.streaming and lm_head_start is None:
             return None  # a prompt chunk before the logits span

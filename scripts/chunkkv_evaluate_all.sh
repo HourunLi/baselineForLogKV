@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# SemanticLogKV task lists: main benchmarks, then 32K-only NIAH.
+# Full niahLogKV protocol. Use --legacy for the previous SemanticLogKV suites.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+if [[ "${1:-}" != --legacy ]]; then
+    exec "${CHUNKKV_PYTHON:-python}" -m chunkkv.niah "$@"
+fi
+shift
 for arg in "$@"; do
     case "$arg" in
         --tasks|--tasks=*|--suite|--suite=*)

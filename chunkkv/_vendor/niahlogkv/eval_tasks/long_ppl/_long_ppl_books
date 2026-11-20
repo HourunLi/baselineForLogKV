@@ -1,0 +1,20 @@
+# Shared by long_ppl_books_<L>_<point>: the books (LONG_PPL_BOOKS, at least 262144 tokens each) cut to the point,
+# the last 4096 tokens scored given the tokens before them (eval_tasks/long_ppl/long_ppl_utils.py).
+dataset_path: ""
+dataset_name: ""
+output_type: loglikelihood
+test_split: test
+custom_dataset: !function long_ppl_utils.long_ppl_books
+doc_to_text: "{{context}}"
+doc_to_target: "{{continuation}}"
+target_delimiter: ""
+process_results: !function long_ppl_utils.process_results
+metric_list:
+  - metric: ppl
+    aggregation: !function long_ppl_utils.perplexity
+    higher_is_better: false
+  - metric: bits_per_byte
+    aggregation: !function long_ppl_utils.bits_per_byte
+    higher_is_better: false
+metadata:
+  version: 1.0
