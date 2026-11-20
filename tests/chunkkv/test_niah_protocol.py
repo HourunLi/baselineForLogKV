@@ -1,15 +1,19 @@
 """Regression tests for the niahLogKV entry point, its persistent storage and the reference request API."""
+import copy
 import json
 import subprocess
 import sys
 
+import pytest
+
+from chunkkv.compare_results import CONTRACT_FIELDS, compare_results
 from .test_semanticlogkv_eval import LOGKV, checkpoint, options, requests, words
 
 
 def test_default_plan_and_length_specific_tasks():
     result = subprocess.check_output([sys.executable, "-m", "chunkkv.niah", "--print-config"])
     config = json.loads(result)
-    assert "ckpt-logKV/qwen1.7b-32k-gamma_k12_b128_p1024_2k" in config["checkpoint"]
+    assert config["checkpoint"] == config["tokenizer"] and config["checkpoint"].endswith("/Qwen3-1.7B-Base")
     rows = {r["folder"]: r for r in config["stages"]}
     assert len(rows) == 14 and len(rows["niah"]["benchmark"].split(",")) == 20
     assert rows["main"]["limit"] is None
@@ -64,3 +68,36 @@ def test_reference_tasks_are_registered():
     for name in ["niah_turns_1m", "longbench2_1m", "long_ppl_books_1m", "babilong_1m",
                  "infinitebench_256k", "niah_single_2_words_qend", "ruler_qa_hotpot"]:
         assert name in tm.all_tasks
+
+@pytest.mark.parametrize("size", ["1.7b", "8b"])
+@pytest.mark.parametrize("backend", ["chunkkv", "logkv", "dense"])
+def test_checkpoint_defaults_and_override(size, backend, tmp_path):
+    command = [sys.executable, "-m", "chunkkv.niah", "--print-config", "--backend", backend, "--model-size", size]
+    cfg = json.loads(subprocess.check_output(command))
+    source = cfg["reference_config"]
+    assert cfg["tokenizer"] == source["ckpt_dir"].rstrip("/")
+    assert cfg["checkpoint"] == (cfg["tokenizer"] if backend == "chunkkv" else source["save_path"])
+    assert cfg["weight_role"] == ("base" if backend == "chunkkv" else "cpt")
+    override = json.loads(subprocess.check_output(command + ["--model", str(tmp_path)]))
+    assert (override["checkpoint"], override["weight_role"], override["tokenizer"]) == (
+        str(tmp_path), "explicit", cfg["tokenizer"])
+
+
+def test_default_base_vs_cpt_comparison_preserves_protocol_checks():
+    contract = dict.fromkeys(CONTRACT_FIELDS, "shared")
+    contract.update(protocol="niahLogKV", effective_model_config={"n_layer": 28},
+                    evaluated_model={"weight_role": "base"})
+    row = dict(doc_id=1, doc_hash="doc", prompt_hash="prompt", target_hash="target", arguments=["question"])
+    base = dict(model_backend="chunkkv", comparison_contract=contract, results={"samples": {"test": [row]}})
+    cpt = copy.deepcopy(base)
+    cpt["model_backend"] = "logkv"
+    cpt["comparison_contract"].update(source_weight_sha256="cpt", source_config_files={"yaml": "cpt"},
+                                      evaluated_model={"weight_role": "cpt"})
+    assert compare_results(base, cpt) == {"test": 1}
+    cpt["comparison_contract"]["effective_model_config"]["n_layer"] = 36
+    with pytest.raises(ValueError, match="effective_model_config"):
+        compare_results(base, cpt)
+    base["model_backend"] = "dense"
+    contract["evaluated_model"]["weight_role"] = "cpt"
+    with pytest.raises(ValueError, match="source_weight_sha256"):
+        compare_results(base, cpt)

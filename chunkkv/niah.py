@@ -1,5 +1,6 @@
-"""Same-checkpoint ChunkKV / niahLogKV / full attention evaluation on the reference length passes."""
+"""Evaluate Base ChunkKV and CPT LogKV/dense on the same reference length passes."""
 import argparse
+from dataclasses import asdict
 import importlib.metadata
 import json
 import os
@@ -60,15 +61,12 @@ def run_stage(args, row, config, model, tokenizer, output):
     os.environ["EVAL_OPTIONAL_TASKS"] = ",".join(row["optional"])
     options = dict(chunk_size=10, window_size=64, reuse_layers=1, streaming=True,
                    prefill_chunk_size=config["log_kv_prefill_block"], budget="logkv")
-    metadata_tokenizer = tokenizer
-    if args.tokenizer is None and any((Path(model) / name).is_file() for name in ("tokenizer.json", "tokenizer.model")):
-        metadata_tokenizer = model  # eval.sh passes SAVE_DIR to dataset generators
     needs_metadata = any(task.startswith(("niah_", "ruler_", "long_ppl", "infinitebench"))
                          for task in row["benchmark"].split(","))
     kwargs = dict(checkpoint_dir=model, tokenizer_dir=tokenizer, arch_name=config["arch_name"],
                   output_path=str(output / row["folder"]), benchmark=row["benchmark"], limit=row["limit"],
                   config_overrides=row["config_overrides"],
-                  metadata={"pretrained": metadata_tokenizer, "max_seq_lengths": row["lengths"]} if needs_metadata else None)
+                  metadata={"pretrained": tokenizer, "max_seq_lengths": row["lengths"]} if needs_metadata else None)
     if args.backend == "dense":
         kwargs["log_kv_dense_mode"] = True
     else:
@@ -80,10 +78,14 @@ def run_stage(args, row, config, model, tokenizer, output):
         binary = evaluator._checkpoint_file_for_loading(checkpoint / "lit_model.pth")
         digest = file_sha256(binary)
         # Pin the selected step for this launch even if another checkpoint arrives later.
-        record = dict(checkpoint_dir=str(checkpoint), binary=str(binary), lit_model_sha256=digest)
+        record = dict(checkpoint_dir=str(checkpoint), binary=str(binary), lit_model_sha256=digest,
+                      weight_role=args.weight_role)
+        architecture = evaluator._config_for_evaluation(str(checkpoint), row["config_overrides"], config["arch_name"])
+        evaluator._configure_inference_memory(architecture, row["config_overrides"])
         tokenizer_files = {p.name: file_sha256(p) for p in Path(tokenizer).iterdir()
                            if p.is_file() and p.suffix in (".json", ".model", ".txt", ".jinja")}
         contract = dict(protocol="niahLogKV", source_weight_sha256=digest, evaluated_model=record,
+                        effective_model_config=asdict(architecture),
                         source_config_files={p.name: file_sha256(p) for p in [checkpoint/"model_config.yaml"]
                                              if p.is_file()}, tokenizer_files=tokenizer_files,
                         evaluation_code={str(p.relative_to(ROOT)): file_sha256(p) for p in ROOT.rglob("*")
@@ -111,7 +113,7 @@ def main():
     parser.add_argument("--reference", choices=("baseline", "word_first", "word_first_query", "word_first_query_dual"),
                         default="baseline", help="reference eval_full_<method> preset for LogKV and budget sizing")
     parser.add_argument("--model-size", choices=("1.7b", "8b"), default="1.7b")
-    parser.add_argument("--model", type=Path, help="CPT checkpoint or a directory containing step_*")
+    parser.add_argument("--model", type=Path, help="Override the backend default checkpoint (ChunkKV: Base, LogKV/dense: gamma CPT)")
     parser.add_argument("--tokenizer", type=Path)
     parser.add_argument("--lengths", default=os.getenv("EVAL_LENGTHS") or ",".join(reference.LENGTHS))
     parser.add_argument("--suites", default=os.getenv("EVAL_SUITES"), help="comma-separated long-context suites")
@@ -139,11 +141,14 @@ def main():
         config.update(log_kv_gamma_query_cue=True, log_kv_gamma_cue_guard=True)
     if args.reference == "word_first_query_dual":
         config["log_kv_gamma_query_pool_tokens"] = 512
-    model = str((args.model or Path(config["save_path"])).resolve())
+    default_base = args.backend == "chunkkv"
+    default_checkpoint = config["ckpt_dir" if default_base else "save_path"]
+    args.weight_role = "explicit" if args.model else ("base" if default_base else "cpt")
+    model = str((args.model or Path(default_checkpoint)).resolve())
     tokenizer = str((args.tokenizer or Path(config["ckpt_dir"])).resolve())
     output = (args.output or BASELINE_ROOT/"outputs/niahlogkv"/args.model_size/args.reference/args.backend).resolve()
     if args.print_config:
-        print(json.dumps(dict(checkpoint=model, tokenizer=tokenizer, backend=args.backend,
+        print(json.dumps(dict(checkpoint=model, weight_role=args.weight_role, tokenizer=tokenizer, backend=args.backend,
                               reference_config=config, output=str(output), stages=rows), indent=2))
     elif args.stage is not None:
         run_stage(args, rows[args.stage], config, model, tokenizer, output)

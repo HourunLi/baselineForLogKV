@@ -1,6 +1,6 @@
 # Baseline 实现规则
 
-本分支的当前完整对照采用 [niahLogKV 协议](docs/NIAH_CHUNKKV.md)。下列第 4、5 条中的 Base 权重和旧任务范围适用于 `--legacy`。默认完整入口使用同一 gamma CPT 的 ChunkKV、niahLogKV 和 dense，包含 32K 主线及 32K–1M 六档，以参考缓存的初始实分配字节匹配各档预算。
+本分支的当前完整对照采用 [niahLogKV 协议](docs/NIAH_CHUNKKV.md)。第 5 条的旧任务范围适用于 `--legacy`。默认完整入口给 ChunkKV 加载原始 Qwen3 Base，给 niahLogKV 和它的 dense 同权重对照加载同规模的 gamma CPT，包含 32K 主线及 32K–1M 六档，以参考缓存的初始实分配字节匹配各档预算。
 
 
 本文件适用于所有 baseline。完整要求见 [Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md)；评测环境、路径、环境变量、依赖写法与已知坑的当前取值见 [Baseline 环境与避坑清单](docs/BASELINE_ENVIRONMENT.md)。
