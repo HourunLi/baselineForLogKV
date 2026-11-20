@@ -1,0 +1,8 @@
+# BABILong qa5 at 256k tokens: lm-eval's babilong_qa5 with the context length in the task name. The 1000-sample
+# set stops at 128k; 256k comes from RMT-team/babilong (100 samples per length).
+include: _qa5_base
+task: babilong_qa5_256k
+dataset_kwargs:
+  qa_split: qa5
+  length: 256k
+  dataset: RMT-team/babilong

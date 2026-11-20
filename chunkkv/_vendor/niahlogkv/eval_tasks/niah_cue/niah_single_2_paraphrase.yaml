@@ -1,0 +1,3 @@
+task: niah_single_2_paraphrase
+include: niah_single_2_qend.yaml
+custom_dataset: !function niah_cue_utils.niah_single_2_paraphrase

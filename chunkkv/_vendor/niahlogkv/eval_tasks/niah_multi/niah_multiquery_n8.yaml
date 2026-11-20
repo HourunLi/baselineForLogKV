@@ -1,0 +1,10 @@
+task: niah_multiquery_n8
+include: _niah_multi.yaml
+dataset_kwargs:
+  num_needle_q: 8
+  tokens_to_generate: 192
+generation_kwargs:
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 192
+  until: []
