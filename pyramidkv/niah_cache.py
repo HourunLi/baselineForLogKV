@@ -9,14 +9,14 @@ from ._vendor.niahlogkv.litgpt.kv_compression import _with_ratios
 
 
 class MatchedPyramid(PyramidKVCompressor):
-    def __init__(self, layers, window, slots, recent=64):
+    def __init__(self, layers, window, slots, window_size=64, **selection):
         # One integer slot holds all KV heads in one layer. Keep the pyramid
         # symmetric when its widest layer would exceed the physical window.
-        if not layers * recent <= slots <= layers * window:
-            raise ValueError(f"Cannot distribute {slots} slots over {layers} layers of [{recent}, {window}]")
+        if not layers * window_size <= slots <= layers * window:
+            raise ValueError(f"Cannot distribute {slots} slots over {layers} layers of [{window_size}, {window}]")
         mean, remainder = divmod(slots, layers)
-        super().__init__(layers, max(mean, recent + 1), window_size=recent, streaming=True)
-        older = mean - recent
+        super().__init__(layers, max(mean, window_size + 1), window_size=window_size, streaming=True, **selection)
+        older = mean - window_size
         spread = min(older - older // self.beta, window - mean)
         # Round each slope toward zero, so opposite layers cancel exactly.
         self.capacities = []
@@ -54,7 +54,7 @@ def snapshot(model, processed_tokens):
     return _with_ratios(dict(counts, processed_tokens=processed_tokens))
 
 
-def install_backend(evaluator, backend, provenance):
+def install_backend(evaluator, backend, provenance, settings=None):
     class RecordedLM(evaluator.LogKVLM):
         baseline_provenance = dict(provenance, model_backend=backend)
 
@@ -62,9 +62,12 @@ def install_backend(evaluator, backend, provenance):
         evaluator.LogKVLM = RecordedLM
         return
 
+    selection = dict(settings or {})
+    chunk_size = selection.pop("prefill_chunk_size", None)
+
     class PyramidLM(RecordedLM):
         def _prefill_chunk(self):
-            return self.log_kv_prefill_block
+            return self.log_kv_prefill_block if chunk_size is None else chunk_size
 
         def _set_eval_cache(self):
             if self._eval_cache_ready:
@@ -80,7 +83,7 @@ def install_backend(evaluator, backend, provenance):
                 with torch.cuda.device(self._device):
                     torch.cuda.empty_cache()
             slot_bytes = dense // (self.config.n_layer * self.model.max_seq_length)
-            method = MatchedPyramid(self.config.n_layer, self.model.max_seq_length, target // slot_bytes)
+            method = MatchedPyramid(self.config.n_layer, self.model.max_seq_length, target // slot_bytes, **selection)
             allocated = 0
             for layer, block in enumerate(self.model.transformer.h):
                 cache = ReferenceCache(layer, method)

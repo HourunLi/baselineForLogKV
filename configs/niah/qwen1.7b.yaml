@@ -1,7 +1,24 @@
+# bash majob.sh configs/niah/qwen1.7b.yaml
+protocol: niahlogkv
+backend: pyramidkv
+model_size: 1.7b
+eval_lengths: [32k, 64k, 128k, 256k, 512k, 1m]
+long_limit: 100  # 每个长文本任务的样本数上限
+pyramidkv:
+  window_size: 64
+  kernel_size: 7
+  pooling: maxpool
+  beta: 20
+  gqa_score_agg: mean
+  prefill_chunk_size: 2048
+
 # Flattened evaluation fields from niahLogKV exp/qwen1.7b-32k/eval_full_baseline.yaml
 arch_name: Qwen/Qwen3-1.7B-Base
+# PyramidKV 原始 Base 权重（LitGPT 格式）和 tokenizer 目录。
 ckpt_dir: /workspace/checkpoints/Qwen/Qwen3-1.7B-Base/
+# LogKV 和 CPT dense 对照使用此目录。
 save_path: /workspace/ckpt-logKV/qwen1.7b-32k-gamma_k12_b128_p1024_2k
+# 用以下参数测量 niahLogKV 缓存预算，推导 PyramidKV 各层容量。
 log_kv_B: 128
 log_kv_recent_size: 2048
 log_kv_prefill_block: 2048
