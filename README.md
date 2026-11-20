@@ -1,8 +1,8 @@
 # ChunkKV baseline（`chunkKV` 分支）
 
-## niahLogKV 同权重、同缓存预算评测
+## niahLogKV 同缓存预算评测
 
-当前完整评测采用 `LogKV` 的 `niahLogKV@0f4396b`。ChunkKV、LogKV、dense 默认读取同一份 Qwen3-1.7B gamma CPT 权重，`--model-size 8b` 选择对应的 8B CPT。正式对照使用流式 ChunkKV，逐层常驻 K/V 和位置索引一并计入预算。六档长度、YaRN、任务、生成与评分接口随仓库提供。
+当前完整评测采用 `LogKV` 的 `niahLogKV@0f4396b`。ChunkKV 默认加载原始 Qwen3-1.7B-Base。LogKV 和它的 dense 同权重对照加载该规模的 gamma CPT checkpoint。`--model-size 8b` 同样按后端选择 8B Base 或 8B CPT。正式对照使用流式 ChunkKV，逐层常驻 K/V 和位置索引一并计入预算。六档长度、YaRN、任务、生成与评分接口随仓库提供。
 
 ```bash
 # 先查看完整计划，包括权重、每阶段任务和样本上限

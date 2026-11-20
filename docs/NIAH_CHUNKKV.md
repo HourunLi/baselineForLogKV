@@ -1,8 +1,8 @@
-# ChunkKV 与 niahLogKV 的同权重对照
+# ChunkKV 与 niahLogKV 的评测对照
 
-参考版本为 niahLogKV 0f4396b。配置来自两个模型的 `eval_full_baseline.yaml` 继承链，默认 B=128、recent=2048、K=12、exact=1024。1.7B 和 8B 分别使用 `qwen1.7b-32k-gamma_k12_b128_p1024_2k` 和 `qwen8b-32k-gamma_k12_b128_p1024_2k` 的 CPT 权重。优先使用目录自身的权重，缺少时按参考规则解析最新的 `step_*`。每份结果记录实际二进制路径及 SHA-256。不同作业之间应对照这项哈希。指定 `--model /path/to/step_N --tokenizer /path/to/Qwen3-X-Base` 可固定某一步和 tokenizer。
+参考版本为 niahLogKV 0f4396b。配置来自两个模型的 `eval_full_baseline.yaml` 继承链，默认 B=128、recent=2048、K=12、exact=1024。ChunkKV 使用所选规模的原始 Qwen3 Base。niahLogKV 和它的 dense 同权重对照在 1.7B 和 8B 上分别使用 `qwen1.7b-32k-gamma_k12_b128_p1024_2k` 和 `qwen8b-32k-gamma_k12_b128_p1024_2k` 的 CPT 权重。优先使用目录自身的权重，缺少时按参考规则解析最新的 `step_*`。每份结果记录实际二进制路径及 SHA-256。比较 niahLogKV 与 CPT dense 时，两者的实际权重哈希应一致。比较 ChunkKV 与 niahLogKV 时，分数差异同时包含权重和缓存策略的影响。指定 `--model /path/to/step_N --tokenizer /path/to/Qwen3-X-Base` 可固定某一步和 tokenizer。
 
-`--backend chunkkv|logkv|dense` 复用同一份 niahLogKV 请求与任务代码。dense 在这里对应参考项目的 CPT dense 对照。复现实验时三个后端采用相同的 `--model-size`、`--reference`、数据目录与样本限制。默认的 `--reference baseline` 使用 K/V 分数准入，也可选择 `word_first`、`word_first_query` 或 `word_first_query_dual` 对应的准入配置。ChunkKV 从所选配置的初始常驻缓存读取预算，自身用观察窗注意力选择块。
+`--backend chunkkv|logkv|dense` 复用同一份 niahLogKV 请求与任务代码。dense 默认对应参考项目的 CPT dense 对照。若要测量 ChunkKV 在原始 Base 上单独引入的分数变化，可用 `--backend dense --model /path/to/Qwen3-X-Base`。各后端的模型和任务生成器默认共用原始 Base tokenizer。复现实验时三个后端采用相同的 `--model-size`、`--reference`、数据目录与样本限制。默认的 `--reference baseline` 使用 K/V 分数准入，也可选择 `word_first`、`word_first_query` 或 `word_first_query_dual` 对应的准入配置。ChunkKV 从所选配置的初始常驻缓存读取预算，自身用观察窗注意力选择块。
 
 ## 各档预算
 

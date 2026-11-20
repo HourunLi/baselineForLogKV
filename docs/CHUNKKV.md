@@ -1,6 +1,6 @@
 # ChunkKV baseline：实现与 SemanticLogKV 对齐口径
 
-本页描述原 SemanticLogKV 对照。当前完整评测使用 niahLogKV 同权重和六档预算，见 [niahLogKV 对照说明](NIAH_CHUNKKV.md)。
+本页描述原 SemanticLogKV 对照。当前完整评测使用原始 Base 权重的 ChunkKV 和 niahLogKV 的六档预算，见 [niahLogKV 对照说明](NIAH_CHUNKKV.md)。
 
 
 更新：2026-10-15。分支：`chunkKV`（自 `DMS` 分支创建；现只保留 ChunkKV 项目，DMS 在其自己的分支维护）。统一规则见
