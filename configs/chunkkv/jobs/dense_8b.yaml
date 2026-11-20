@@ -1,0 +1,16 @@
+protocol: niahLogKV
+backend: dense
+model_size: 8b
+reference: baseline
+base_checkpoint: /workspace/checkpoints/Qwen/Qwen3-8B-Base/
+cpt_checkpoint: /workspace/ckpt-logKV/qwen8b-32k-gamma_k12_b128_p1024_2k
+output: outputs/niahlogkv/8b/baseline/dense
+main: true
+lengths:
+- 32k
+- 64k
+- 128k
+- 256k
+- 512k
+- 1m
+long_limit: 100

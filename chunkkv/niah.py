@@ -59,8 +59,7 @@ def run_stage(args, row, config, model, tokenizer, output):
     from .semanticlogkv_eval import file_sha256
 
     os.environ["EVAL_OPTIONAL_TASKS"] = ",".join(row["optional"])
-    options = dict(chunk_size=10, window_size=64, reuse_layers=1, streaming=True,
-                   prefill_chunk_size=config["log_kv_prefill_block"], budget="logkv")
+    options = args.chunkkv_options
     needs_metadata = any(task.startswith(("niah_", "ruler_", "long_ppl", "infinitebench"))
                          for task in row["benchmark"].split(","))
     kwargs = dict(checkpoint_dir=model, tokenizer_dir=tokenizer, arch_name=config["arch_name"],
@@ -126,7 +125,32 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--print-config", action="store_true")
     parser.add_argument("--stage", type=int, help=argparse.SUPPRESS)
-    args = parser.parse_args()
+    parser.add_argument("--job-config", type=Path)
+    original = sys.argv[1:]
+    job_parser = argparse.ArgumentParser(add_help=False)
+    job_parser.add_argument("--job-config", type=Path)
+    job_path = job_parser.parse_known_args(original)[0].job_config
+    job = {}
+    defaults = []
+    if job_path:
+        job = yaml.safe_load(job_path.read_text())
+        if not isinstance(job, dict) or job.get("protocol") != "niahLogKV":
+            parser.error("expected protocol: niahLogKV in job YAML")
+        cli_fields = ("backend", "model_size", "reference", "lengths", "suites", "limit", "long_limit", "output")
+        unknown = set(job) - set(cli_fields) - {"protocol", "base_checkpoint", "cpt_checkpoint", "chunkkv", "main"}
+        if unknown:
+            parser.error(f"unknown job fields: {sorted(unknown)}")
+        for field in cli_fields:
+            value = job.get(field)
+            if value is not None:
+                if isinstance(value, list):
+                    value = ",".join(map(str, value))
+                defaults.extend(["--" + field.replace("_", "-"), str(value)])
+        if "main" in job:
+            if not isinstance(job["main"], bool):
+                parser.error("main must be a YAML boolean")
+            defaults.append("--main" if job["main"] else "--no-main")
+    args = parser.parse_args(defaults + original)
     if args.long_limit < 1 or (args.limit is not None and args.limit < 1):
         parser.error("sample limits must be positive")
     try:
@@ -134,6 +158,17 @@ def main():
     except ValueError as error:
         parser.error(str(error))
     config = yaml.safe_load((CONFIGS/f"qwen{args.model_size}.yaml").read_text())
+    for field, key in (("base_checkpoint", "ckpt_dir"), ("cpt_checkpoint", "save_path")):
+        if field in job:
+            config[key] = job[field]
+    tuning = job.get("chunkkv", {})
+    if not isinstance(tuning, dict) or set(tuning) - {"chunk_size", "window_size", "reuse_layers", "prefill_chunk_size"}:
+        parser.error("invalid chunkkv settings in job YAML")
+    if any(type(value) is not int or value < 1 for value in tuning.values()):
+        parser.error("chunkkv sizes must be positive integers")
+    args.chunkkv_options = dict(chunk_size=10, window_size=64, reuse_layers=1, streaming=True,
+                                prefill_chunk_size=config["log_kv_prefill_block"], budget="logkv")
+    args.chunkkv_options.update(tuning)
     # These eval_full configurations inherit the same gamma checkpoint and change only admission.
     if args.reference != "baseline":
         config["log_kv_gamma_surprisal"] = "word_first"
@@ -149,7 +184,7 @@ def main():
     output = (args.output or BASELINE_ROOT/"outputs/niahlogkv"/args.model_size/args.reference/args.backend).resolve()
     if args.print_config:
         print(json.dumps(dict(checkpoint=model, weight_role=args.weight_role, tokenizer=tokenizer, backend=args.backend,
-                              reference_config=config, output=str(output), stages=rows), indent=2))
+                              reference_config=config, chunkkv=args.chunkkv_options, output=str(output), stages=rows), indent=2))
     elif args.stage is not None:
         run_stage(args, rows[args.stage], config, model, tokenizer, output)
     else:
