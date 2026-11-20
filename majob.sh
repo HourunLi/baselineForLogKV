@@ -7,28 +7,43 @@ cd "$(dirname "$0")"
 usage="Usage: bash majob.sh [configs/qwen3_1.7b_32k_snapkv.yaml] [evaluation options, e.g. --limit 4 --output DIR]"
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
     echo "$usage"
+    echo "bash majob.sh configs/niah/qwen1.7b.yaml  # or configs/niah/qwen8b.yaml"
     echo "Runs configs/eval_suites.yaml: main (47 entries), then NIAH (3 entries, 32768 only)."
     echo "Default environment: conda torch218; set SNAPKV_PYTHON to use an existing interpreter."
     exit 0
 fi
-CONFIG_FILE=configs/qwen3_1.7b_32k_snapkv.yaml
-if [[ $# -gt 0 && "$1" != -* ]]; then
-    CONFIG_FILE=$1
+niah_protocol=0
+if [[ "${1:-}" == niahlogkv ]]; then
+    niah_protocol=1
     shift
 fi
-[[ -f "$CONFIG_FILE" ]] || { echo "Missing evaluation YAML: $CONFIG_FILE" >&2; exit 2; }
-# The formal protocol fixes tasks, NIAH lengths, window and offline data; only the
-# method, budget, output and a debugging --limit may be chosen here.
-for arg in "$@"; do
-    case "$arg" in
-        --suite|--suite=*|--tasks|--tasks=*|--eval-suites|--eval-suites=*|--include-path|--include-path=*|\
-        --ruler-lengths|--ruler-lengths=*|--ruler-pretrained|--ruler-pretrained=*|\
-        --max-seq-length|--max-seq-length=*|--print-config)
-            echo "majob.sh runs the fixed main and NIAH suites; $arg is not allowed here." >&2
-            echo "Use scripts/evaluate.sh for selected tasks or diagnostics." >&2
-            exit 2 ;;
-    esac
-done
+CONFIG_FILE=configs/qwen3_1.7b_32k_snapkv.yaml
+if (( ! niah_protocol )); then
+    if [[ $# -gt 0 && "$1" != -* ]]; then
+        CONFIG_FILE=$1
+        shift
+    fi
+    [[ -f "$CONFIG_FILE" ]] || { echo "Missing evaluation YAML: $CONFIG_FILE" >&2; exit 2; }
+    if grep -Eq '^protocol[[:space:]]*:' "$CONFIG_FILE"; then
+        niah_protocol=1
+        set -- --config "$CONFIG_FILE" "$@"
+    fi
+fi
+if (( ! niah_protocol )); then
+    # The formal protocol fixes tasks, NIAH lengths, window and offline data; only the
+    # method, budget, output and a debugging --limit may be chosen here.
+    for arg in "$@"; do
+        case "$arg" in
+            --suite|--suite=*|--tasks|--tasks=*|--eval-suites|--eval-suites=*|--include-path|--include-path=*|\
+            --ruler-lengths|--ruler-lengths=*|--ruler-pretrained|--ruler-pretrained=*|\
+            --max-seq-length|--max-seq-length=*|--context|--context=*|--print-config)
+                echo "majob.sh runs the fixed suites of the config's context; $arg is not allowed here." >&2
+                echo "Use scripts/evaluate.sh for selected tasks or diagnostics." >&2
+                exit 2 ;;
+        esac
+    done
+
+fi
 
 # Conda activation scripts may read unset variables; enable nounset afterwards.
 if [[ -z "${SNAPKV_PYTHON:-}" ]]; then
@@ -36,6 +51,13 @@ if [[ -z "${SNAPKV_PYTHON:-}" ]]; then
     SNAPKV_PYTHON=$(python -c 'import sys; print(sys.executable)')
 fi
 set -u
+if (( niah_protocol )); then
+    for arg in "$@"; do
+        if [[ "$arg" == --print-config ]]; then
+            exec "$SNAPKV_PYTHON" -m snapkv.niah "$@"
+        fi
+    done
+fi
 # Runtime settings of SemanticLogKV's eval.sh/majob.sh (commit 4fd97c7) on this platform. A training job's
 # default LD_LIBRARY_PATH can reach an older libcuda first; torch218's cu128 build needs these libraries first.
 # Its NVTE_*/CUDNN_PATH settings serve Transformer Engine, which this project does not use.
@@ -100,6 +122,12 @@ fi
 export KV_BASELINE_EXPECTED_WORLD_SIZE=$((NUM_NODES * GPUS_PER_NODE))
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 export NCCL_IB_TIMEOUT=${NCCL_IB_TIMEOUT:-22}
+
+if (( niah_protocol )); then
+    export NPROC_PER_NODE=$GPUS_PER_NODE GROUP_WORLD_SIZE=$NUM_NODES NODE_RANK MASTER_ADDR EVAL_MASTER_PORT
+    export LITGPT_EXPECTED_WORLD_SIZE=$KV_BASELINE_EXPECTED_WORLD_SIZE
+    exec "$SNAPKV_PYTHON" -m snapkv.niah "$@"
+fi
 
 echo "Python=$SNAPKV_PYTHON node=$NODE_RANK/$NUM_NODES GPUs/node=$GPUS_PER_NODE (visible $VISIBLE_GPUS) world_size=$KV_BASELINE_EXPECTED_WORLD_SIZE"
 for suite in main niah; do

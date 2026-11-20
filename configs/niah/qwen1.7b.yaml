@@ -1,0 +1,51 @@
+# bash majob.sh configs/niah/qwen1.7b.yaml
+protocol: niahlogkv
+backend: snapkv
+model_size: 1.7b
+eval_lengths: [32k, 64k, 128k, 256k, 512k, 1m]
+long_limit: 100  # 每个长文本任务的样本数上限
+snapkv:
+  window_size: 8
+  kernel_size: 7
+  pooling: maxpool
+  gqa_score_agg: mean
+  prefill_chunk_size: 2048
+
+# Flattened evaluation fields from niahLogKV exp/qwen1.7b-32k/eval_full_baseline.yaml
+arch_name: Qwen/Qwen3-1.7B-Base
+# SnapKV 原始 Base 权重（LitGPT 格式）和 tokenizer 目录。
+ckpt_dir: /home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/
+# LogKV 和 CPT dense 对照使用此目录。
+save_path: /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/qwen1.7b-32k-gamma_k12_b128_p1024_2k
+# 用以下参数测量 niahLogKV 缓存预算，推导 SnapKV 各层容量。
+log_kv_B: 128
+log_kv_recent_size: 2048
+log_kv_prefill_block: 2048
+log_kv_second_order_scale: 0
+log_kv_semantic_clusters: true
+log_kv_cluster_k_max: 12
+log_kv_cluster_lambda_rel: 1.0
+log_kv_seg_eta: 1.0
+log_kv_seg_g0: 2048.0
+log_kv_seg_block_level: 0
+log_kv_seg_forget: 0.5
+log_kv_semantic_flush_granularity: 2048
+log_kv_semantic_capacity_beta: 0.0
+log_kv_semantic_capacity_hard_cap_mult: 0.0
+log_kv_alpha_exact_tokens: 1024
+log_kv_beta_novelty: true
+log_kv_beta_adaptive_merge: true
+log_kv_gamma_level0_reinsert: true
+log_kv_gamma_top_merge: lightest
+log_kv_gamma_level_slack: 2
+log_kv_gamma_cue_tokens: 0
+log_kv_semantic_cluster_chunk_size: 0
+log_kv_semantic_anchor_mode: mid
+log_kv_semantic_pack_backend: auto
+log_kv_semantic_centroid_backend: parallel
+log_kv_semantic_replay_updates: true
+log_kv_semantic_unified_route: false
+log_kv_alpha_span_max_tokens: 64
+log_kv_gamma_literals: false
+log_kv_gamma_cue_guard: false
+log_kv_gamma_query_cue: false

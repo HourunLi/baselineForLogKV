@@ -74,8 +74,9 @@ class CompressedKVCache:
 
     def _store(self, k: torch.Tensor, v: torch.Tensor) -> None:
         B, H, L, D = k.shape
-        self._k = k.new_empty(B, H, L + self.growth, D)
-        self._v = v.new_empty(B, H, L + self.growth, D)
+        if self._k is None or self._k.size(2) < L:  # a streaming layer reuses its fixed buffer
+            self._k = k.new_empty(B, H, L + self.growth, D)
+            self._v = v.new_empty(B, H, L + self.growth, D)
         self._k[:, :, :L] = k
         self._v[:, :, :L] = v
         self.length = L
@@ -104,6 +105,8 @@ class CompressedKVCache:
             self.n_kv_heads = k.size(1)
         T = q.size(2)
         k, v = self._layout(q, k, v)
+        if self.compressor is not None and getattr(self.compressor, "streaming", False):
+            return self._stream(q, k, v)
         if self._k is None:
             # Prefill: exact attention over the whole prompt, then compress what is kept.
             y = causal_attention(q, k, v)
@@ -122,6 +125,43 @@ class CompressedKVCache:
         self.processed_tokens += T
         self.num_recent += T
         return causal_attention(q, self.k, self.v)
+
+    def _stream(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        """Append the chunk, attend over the kept entries and the chunk, then select back to the layer budget."""
+        T = q.size(2)
+        capacity = self.compressor.max_capacity_prompt
+        if self._k is None:
+            self.allocate(k, capacity)
+        if not self.processed_tokens:
+            self.prefill_tokens = T
+        end = self.length + T
+        if end <= capacity:
+            self._append(k, v)
+            keys, values = self.k, self.v
+        else:
+            keys = torch.cat((self.k, k), dim=2)
+            values = torch.cat((self.v, v), dim=2)
+        y = self.attention(q, keys, values)
+        if end > capacity:
+            self._store(*self.compressor.stream_evict(self.layer_idx, q, keys, values))
+            self.compressed = True
+        self.processed_tokens += T
+        self.num_recent = min(self.length, self.compressor.window_size)
+        self.num_selected = self.length - self.num_recent
+        return y
+
+    attention = staticmethod(causal_attention)
+
+    def allocate(self, k, capacity):
+        shape = (*k.shape[:2], capacity, k.size(3))
+        self._k = k.new_empty(shape)
+        self._v = k.new_empty(shape)
+
+    def rewind(self):
+        """Start another request reusing the same streaming storage."""
+        self.length = self.processed_tokens = self.prefill_tokens = 0
+        self.num_recent = self.num_selected = 0
+        self.compressed = False
 
     def snapshot(self) -> dict:
         """Logical entries at the KV-group level used by the shared metric definition."""
