@@ -1,0 +1,19 @@
+protocol: niahLogKV
+backend: chunkkv
+model_size: 1.7b
+reference: baseline
+base_checkpoint: /workspace/checkpoints/Qwen/Qwen3-1.7B-Base/
+cpt_checkpoint: /workspace/ckpt-logKV/qwen1.7b-32k-gamma_k12_b128_p1024_2k
+output: outputs/niahlogkv/1.7b/baseline/chunkkv_32k_256k
+main: false
+lengths:
+- 32k
+- 64k
+- 128k
+- 256k
+long_limit: 100
+chunkkv:
+  chunk_size: 10
+  window_size: 64
+  reuse_layers: 1
+  prefill_chunk_size: 2048
