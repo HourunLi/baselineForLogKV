@@ -1,0 +1,4 @@
+task: niah_multiquery_n2
+include: _niah_multi.yaml
+dataset_kwargs:
+  num_needle_q: 2

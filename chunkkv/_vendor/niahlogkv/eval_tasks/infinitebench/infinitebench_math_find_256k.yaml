@@ -1,0 +1,11 @@
+# InfiniteBench Math.Find (math_find) cut to 256k tokens.
+include: _infinitebench_common
+task: infinitebench_math_find_256k
+dataset_kwargs:
+  infinitebench_task: math_find
+  infinitebench_length: 256k
+generation_kwargs:
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 3
+  until: []

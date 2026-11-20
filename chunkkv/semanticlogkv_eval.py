@@ -60,7 +60,13 @@ def make_chunkkv_lm(evaluator, options):
             # dense mode only means it skips LogKV-specific model setup.
             super().__init__(checkpoint_dir, device=device, config_overrides=config_overrides,
                              log_kv_dense_mode=True, **kwargs)
-            verify_checkpoint_keys(checkpoint_dir, self.model)
+            if hasattr(evaluator, "_checkpoint_file_for_loading"):
+                # The niahLogKV runtime validates keys while loading the resolved checkpoint.
+                from ._vendor.niahlogkv.litgpt.model import CausalSelfAttention
+                self._dense_256k_eval = False
+            else:
+                from ._vendor.semanticlogkv.litgpt.model import CausalSelfAttention
+                verify_checkpoint_keys(checkpoint_dir, self.model)
             dtype = next(self.model.parameters()).dtype
             per_token = kv_bytes_per_token(self.config, dtype)
             method_options = dict(options)
@@ -78,7 +84,7 @@ def make_chunkkv_lm(evaluator, options):
             elif budget is not None:
                 source = "explicit_tokens"
             settings = ChunkKVSettings(**{**method_options, "budget": budget})
-            self.model = ChunkKVModel(self.model, settings)
+            self.model = ChunkKVModel(self.model, settings, attention_type=CausalSelfAttention)
             self.log_kv_dense_mode, self.swa_window_size = False, None
             self.cache_budget = {
                 "method": "ChunkKV", "allocation": "dynamic", "persistent_cache_bytes": None,
@@ -93,6 +99,19 @@ def make_chunkkv_lm(evaluator, options):
                 self.cache_budget.update(allocation="fixed", persistent_cache_bytes=settings.budget * per_entry,
                                          bytes_per_entry=per_entry,
                                          decode_tokens="selected with the prompt: the budget holds throughout")
+                allocated = 0
+                for attn in self.model.attentions:
+                    attn.allocate_stream_cache()
+                    allocated += sum(t.untyped_storage().nbytes() for t in (attn.keys, attn.values, attn.positions))
+                if allocated != settings.budget * per_entry:
+                    raise RuntimeError("Streaming KV storage differs from its configured byte budget")
+                self.cache_budget["persistent_cache_bytes"] = allocated
+                dense_bytes = self.model.max_seq_length * per_token
+                self.cache_budget.update(dense_cache_bytes=dense_bytes,
+                                         allocated_fraction_of_dense=settings.budget * per_entry / dense_bytes)
+                if reference_bytes is not None:
+                    self.cache_budget.update(reference_fraction_of_dense=reference_bytes / dense_bytes,
+                                             unused_reference_bytes=reference_bytes - settings.budget * per_entry)
             if evaluator._is_main():
                 print(f"🧮 ChunkKV cache budget: {self.cache_budget}")
 
@@ -110,6 +129,10 @@ def make_chunkkv_lm(evaluator, options):
             self.model.reset_cache()
 
         def _reset_eval_cache(self):
-            self.model.release_cache()
+            if self.model.settings.streaming:
+                self.model.reset_cache()
+                self.model.processed = None
+            else:
+                self.model.release_cache()
 
     return ChunkKVLM

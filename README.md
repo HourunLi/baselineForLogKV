@@ -1,9 +1,30 @@
 # ChunkKV baseline（`chunkKV` 分支）
 
+## niahLogKV 同权重、同缓存预算评测
+
+当前完整评测采用 `HourunLi/LogKV` 的 `niahLogKV@a126a1b`。ChunkKV、LogKV、dense 默认读取同一份 Qwen3-1.7B gamma CPT 权重，`--model-size 8b` 选择对应的 8B CPT。正式对照使用流式 ChunkKV，逐层常驻 K/V 和位置索引一并计入预算。六档长度、YaRN、任务、生成与评分接口随仓库提供。
+
+```bash
+# 先查看完整计划，包括权重、每阶段任务和样本上限
+python -m chunkkv.niah --print-config
+# 单机，全量 32K 主线 + 32K–1M 六档
+bash scripts/chunkkv_evaluate_all.sh
+# 先在 1M 的 RULER 运行每任务 2 条
+bash scripts/chunkkv_evaluate_all.sh --lengths 1m --suites ruler --limit 2
+# 同一个参数组合可用 --backend logkv 或 --backend dense
+# 平台多机每节点执行一次
+bash majob.sh --model-size 8b --lengths 512k,1m
+```
+
+权重选择、各档实际字节、数据要求及验证范围见 [niahLogKV 对照说明](docs/NIAH_CHUNKKV.md)。
+
+## 原 SemanticLogKV 实验
+
+
 本分支是 [ChunkKV](https://arxiv.org/html/2502.00299v5) 的独立项目，作为 SemanticLogKV 的对比 baseline（DMS 在 `DMS` 分支单独维护，本项目不含其代码）。统一规则见 [AGENTS.md](AGENTS.md)、[Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md) 与 [环境与避坑清单](docs/BASELINE_ENVIRONMENT.md)。ChunkKV 免训练：prompt 先完整 prefill，再按观察窗注意力选出整块（默认 10 token）原始 K/V 加观察窗保留，生成 token 直接追加；支持论文的层间索引复用。**ChunkKV 的配置、模型和训练/评测运行代码均在本项目内，不需要相邻 `litgpt` 或 SemanticLogKV checkout。**
 
 - **配置与模型**：自有平铺实验配置在 `configs/chunkkv/experiment_qwen1.7b_32k.yaml`，直接加载其中原始 Base 的 `lit_model.pth`（兼容 LitGPT 权重格式，不转换），即 CPT 的同一起点。
-- **评测**：本地运行快照在 `chunkkv/_vendor/semanticlogkv/`，`ChunkKVLM` 继承其中 `LogKVLM` 的请求、生成、打分与 KV/速度指标；同一入口还可跑 `--backend logkv`（SemanticLogKV）与 `--backend dense`（Full KV），结果带 `comparison_contract`。`scripts/chunkkv_evaluate_all.sh` 按 Semantic 当前默认脚本分两阶段跑：47 个主任务入口（含 33 个 LongBench/LongBench-E）及三种 NIAH；正式评测为 32K；任务配置独立保存在本项目内。另有 64K / 128K 长文本评测（`--context 64k|128k`），ChunkKV 在其中流式运行、与 SemanticLogKV 同内存，见 [docs/CHUNKKV.md](docs/CHUNKKV.md#64k--128k-长文本流式同内存)。
+- **评测**：本地运行快照在 `chunkkv/_vendor/semanticlogkv/`，`ChunkKVLM` 继承其中 `LogKVLM` 的请求、生成、打分与 KV/速度指标；同一入口还可跑 `--backend logkv`（SemanticLogKV）与 `--backend dense`（Full KV），结果带 `comparison_contract`。`scripts/chunkkv_evaluate_all.sh --legacy` 按 Semantic 当前默认脚本分两阶段跑：47 个主任务入口（含 33 个 LongBench/LongBench-E）及三种 NIAH；正式评测为 32K；任务配置独立保存在本项目内。另有 64K / 128K 长文本评测（`--context 64k|128k`），ChunkKV 在其中流式运行、与 SemanticLogKV 同内存，见 [docs/CHUNKKV.md](docs/CHUNKKV.md#64k--128k-长文本流式同内存)。
 - **预算**：默认按参考 LogKV 缓存的持久分配字节对齐（同其 SWA 对照口径）；也可用 `--budget-from-result` 按 SemanticLogKV 实测保留条目数对齐，或 `--budget` / `--keep-ratio`。
 - **训练接口（可选对照）**：ChunkKV 本身不训练；`scripts/chunkkv_train.sh` 用本地训练运行快照和同一份自有实验配置做同数据、同预算的 dense CPT，供 "CPT + ChunkKV" 对照。
 
@@ -16,8 +37,8 @@ cd /data/lihourun/baselineForLogKV/chunkKV
 python -m chunkkv.evaluate --suite main --print-config
 python -m chunkkv.evaluate --suite niah --print-config
 python -m chunkkv.train --print-config
-bash scripts/chunkkv_evaluate_all.sh --limit 4 --output outputs/cmp-chunkkv
-bash scripts/chunkkv_evaluate_all.sh --backend logkv --model /path/to/semanticlogkv/ckpt --limit 4 --output outputs/cmp-logkv
+bash scripts/chunkkv_evaluate_all.sh --legacy --limit 4 --output outputs/cmp-chunkkv
+bash scripts/chunkkv_evaluate_all.sh --legacy --backend logkv --model /path/to/semanticlogkv/ckpt --limit 4 --output outputs/cmp-logkv
 # 比较各阶段本次生成的结果文件；将 TIMESTAMP 替换为实际文件名中的时间戳
 python -m chunkkv.compare_results outputs/cmp-chunkkv/main/eval_results_TIMESTAMP.json outputs/cmp-logkv/main/eval_results_TIMESTAMP.json
 python -m pytest -q tests/chunkkv

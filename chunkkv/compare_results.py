@@ -31,6 +31,8 @@ def compare_results(left, right):
     if not a or not b:
         raise ValueError("Both results must be produced by the aligned evaluation launcher")
     differences = [name for name in CONTRACT_FIELDS if a[name] != b[name]]
+    if a.get("protocol") != b.get("protocol") or a.get("rope_adjustments") != b.get("rope_adjustments"):
+        differences.append("protocol/rope_adjustments")
     if differences:
         raise ValueError("Comparison contract differs: " + ", ".join(differences))
     first, second = sample_signatures(left), sample_signatures(right)
