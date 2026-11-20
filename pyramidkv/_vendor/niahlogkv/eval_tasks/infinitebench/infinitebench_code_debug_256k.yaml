@@ -1,0 +1,11 @@
+# InfiniteBench Code.Debug (code_debug) cut to 256k tokens.
+include: _infinitebench_common
+task: infinitebench_code_debug_256k
+dataset_kwargs:
+  infinitebench_task: code_debug
+  infinitebench_length: 256k
+generation_kwargs:
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 5
+  until: []

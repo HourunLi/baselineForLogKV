@@ -129,21 +129,39 @@ class CompressedKVCache:
     def _stream(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         """Append the chunk, attend over the kept entries and the chunk, then select back to the layer budget."""
         T = q.size(2)
+        capacity = self.compressor.stream_capacity(self.layer_idx) + self.compressor.window_size
         if self._k is None:
-            capacity = self.compressor.stream_capacity(self.layer_idx) + self.compressor.window_size
-            self._k = k.new_empty(*k.shape[:2], capacity + T, k.size(3))
-            self._v = v.new_empty(*v.shape[:2], capacity + T, v.size(3))
+            self.allocate(k, capacity)
+        if not self.processed_tokens:
             self.prefill_tokens = T
-        self._append(k, v)
-        self.processed_tokens += T
-        y = causal_attention(q, self.k, self.v)
-        kept = self.compressor.stream_evict(self.layer_idx, q, self.k, self.v)
-        if kept is not None:
-            self._store(*kept)
+        end = self.length + T
+        if end <= capacity:
+            self._append(k, v)
+            keys, values = self.k, self.v
+        else:
+            keys = torch.cat((self.k, k), dim=2)
+            values = torch.cat((self.v, v), dim=2)
+        y = self.attention(q, keys, values)
+        if end > capacity:
+            self._store(*self.compressor.stream_evict(self.layer_idx, q, keys, values))
             self.compressed = True
+        self.processed_tokens += T
         self.num_recent = min(self.length, self.compressor.window_size)
         self.num_selected = self.length - self.num_recent
         return y
+
+    attention = staticmethod(causal_attention)
+
+    def allocate(self, k, capacity):
+        shape = (*k.shape[:2], capacity, k.size(3))
+        self._k = k.new_empty(shape)
+        self._v = k.new_empty(shape)
+
+    def rewind(self):
+        """Start another request reusing the same streaming storage."""
+        self.length = self.processed_tokens = self.prefill_tokens = 0
+        self.num_recent = self.num_selected = 0
+        self.compressed = False
 
     def snapshot(self) -> dict:
         """Logical entries at the KV-group level used by the shared metric definition."""

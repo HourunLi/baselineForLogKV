@@ -1,0 +1,27 @@
+{
+  "repository": "https://github.com/HourunLi/LogKV",
+  "branch": "niahLogKV",
+  "commit": "a126a1b3a11262a5dea85c0416b57753a44e9c6f",
+  "license": "Apache-2.0",
+  "changes": [
+    "Private package imports and minimal litgpt exports",
+    "Configurable offline cache root",
+    "Strict checkpoint loading for same-weight comparisons",
+    "Normalize private import prefix only when fingerprinting upstream RULER generator source",
+    "Report the same dense KV denominator for reference and full attention backends",
+    "Resolve legacy LitGPT prompt style paths within the bundled package",
+    "Dispatch to project-owned streaming PyramidKV after QK norm and RoPE, before dense KV expansion",
+    "Record evaluated backend and provenance in the reference result"
+  ],
+  "generator_sources": {
+    "ruler_patch.py": {
+      "upstream": "07a13cfb66e15b50a6fbaad631972f2e336cd413d98559e7c8b712d6812e061e",
+      "bundled": "30988537858cedd702b63e7dddce25633a9af85f06ef7d1a3cdb916c045ab91d"
+    },
+    "ruler_dataset_cache.py": {
+      "upstream": "23039e42bb98be62d71704b9aeea1a99bf42bdad216e3e6e3b05337e09a75328",
+      "bundled": "0c955f39ecaaa304b066210fd9166931401ea27ca8b2bafe47be2a4d530c2ecd"
+    }
+  },
+  "packaging_source": "https://github.com/HourunLi/baselineForLogKV/tree/a9ee4ed7c7ae4a428fa4eff80b9584180331bb92"
+}
