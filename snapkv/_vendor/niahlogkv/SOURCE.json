@@ -1,0 +1,28 @@
+{
+  "repository": "LogKV",
+  "branch": "niahLogKV",
+  "commit": "0f4396b617a5cfcead9da3d6bb23a4f0693c97f5",
+  "license": "Apache-2.0",
+  "changes": [
+    "Private package imports and minimal litgpt exports",
+    "Configurable offline cache root",
+    "Strict checkpoint loading for same-weight comparisons",
+    "Normalize private import prefix only when fingerprinting upstream RULER generator source",
+    "Report the same dense KV denominator for reference and full attention backends",
+    "Resolve legacy LitGPT prompt style paths within the bundled package",
+    "Dispatch to project-owned streaming SnapKV after QK norm and RoPE, before dense KV expansion",
+    "Record evaluated backend and provenance in the reference result",
+    "Adapted private imports and the post-RoPE attention hook to the SnapKV backend"
+  ],
+  "generator_sources": {
+    "ruler_patch.py": {
+      "upstream": "07a13cfb66e15b50a6fbaad631972f2e336cd413d98559e7c8b712d6812e061e",
+      "bundled": "f027cb4860d1c5b4b9121b4f174a60b2b7e7a7d83e174320c501cbda25960435"
+    },
+    "ruler_dataset_cache.py": {
+      "upstream": "23039e42bb98be62d71704b9aeea1a99bf42bdad216e3e6e3b05337e09a75328",
+      "bundled": "2fff1ac3c0d4748204ece02ef6cd05f9846627b7bd88826d0a97fabea29ca857"
+    }
+  },
+  "packaging_source": "baselineForLogKV/tree/df8a84b5c156900cd5c82c9f6ef73ab8da41a6ef"
+}

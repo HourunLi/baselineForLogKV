@@ -53,15 +53,14 @@ def observation_window_scores(query_states: torch.Tensor, key_states: torch.Tens
     B, H, _, D = query_states.shape
     H_kv, L = key_states.size(1), key_states.size(2)
     groups = H // H_kv
-    window = query_states[:, :, -window_size:].reshape(B, H_kv, groups, window_size, D)
-    attn = torch.matmul(window, key_states.unsqueeze(2).transpose(-1, -2)) / math.sqrt(D)
-    attn = attn.reshape(B, H, window_size, L)
-    mask = torch.full((window_size, window_size), torch.finfo(attn.dtype).min, device=attn.device)
-    cond = torch.arange(window_size, device=attn.device)
-    mask.masked_fill_(cond < (cond + 1).view(window_size, 1), 0)
-    attn[:, :, :, -window_size:] += mask
+    # During decode the current block can supply fewer queries than the protected window.
+    n = min(query_states.size(2), window_size)
+    queries = query_states[:, :, -n:].reshape(B, H_kv, groups * n, D)
+    attn = (queries @ key_states.transpose(-2, -1)).reshape(B, H, n, L) / math.sqrt(D)
+    mask = torch.ones(n, n, dtype=torch.bool, device=attn.device).triu(1)
+    attn[..., -n:].masked_fill_(mask, torch.finfo(attn.dtype).min)
     attn = F.softmax(attn, dim=-1, dtype=torch.float32).to(query_states.dtype)
-    scores = reduce_group_scores(attn[:, :, :, :-window_size].sum(dim=-2), groups, agg)
+    scores = reduce_group_scores(attn[..., :-window_size].sum(dim=-2), groups, agg)
     if pooling == "avgpool":
         return F.avg_pool1d(scores, kernel_size=kernel_size, padding=kernel_size // 2, stride=1)
     if pooling == "maxpool":
@@ -95,3 +94,20 @@ class SnapKVCompressor(SnapKVSettings):
                                            self.kernel_size, self.pooling, self.gqa_score_agg)
         keys, values = keep_topk(key_states, value_states, scores, capacity, self.window_size)
         return keys, values, capacity, self.window_size
+
+class StreamingSnapKV(SnapKVCompressor):
+    """Re-select per KV head after every overflowing block, including decode."""
+
+    streaming = True
+
+    def stream_evict(self, layer_idx, q, k, v):
+        # Split independent KV heads to bound the transient FP32 softmax workspace.
+        groups = q.size(1) // k.size(1)
+        elements = q.size(0) * groups * min(q.size(2), self.window_size) * k.size(2)
+        heads = max(1, (8 * 1024**2) // elements)
+        scores = [observation_window_scores(q[:, start * groups:(start + heads) * groups],
+                                            k[:, start:start + heads], self.window_size,
+                                            self.kernel_size, self.pooling, self.gqa_score_agg)
+                  for start in range(0, k.size(1), heads)]
+        return keep_topk(k, v, torch.cat(scores, dim=1), self.max_capacity_prompt - self.window_size,
+                         self.window_size)

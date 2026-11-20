@@ -199,7 +199,7 @@ def test_declared_requirements_are_lower_bounds_that_torch218_meets():
         assert re.split(r"[\[<>=!~]", requirement)[0] not in {"transformers", "accelerate", "openpyxl",
                                                                "sentencepiece"}, requirement
     installed = {**TORCH218_VERSIONS, "tokenizers": "0.21.4", "safetensors": "0.7.0", "PyYAML": "6.0.3",
-                 "pandas": "2.3.3", "xlsxwriter": "3.2.9", "pytest": "9.1.1"}
+                 "lightning": "2.6.1", "psutil": "7.1.3", "pandas": "2.3.3", "xlsxwriter": "3.2.9", "pytest": "9.1.1"}
     for requirement in requirements:
         name, _, bound = re.sub(r"\[[^\]]*\]", "", requirement).partition(">=")
         if bound:

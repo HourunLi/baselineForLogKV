@@ -1,0 +1,11 @@
+# InfiniteBench En.QA (longbook_qa_eng) cut to 32k tokens.
+include: _infinitebench_common
+task: infinitebench_longbook_qa_eng_32k
+dataset_kwargs:
+  infinitebench_task: longbook_qa_eng
+  infinitebench_length: 32k
+generation_kwargs:
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 40
+  until: []

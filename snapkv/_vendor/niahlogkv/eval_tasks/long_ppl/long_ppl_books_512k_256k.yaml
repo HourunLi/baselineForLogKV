@@ -1,0 +1,6 @@
+# Same >=1M-token books for both the 512K and 1M curves.
+include: _long_ppl_books
+task: long_ppl_books_512k_256k
+dataset_kwargs:
+  point: 262144
+  min_length: 1048576

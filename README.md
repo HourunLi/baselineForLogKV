@@ -1,4 +1,36 @@
-# SnapKV baseline（Qwen3-1.7B-Base，SemanticLogKV 评测口径）
+# SnapKV baseline
+
+## 用原始 Qwen3 Base 运行 niahLogKV 评测
+
+在参考评测环境中，从仓库根目录按模型规模选择一条命令。多节点作业每节点执行同一条命令一次。
+
+```bash
+bash majob.sh configs/niah/qwen1.7b.yaml
+bash majob.sh configs/niah/qwen8b.yaml
+```
+
+两份 YAML 的 `model_size`、`arch_name` 和 `ckpt_dir` 分别对应 Qwen3-1.7B-Base 或 Qwen3-8B-Base。`ckpt_dir` 指向原始权重的 LitGPT 版本（`lit_model.pth`）及 tokenizer。在其他机器上运行时修改此路径。`pyramidkv` 段控制观察窗口、池化核与模式、GQA 分数聚合和 prefill 块大小。`eval_lengths` 和 `long_limit` 控制长文本评测范围与样本上限。用 `bash majob.sh configs/niah/qwen1.7b.yaml --print-config` 可在启动 GPU 前核对最终配置。
+
+`log_kv_*` 参数给出缓存预算的参照。SnapKV 使用原始 Base 权重；`--backend logkv` 和 `--backend dense` 默认使用 `save_path` 中的 gamma CPT 对照权重。如需测量 SnapKV 相对同权重 dense 的质量变化，在同一份 YAML 后加 `--backend dense --model /path/to/Qwen3-X-Base`。各次结果记录实际 checkpoint 的 SHA-256。单卡试跑可加 `--no-main --lengths 32k --suites ruler --limit 1`。结果写到 `outputs/niahlogkv/<规模>/<参考配置>/<后端>/`。共享数据路径沿用 `HF_HOME`、`LONG_PPL_DATA`、`LONG_PPL_BOOKS`、`BABILONG_DIR`、`LONGBENCH2_DIR` 和 `INFINITEBENCH_DIR`。
+
+原生主线含 49 个 main 入口及 20 个 NIAH 入口。长文本各档按参考计划去重，每任务默认最多 100 条，窗口为目标长度加 1024。各档包含 RULER、BABILong、多轮 NIAH、LongBench v2、长文 PPL 和书籍 PPL 曲线。InfiniteBench 到 256K，RULER SQuAD 到 128K。可选数据缺失及显式选择任务的行为继承参考评测器。仅选 512K/1M 时按参考默认跑 RULER、BABILong、书籍 PPL、LongBench v2。源码与许可证见 `pyramidkv/_vendor/niahlogkv/SOURCE.json`。参考配置
+
+本入口采用流式 SnapKV。每层、每个 KV 头的容量相同。每个块先用保留下来的历史执行因果注意力；超出容量时，用当前块末尾最多 8 个查询给历史键打分，再保留池化分数最高的历史和最近 8 个位置。单 token 解码使用当前查询。已淘汰的 KV 无法参与后续块的注意力。原始一次性 prefill、decode 追加的 SnapKV 仍可用下方旧入口复现。
+
+旧入口固定 2048 个 prompt 槽，每层初次分配另留 256 个槽，解码时还会扩容。与 niahLogKV 对照时，新入口先读取参考缓存的已分配字节（含元数据，排除共享 RoPE），再向下取整到全部层都能保留的最大等容量。每次请求复用固定 K/V 缓冲区，超出的新块只占当前层的临时空间。生成使用参考评测器的停止字符串处理。旧入口沿用其原评测协议。
+
+| 长任务 | 1.7B LogKV 字节 | 1.7B SnapKV 字节 | 8B LogKV 字节 | 8B SnapKV 字节 | SnapKV / dense KV |
+|---|---:|---:|---:|---:|---:|
+| 32K | 2031878912 | 2031812608 | 2612415744 | 2612330496 | 52.4266% |
+| 64K | 2216205824 | 2216116224 | 2849407488 | 2849292288 | 29.0309% |
+| 128K | 2403505664 | 2403401728 | 3090221568 | 3090087936 | 15.8642% |
+| 256K | 2593778432 | 2593669120 | 3334857984 | 3334717440 | 8.5934% |
+| 512K | 2787024128 | 2786918400 | 3583316736 | 3583180800 | 4.6258% |
+| 1M | 2983242752 | 2983149568 | 3835597824 | 3835478016 | 2.4782% |
+
+上表在 CPU 按实际 BF16 架构分配缓存，参考缓存测单层后乘层数。两种模型的每层每位置成本均为 4096 字节。等容量取整的总误差小于层数乘 4096 字节。每次实际运行会重测并把参考值、实分配、dense 分母及剩余字节记入 `cache_budget`。请求结束时的逻辑槽数见 `kv_compression`，吞吐、延迟、CUDA 峰值见 `inference_metrics`。总显存还包含模型、RoPE、临时 attention、筛选和 logits。正式模型的 GPU 峰值与任务分数需用相同硬件和数据实测。
+
+## 原 SemanticLogKV 评测入口
 
 本分支是一个**独立项目**：在 Qwen3 上实现 SnapKV，并按 SemanticLogKV 的数据集、请求接口和指标口径评测，作为 LogKV 的横向对比 baseline。
 目前只接入 32K 正式评测。
