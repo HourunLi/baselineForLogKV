@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from dataclasses import asdict
@@ -9,10 +10,14 @@ import torch
 import yaml
 
 
-def test_reference_plan():
-    cfg = json.loads(subprocess.check_output([sys.executable, "-m", "pyramidkv.niah", "--print-config"]))
+@pytest.mark.parametrize("size", ["1.7b", "8b"])
+def test_reference_plan(size):
+    cfg = json.loads(subprocess.check_output(["bash", "majob.sh", f"configs/niah/qwen{size}.yaml", "--print-config"],
+                                             env={**os.environ, "PYRAMIDKV_PYTHON": sys.executable}))
     rows = {r["folder"]: r for r in cfg["stages"]}
-    assert cfg["checkpoint"] == cfg["reference_config"]["save_path"]
+    assert cfg["weight_role"] == "base"
+    assert cfg["checkpoint"] == cfg["reference_config"]["ckpt_dir"].rstrip("/") == cfg["tokenizer"]
+    assert cfg["checkpoint"].endswith(f"/Qwen3-{size.upper()}-Base")
     assert len(rows) == 14
     for power, label in enumerate(("32k", "64k", "128k", "256k", "512k", "1m")):
         row = rows[f"long{label}/main"]
@@ -49,11 +54,14 @@ def test_matched_cache_on_reference_requests(tmp_path, monkeypatch):
     # Restore the evaluator module after exercising its public request methods.
     monkeypatch.setattr(ref, "LogKVLM", ref.LogKVLM)
     monkeypatch.setattr(ref, "cache_compression_snapshot", ref.cache_compression_snapshot)
-    install_backend(ref, "pyramidkv", {})
+    install_backend(ref, "pyramidkv", {}, dict(window_size=11, kernel_size=3, beta=12,
+                                               prefill_chunk_size=16, pooling="avgpool", gqa_score_agg="max"))
     lm = ref.LogKVLM(str(tmp_path), **kwargs)
     lm._set_eval_cache()
     budget = lm.cache_budget
     assert 0 <= oracle.cache_budget["persistent_cache_bytes"] - budget["persistent_cache_bytes"] < 64
+    assert budget["selection"]["window_size"] == 11 and budget["selection"]["pooling"] == "avgpool"
+    assert budget["prefill_chunk"] == 16 and budget["selection"]["beta"] == 12
     assert budget["entries_per_layer"] == sorted(budget["entries_per_layer"], reverse=True)
 
     def storage():

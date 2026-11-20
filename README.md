@@ -1,17 +1,17 @@
 # PyramidKV baseline
 
-## niahLogKV 同权重、同缓存预算评测
+## 用原始 Qwen3 Base 运行 niahLogKV 评测
 
-从仓库根目录在参考评测环境中运行。平台每个节点执行一次，默认先运行原生主线，再运行六档长文本。三个后端共用 niahLogKV 的 LitGPT 模型、tokenizer 和评测器，模型规模可选 1.7B（默认）或 8B。
+在参考评测环境中，从仓库根目录按模型规模选择一条命令。多节点作业每节点执行同一条命令一次。
 
 ```bash
-python -m pyramidkv.niah --print-config
-bash majob.sh niahlogkv --backend pyramidkv
-bash majob.sh niahlogkv --backend logkv
-bash majob.sh niahlogkv --backend dense
+bash majob.sh configs/niah/qwen1.7b.yaml
+bash majob.sh configs/niah/qwen8b.yaml
 ```
 
-默认从对应规模的 gamma CPT 目录加载权重，从原始 Base 目录加载 tokenizer。复现实验可对三个后端传相同的 `--model /path/to/step_N --tokenizer /path/to/Base`。实际 checkpoint 的 SHA-256 在结果的 `comparison_contract`。单卡试跑可加 `--no-main --lengths 32k --suites ruler --limit 1`。结果写到 `outputs/niahlogkv/<规模>/<参考配置>/<后端>/`。共享数据路径沿用 `HF_HOME`、`LONG_PPL_DATA`、`LONG_PPL_BOOKS`、`BABILONG_DIR`、`LONGBENCH2_DIR` 和 `INFINITEBENCH_DIR`。
+两份 YAML 的 `model_size`、`arch_name` 和 `ckpt_dir` 分别对应 Qwen3-1.7B-Base 或 Qwen3-8B-Base。`ckpt_dir` 指向原始权重的 LitGPT 版本（`lit_model.pth`）及 tokenizer。在其他机器上运行时修改此路径。`pyramidkv` 段控制观察窗口、池化核与模式、金字塔斜率、GQA 分数聚合和 prefill 块大小。`eval_lengths` 和 `long_limit` 控制长文本评测范围与样本上限。用 `bash majob.sh configs/niah/qwen1.7b.yaml --print-config` 可在启动 GPU 前核对最终配置。
+
+`log_kv_*` 参数给出缓存预算的参照。PyramidKV 使用原始 Base 权重；`--backend logkv` 和 `--backend dense` 默认使用 `save_path` 中的 gamma CPT 对照权重。如需测量 PyramidKV 相对同权重 dense 的质量变化，在同一份 YAML 后加 `--backend dense --model /path/to/Qwen3-X-Base`。各次结果记录实际 checkpoint 的 SHA-256。单卡试跑可加 `--no-main --lengths 32k --suites ruler --limit 1`。结果写到 `outputs/niahlogkv/<规模>/<参考配置>/<后端>/`。共享数据路径沿用 `HF_HOME`、`LONG_PPL_DATA`、`LONG_PPL_BOOKS`、`BABILONG_DIR`、`LONGBENCH2_DIR` 和 `INFINITEBENCH_DIR`。
 
 原生主线含 49 个 main 入口及 20 个 NIAH 入口。长文本各档按参考计划去重，每任务默认最多 100 条，窗口为目标长度加 1024。各档包含 RULER、BABILong、多轮 NIAH、LongBench v2、长文 PPL 和书籍 PPL 曲线。InfiniteBench 到 256K，RULER SQuAD 到 128K。可选数据缺失及显式选择任务的行为继承参考评测器。仅选 512K/1M 时按参考默认跑 RULER、BABILong、书籍 PPL、LongBench v2。源码与许可证见 `pyramidkv/_vendor/niahlogkv/SOURCE.json`。[参考配置](https://github.com/HourunLi/LogKV/blob/a126a1b3a11262a5dea85c0416b57753a44e9c6f/exp/qwen1.7b-32k/eval_full_baseline.yaml)
 

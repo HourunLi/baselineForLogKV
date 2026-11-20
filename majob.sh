@@ -7,6 +7,7 @@ cd "$(dirname "$0")"
 usage="Usage: bash majob.sh [configs/qwen3_1.7b_32k_pyramidkv.yaml] [evaluation options, e.g. --limit 4 --output DIR]"
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
     echo "$usage"
+    echo "bash majob.sh configs/niah/qwen1.7b.yaml  # or configs/niah/qwen8b.yaml"
     echo "bash majob.sh niahlogkv [--backend pyramidkv|logkv|dense] [--lengths 32k,...,1m] [--limit N]"
     echo "Runs configs/eval_suites.yaml: main (47 entries), then NIAH (3 entries, 32768 only);"
     echo "a config with context: 64k or 128k runs the long suite (BABILong, long_ppl), then RULER (13 tasks)."
@@ -25,6 +26,12 @@ if (( ! niah_protocol )); then
         shift
     fi
     [[ -f "$CONFIG_FILE" ]] || { echo "Missing evaluation YAML: $CONFIG_FILE" >&2; exit 2; }
+    if grep -Eq '^protocol[[:space:]]*:' "$CONFIG_FILE"; then
+        niah_protocol=1
+        set -- --config "$CONFIG_FILE" "$@"
+    fi
+fi
+if (( ! niah_protocol )); then
     # The formal protocol fixes tasks, NIAH lengths, window and offline data; only the
     # method, budget, output and a debugging --limit may be chosen here.
     for arg in "$@"; do
@@ -46,6 +53,13 @@ if [[ -z "${PYRAMIDKV_PYTHON:-}" ]]; then
     PYRAMIDKV_PYTHON=$(python -c 'import sys; print(sys.executable)')
 fi
 set -u
+if (( niah_protocol )); then
+    for arg in "$@"; do
+        if [[ "$arg" == --print-config ]]; then
+            exec "$PYRAMIDKV_PYTHON" -m pyramidkv.niah "$@"
+        fi
+    done
+fi
 # Runtime settings of SemanticLogKV's eval.sh/majob.sh (commit 4fd97c7) on this platform. A training job's
 # default LD_LIBRARY_PATH can reach an older libcuda first; torch218's cu128 build needs these libraries first.
 # Its NVTE_*/CUDNN_PATH settings serve Transformer Engine, which this project does not use.
