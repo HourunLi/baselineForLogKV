@@ -13,7 +13,9 @@ bash scripts/chunkkv_evaluate_all.sh
 bash scripts/chunkkv_evaluate_all.sh --lengths 1m --suites ruler --limit 2
 # 同一个参数组合可用 --backend logkv 或 --backend dense
 # 平台多机每节点执行一次
-bash majob.sh --model-size 8b --lengths 512k,1m
+bash majob.sh configs/chunkkv/jobs/chunkkv_1.7b.yaml
+# 8B 完整评测
+bash majob.sh configs/chunkkv/jobs/chunkkv_8b.yaml
 ```
 
 权重选择、各档实际字节、数据要求及验证范围见 [niahLogKV 对照说明](docs/NIAH_CHUNKKV.md)。

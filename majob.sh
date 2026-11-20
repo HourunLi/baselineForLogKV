@@ -4,7 +4,7 @@ set -eo pipefail
 cd "$(dirname "$0")"
 
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
-    echo "Usage: bash majob.sh [configs/chunkkv/experiment_qwen1.7b_32k.yaml] [evaluation options]"
+    echo "Usage: bash majob.sh [configs/chunkkv/jobs/chunkkv_1.7b.yaml] [evaluation options]"
     echo "Use --print-config to inspect the model, tasks and windows before launch."
     echo "Default: niahLogKV full evaluation. Use --lengths for selected passes or --legacy for the original suites."
     echo "Default environment: torch218."
@@ -16,7 +16,11 @@ if [[ "${1:-}" == --legacy ]]; then
     NIAH_PROTOCOL=0
     shift
 elif [[ "$#" -gt 0 && "$1" != -* ]]; then
-    NIAH_PROTOCOL=0  # original positional experiment YAML
+    if grep -Eq '^protocol:[[:space:]]+niahLogKV[[:space:]]*($|#)' "$1"; then
+        set -- --job-config "$@"
+    else
+        NIAH_PROTOCOL=0  # original positional experiment YAML
+    fi
 fi
 CONFIG_FILE=configs/chunkkv/experiment_qwen1.7b_32k.yaml
 if [[ $# -gt 0 && "$1" != -* ]]; then
