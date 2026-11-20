@@ -7,29 +7,38 @@ cd "$(dirname "$0")"
 usage="Usage: bash majob.sh [configs/qwen3_1.7b_32k_pyramidkv.yaml] [evaluation options, e.g. --limit 4 --output DIR]"
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
     echo "$usage"
+    echo "bash majob.sh niahlogkv [--backend pyramidkv|logkv|dense] [--lengths 32k,...,1m] [--limit N]"
     echo "Runs configs/eval_suites.yaml: main (47 entries), then NIAH (3 entries, 32768 only);"
     echo "a config with context: 64k or 128k runs the long suite (BABILong, long_ppl), then RULER (13 tasks)."
     echo "Default environment: conda torch218; set PYRAMIDKV_PYTHON to use an existing interpreter."
     exit 0
 fi
-CONFIG_FILE=configs/qwen3_1.7b_32k_pyramidkv.yaml
-if [[ $# -gt 0 && "$1" != -* ]]; then
-    CONFIG_FILE=$1
+niah_protocol=0
+if [[ "${1:-}" == niahlogkv ]]; then
+    niah_protocol=1
     shift
 fi
-[[ -f "$CONFIG_FILE" ]] || { echo "Missing evaluation YAML: $CONFIG_FILE" >&2; exit 2; }
-# The formal protocol fixes tasks, NIAH lengths, window and offline data; only the
-# method, budget, output and a debugging --limit may be chosen here.
-for arg in "$@"; do
-    case "$arg" in
-        --suite|--suite=*|--tasks|--tasks=*|--eval-suites|--eval-suites=*|--include-path|--include-path=*|\
-        --ruler-lengths|--ruler-lengths=*|--ruler-pretrained|--ruler-pretrained=*|\
-        --max-seq-length|--max-seq-length=*|--context|--context=*|--print-config)
-            echo "majob.sh runs the fixed suites of the config's context; $arg is not allowed here." >&2
-            echo "Use scripts/evaluate.sh for selected tasks or diagnostics." >&2
-            exit 2 ;;
-    esac
-done
+CONFIG_FILE=configs/qwen3_1.7b_32k_pyramidkv.yaml
+if (( ! niah_protocol )); then
+    if [[ $# -gt 0 && "$1" != -* ]]; then
+        CONFIG_FILE=$1
+        shift
+    fi
+    [[ -f "$CONFIG_FILE" ]] || { echo "Missing evaluation YAML: $CONFIG_FILE" >&2; exit 2; }
+    # The formal protocol fixes tasks, NIAH lengths, window and offline data; only the
+    # method, budget, output and a debugging --limit may be chosen here.
+    for arg in "$@"; do
+        case "$arg" in
+            --suite|--suite=*|--tasks|--tasks=*|--eval-suites|--eval-suites=*|--include-path|--include-path=*|\
+            --ruler-lengths|--ruler-lengths=*|--ruler-pretrained|--ruler-pretrained=*|\
+            --max-seq-length|--max-seq-length=*|--context|--context=*|--print-config)
+                echo "majob.sh runs the fixed suites of the config's context; $arg is not allowed here." >&2
+                echo "Use scripts/evaluate.sh for selected tasks or diagnostics." >&2
+                exit 2 ;;
+        esac
+    done
+
+fi
 
 # Conda activation scripts may read unset variables; enable nounset afterwards.
 if [[ -z "${PYRAMIDKV_PYTHON:-}" ]]; then
@@ -101,6 +110,12 @@ fi
 export KV_BASELINE_EXPECTED_WORLD_SIZE=$((NUM_NODES * GPUS_PER_NODE))
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 export NCCL_IB_TIMEOUT=${NCCL_IB_TIMEOUT:-22}
+
+if (( niah_protocol )); then
+    export NPROC_PER_NODE=$GPUS_PER_NODE GROUP_WORLD_SIZE=$NUM_NODES NODE_RANK MASTER_ADDR EVAL_MASTER_PORT
+    export LITGPT_EXPECTED_WORLD_SIZE=$KV_BASELINE_EXPECTED_WORLD_SIZE
+    exec "$PYRAMIDKV_PYTHON" -m pyramidkv.niah "$@"
+fi
 
 # The YAML's top-level context: key (32k when absent) picks the stages.
 CONTEXT=$(sed -n -E 's/^context:[[:space:]]*["'"'"']?([0-9a-z]+)["'"'"']?[[:space:]]*(#.*)?$/\1/p' "$CONFIG_FILE" | tail -n 1)

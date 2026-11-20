@@ -24,7 +24,7 @@ dependencies = [
 # feature type of datasets>=4.7), and pyramidkv.evaluate checks them at start-up. Each result records the exact
 # versions, and compare_results refuses files whose versions differ. transformers comes with lm-eval; the
 # ruler/longbench/ifeval extras cover the NIAH, LongBench(-E) and IFEval entries of the full suite.
-eval = ["lm-eval[ruler,longbench,ifeval]>=0.4.9", "datasets>=4.7", "pandas>=1.5", "xlsxwriter>=3"]
+eval = ["torch>=2.7", "lightning>=2.6.1", "psutil>=5.9", "lm-eval[ruler,longbench,ifeval]>=0.4.9", "datasets>=4.7", "pandas>=1.5", "xlsxwriter>=3"]
 test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]

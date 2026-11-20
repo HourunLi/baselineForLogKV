@@ -123,5 +123,16 @@ class PyramidKVCompressor(PyramidKVSettings):
             return None
         observed = query_states[:, :, -min(self.window_size, query_states.size(2)):]
         older = key_states.size(2) - self.window_size
-        scores = streaming_scores(observed, key_states, older, self.kernel_size, self.pooling, self.gqa_score_agg)
+        # Softmax promotes scores to FP32. Batch independent KV heads to bound
+        # the transient score tensor on long contexts without splitting the key axis.
+        groups = observed.size(1) // key_states.size(1)
+        elements_per_head = observed.size(0) * groups * observed.size(2) * key_states.size(2)
+        heads_per_batch = max(1, (8 * 1024**2) // elements_per_head)
+        batches = []
+        for start in range(0, key_states.size(1), heads_per_batch):
+            end = start + heads_per_batch
+            batches.append(streaming_scores(
+                observed[:, start * groups:end * groups], key_states[:, start:end],
+                older, self.kernel_size, self.pooling, self.gqa_score_agg))
+        scores = batches[0] if len(batches) == 1 else torch.cat(batches, dim=1)
         return keep_topk(key_states, value_states, scores, capacity, self.window_size)

@@ -1,4 +1,35 @@
-# PyramidKV baseline（Qwen3-1.7B-Base，SemanticLogKV 评测口径）
+# PyramidKV baseline
+
+## niahLogKV 同权重、同缓存预算评测
+
+从仓库根目录在参考评测环境中运行。平台每个节点执行一次，默认先运行原生主线，再运行六档长文本。三个后端共用 niahLogKV 的 LitGPT 模型、tokenizer 和评测器，模型规模可选 1.7B（默认）或 8B。
+
+```bash
+python -m pyramidkv.niah --print-config
+bash majob.sh niahlogkv --backend pyramidkv
+bash majob.sh niahlogkv --backend logkv
+bash majob.sh niahlogkv --backend dense
+```
+
+默认从对应规模的 gamma CPT 目录加载权重，从原始 Base 目录加载 tokenizer。复现实验可对三个后端传相同的 `--model /path/to/step_N --tokenizer /path/to/Base`。实际 checkpoint 的 SHA-256 在结果的 `comparison_contract`。单卡试跑可加 `--no-main --lengths 32k --suites ruler --limit 1`。结果写到 `outputs/niahlogkv/<规模>/<参考配置>/<后端>/`。共享数据路径沿用 `HF_HOME`、`LONG_PPL_DATA`、`LONG_PPL_BOOKS`、`BABILONG_DIR`、`LONGBENCH2_DIR` 和 `INFINITEBENCH_DIR`。
+
+原生主线含 49 个 main 入口及 20 个 NIAH 入口。长文本各档按参考计划去重，每任务默认最多 100 条，窗口为目标长度加 1024。各档包含 RULER、BABILong、多轮 NIAH、LongBench v2、长文 PPL 和书籍 PPL 曲线。InfiniteBench 到 256K，RULER SQuAD 到 128K。可选数据缺失及显式选择任务的行为继承参考评测器。仅选 512K/1M 时按参考默认跑 RULER、BABILong、书籍 PPL、LongBench v2。源码与许可证见 `pyramidkv/_vendor/niahlogkv/SOURCE.json`。参考配置
+
+流式 PyramidKV 按 2048 tokens 分块 prefill，每块及每次 decode 后按 KV 头选取历史，保留最近 64 个位置。淘汰会影响后续块能访问的历史，与完整 prefill 后一次压缩的论文设置有区别。分配时先测同档 LogKV 的常驻张量存储（包含缓存元数据，排除共享 RoPE），再将总字节数分给各层，底层多、顶层少，每层最多一个完整窗口。每个槽包含一层全部 GQA 头的一对 K/V。槽数取整使两者常驻字节之差小于一个槽，两个 Qwen3 BF16 模型均为 4096 字节。超出某层容量的新块只在处理该层时临时拼接。
+
+| Qwen3-1.7B BF16 | LogKV 常驻字节 | PyramidKV 常驻字节 | PyramidKV / dense KV |
+|---|---:|---:|---:|
+| 原生 32K | 2031878912 | 2031878144 | 54.0667% |
+| 长任务 32K | 2031878912 | 2031878144 | 52.4283% |
+| 64K | 2216205824 | 2216202240 | 29.0321% |
+| 128K | 2403505664 | 2403504128 | 15.8649% |
+| 256K | 2593778432 | 2593775616 | 8.5937% |
+| 512K | 2787024128 | 2787020800 | 4.626% |
+| 1M | 2983242752 | 2983239680 | 2.4783% |
+
+表中按实际头数、维度、层数在 CPU 构造 BF16 缓存，LogKV 逐层等大，测一层后乘层数。相同输入下的整卡峰值还含权重、RoPE、注意力和筛选临时张量。GPU 结果中 `cache_budget` 记录常驻分配与 dense 分母，`kv_compression` 记录请求结束时保留的槽位，`inference_metrics` 记录请求的 CUDA 峰值、延迟和吞吐。
+
+## 原 SemanticLogKV 评测入口
 
 本分支是一个**独立项目**：在 Qwen3 上实现 PyramidKV，并按 SemanticLogKV 的数据集、请求接口和指标口径评测，用于横向对比。
 
