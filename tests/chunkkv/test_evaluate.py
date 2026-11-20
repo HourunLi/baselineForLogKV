@@ -103,7 +103,7 @@ def test_full_suite_launcher_runs_separate_processes_and_stops_on_failure(tmp_pa
                           'if [[ "$CHUNKKV_TEST_FAIL" = 1 && "$*" = *"--suite main"* ]]; then exit 7; fi\n')
     executable.chmod(0o755)
     result = subprocess.run(
-        ["bash", str(runner.BASELINE_ROOT / "scripts/chunkkv_evaluate_all.sh"),
+        ["bash", str(runner.BASELINE_ROOT / "scripts/chunkkv_evaluate_all.sh"), "--legacy",
          "--backend", "dense", "--limit", "4", "--output", str(tmp_path / "results")],
         cwd=tmp_path, env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
                           "CHUNKKV_TEST_CALLS": str(log), "CHUNKKV_TEST_FAIL": str(int(fail_main))},
@@ -144,7 +144,7 @@ def platform_launcher_env(tmp_path, visible_gpus=4):
 ])
 def test_platform_launcher_defaults_to_the_visible_gpus(tmp_path, requested, visible, launched):
     env = {**platform_launcher_env(tmp_path, visible), **requested}
-    command = ["bash", str(runner.BASELINE_ROOT / "majob.sh"), "--limit", "4", "--output", "outputs/test"]
+    command = ["bash", str(runner.BASELINE_ROOT / "majob.sh"), "--legacy", "--limit", "4", "--output", "outputs/test"]
     result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)
     if launched is None:
         expected = (1, "CUDA initialisation failed") if visible == "fail" else (2, "visible")

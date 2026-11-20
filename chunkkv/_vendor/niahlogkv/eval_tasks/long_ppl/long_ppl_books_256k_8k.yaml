@@ -1,0 +1,5 @@
+# Point 8k of the long_ppl_books_256k curve: the books cut to 8192 tokens.
+include: _long_ppl_books
+task: long_ppl_books_256k_8k
+dataset_kwargs:
+  point: 8192

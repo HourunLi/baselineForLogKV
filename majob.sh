@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-# Training-platform entry point for Base + ChunkKV evaluation (no CPT). Run once per node:
-# main suite (47 entries), then NIAH (3 entries, 32768 only); with --context 64k|128k the long suite
-# (BABILong, long_ppl), then RULER (13 tasks), streaming at the LogKV cache's memory. A failed stage stops the job.
+# Evaluation only. Run once per node, using the niahLogKV full protocol by default.
 set -eo pipefail
 cd "$(dirname "$0")"
 
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
     echo "Usage: bash majob.sh [configs/chunkkv/experiment_qwen1.7b_32k.yaml] [evaluation options]"
-    echo "Runs main benchmarks and 32K NIAH, or with --context 64k|128k the long suite and RULER at that length."
+    echo "Use --print-config to inspect the model, tasks and windows before launch."
+    echo "Default: niahLogKV full evaluation. Use --lengths for selected passes or --legacy for the original suites."
     echo "Default environment: torch218."
     echo "Set CHUNKKV_PYTHON to an existing interpreter to skip conda activation."
     exit 0
+fi
+NIAH_PROTOCOL=1
+if [[ "${1:-}" == --legacy ]]; then
+    NIAH_PROTOCOL=0
+    shift
+elif [[ "$#" -gt 0 && "$1" != -* ]]; then
+    NIAH_PROTOCOL=0  # original positional experiment YAML
 fi
 CONFIG_FILE=configs/chunkkv/experiment_qwen1.7b_32k.yaml
 if [[ $# -gt 0 && "$1" != -* ]]; then
@@ -22,6 +28,7 @@ fi
 CONTEXT=32k
 previous=
 for arg in "$@"; do
+    if (( NIAH_PROTOCOL )); then break; fi
     [[ "$previous" == --context ]] && CONTEXT=$arg
     [[ "$arg" == --context=* ]] && CONTEXT=${arg#--context=}
     previous=$arg
@@ -39,6 +46,11 @@ if [[ -z "${CHUNKKV_PYTHON:-}" ]]; then
     CHUNKKV_PYTHON=$(python -c 'import sys; print(sys.executable)')
 fi
 set -u
+if (( NIAH_PROTOCOL )); then
+    for arg in "$@"; do
+        if [[ "$arg" == --print-config ]]; then exec "$CHUNKKV_PYTHON" -m chunkkv.niah "$@"; fi
+    done
+fi
 # Runtime settings of SemanticLogKV's eval.sh/majob.sh (commit 4fd97c7) on this platform. A training job's
 # default LD_LIBRARY_PATH can reach an older libcuda first; torch218's cu128 build needs these libraries first.
 # Its NVTE_*/CUDNN_PATH settings serve Transformer Engine, which this project does not use.
@@ -103,6 +115,11 @@ fi
 export LITGPT_EXPECTED_WORLD_SIZE=$((NUM_NODES * GPUS_PER_NODE))
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 export NCCL_IB_TIMEOUT=${NCCL_IB_TIMEOUT:-22}
+
+if (( NIAH_PROTOCOL )); then
+    export MA_NUM_HOSTS="$NUM_NODES" MA_NUM_GPUS="$GPUS_PER_NODE" NODE_RANK MASTER_ADDR EVAL_MASTER_PORT
+    exec "$CHUNKKV_PYTHON" -m chunkkv.niah "$@"
+fi
 
 case "$CONTEXT" in
     32k) SUITES=(main niah) ;;

@@ -1,0 +1,12 @@
+# Shared >=1M-token books; score the last 4096 tokens at each prefix length.
+group: long_ppl_books_512k
+task:
+  - long_ppl_books_512k_8k
+  - long_ppl_books_512k_16k
+  - long_ppl_books_512k_32k
+  - long_ppl_books_512k_64k
+  - long_ppl_books_512k_128k
+  - long_ppl_books_512k_256k
+  - long_ppl_books_512k_512k
+metadata:
+  version: 1.0

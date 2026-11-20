@@ -1,0 +1,11 @@
+# InfiniteBench En.Sum (longbook_sum_eng) cut to 128k tokens.
+include: _infinitebench_common
+task: infinitebench_longbook_sum_eng_128k
+dataset_kwargs:
+  infinitebench_task: longbook_sum_eng
+  infinitebench_length: 128k
+generation_kwargs:
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 1200
+  until: []
