@@ -101,7 +101,8 @@ def run_stage(args, row, config, model, tokenizer, output):
                         rope_adjustments=row["config_overrides"].get("rope_adjustments"))
         resolved = dict(stage=row, reference_config=config, environment=runtime_environment(), evaluated_model=record)
     from .niah_cache import install_backend
-    install_backend(evaluator, args.backend, dict(comparison_contract=contract, resolved_eval=resolved), config["snapkv"])
+    install_backend(evaluator, args.backend, dict(comparison_contract=contract, resolved_eval=resolved), config["snapkv"],
+                    capacity_per_layer=row.get("kv_capacity_per_layer"))
     folder = Path(kwargs["output_path"])
     folder.mkdir(parents=True, exist_ok=True)
     os.chdir(folder)
@@ -161,6 +162,16 @@ def main():
         rows = stages(args)
     except ValueError as error:
         parser.error(str(error))
+    budgets = config.get("budget_by_length")
+    if budgets is not None and args.backend == "snapkv":
+        if not isinstance(budgets, dict):
+            parser.error("budget_by_length must map nominal context lengths to KV capacities")
+        for row in rows:
+            length = max(row["lengths"])
+            capacity = budgets.get(length)
+            if type(capacity) is not int or not settings["window_size"] < capacity <= length:
+                parser.error(f"invalid or missing KV capacity for length {length}")
+            row["kv_capacity_per_layer"] = capacity
     # These eval_full configurations inherit the same gamma checkpoint and change only admission.
     if args.reference != "baseline":
         config["log_kv_gamma_surprisal"] = "word_first"
