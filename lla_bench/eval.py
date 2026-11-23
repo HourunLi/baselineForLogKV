@@ -436,6 +436,8 @@ except Exception:
 import dataclasses
 
 from lla_bench.model import HAttentionLM, HConfig
+from lla_bench.report import write_summary
+from lla_bench.long_eval_plan import LENGTHS
 from lla_bench.litgpt.tokenizer import Tokenizer
 from lm_eval import evaluator
 from lm_eval.api.model import LM
@@ -533,7 +535,7 @@ def _drop_empty_lengths(results):
     return results
 
 
-def _skip_optional_tasks(tasks, max_seq_length):
+def _skip_optional_tasks(tasks, max_seq_length, skipped=None):
     """The launchers' default lists mark tasks that some checkpoints or setups cannot serve (EVAL_OPTIONAL_TASKS,
     e.g. the 32K turns and book curve): such a task is left out, with the reason, when the model's window is
     shorter than its length (a 4K run) or its data is not given; a task asked for by name must fit or fails
@@ -556,8 +558,11 @@ def _skip_optional_tasks(tasks, max_seq_length):
                 reason = _infinitebench_files_problem()
         if reason is None:
             kept.append(task)
-        elif _is_main():
-            print(f"⚠️ [eval] 默认清单跳过 {task}: {reason}", flush=True)
+        else:
+            if skipped is not None:
+                skipped[task] = reason
+            if _is_main():
+                print(f"⚠️ [eval] 默认清单跳过 {task}: {reason}", flush=True)
     return kept
 
 
@@ -569,7 +574,7 @@ def _task_manager(metadata):
         return None  # simple_evaluate builds its own, with lm-eval's tasks only.
     return TaskManager(include_path=str(EVAL_TASKS_DIR), metadata=dict(metadata or {}))
 from lla_bench.litgpt.generate.base import generate as litgpt_generate
-from lla_bench.metrics import cache_compression_snapshot, summarize_compression
+from lla_bench.metrics import allocated_byte_ratios, cache_compression_snapshot, summarize_compression
 from lla_bench.litgpt.ruler_dataset_cache import evaluation_sample_limit
 from lla_bench.litgpt.ruler_patch import apply_patch
 apply_patch()
@@ -849,34 +854,6 @@ def _score_continuation_logits(logits, targets):
         if is_greedy:
             is_greedy = bool((block.argmax(dim=-1) == target).all().item())
     return total_logprob, is_greedy
-
-
-def _load_yaml_config(yaml_path: str, model_dir: str) -> dict:
-    """Load YAML config with inheritance ('config:' key overrides)."""
-    yaml_path = os.path.normpath(os.path.expanduser(yaml_path))
-    if not os.path.isfile(yaml_path):
-        # A silent {} here used to mean every setting fell back to its
-        # hardcoded default (0.6B arch, relative checkpoints/ path, ...)
-        # with no warning that the config never loaded at all.
-        raise FileNotFoundError(
-            f"config file not found: {yaml_path!r} (resolved from cwd {os.getcwd()!r}); "
-            "check the --config path and the working directory it's run from."
-        )
-
-    with open(yaml_path, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-
-    if cfg is None:
-        return {}
-
-    if "config" in cfg:
-        base_name = cfg.pop("config")
-        base_dir = os.path.dirname(yaml_path)
-        base_path = os.path.join(base_dir, base_name)
-        base_cfg = _load_yaml_config(base_path, model_dir)
-        return {**base_cfg, **cfg}
-
-    return cfg
 
 
 # PyYAML implements YAML 1.1: scientific notation WITHOUT a decimal point
@@ -1201,7 +1178,7 @@ class NativeLM(LM):
         return torch.cat(out)
 
     def _score_tokens(
-        self, ctx_enc: list[int], cont_enc: list[int], *, request_type: str = "loglikelihood"
+        self, ctx_enc: list[int], cont_enc: list[int], *, request_type: str = "loglikelihood", sample_id=None
     ) -> tuple[float, bool]:
         """Forward (context + continuation) and return
         ``(sum log p(continuation | context), is_greedy)``.
@@ -1213,7 +1190,8 @@ class NativeLM(LM):
         """
         # 🌟 安全阀：如果 题干 + 选项 > max_seq_length，必须切掉题干最前面的部分
         max_len = self.model.max_seq_length
-        if len(ctx_enc) + len(cont_enc) > max_len:
+        original_len = len(ctx_enc) + len(cont_enc)
+        if original_len > max_len:
             keep_ctx_len = max_len - len(cont_enc)
             if keep_ctx_len <= 0:
                 cont_enc = cont_enc[-(max_len - 1):]
@@ -1250,7 +1228,7 @@ class NativeLM(LM):
                     forward_time = time.perf_counter() - t0
                 peak_memory = _inference_peak_memory(self._device)
                 self.compression_metrics.append({
-                    "request_type": request_type, "rank": _global_rank(),
+                    "request_type": request_type, "rank": _global_rank(), "sample_id": sample_id,
                     "context_len": ctx_len, "cont_len": len(cont_enc),
                     **cache_compression_snapshot(self.model, seq_len),
                 })
@@ -1260,7 +1238,8 @@ class NativeLM(LM):
                 self._reset_eval_cache()
 
         self.ppl_metrics.append({
-            "rank": _global_rank(), "request_type": request_type,
+            "rank": _global_rank(), "request_type": request_type, "sample_id": sample_id,
+            "original_seq_len": original_len,
             "total_seq_len": seq_len, "context_len": ctx_len,
             "cont_len": len(cont_enc),
             "forward_time_s": forward_time,
@@ -1309,7 +1288,8 @@ class NativeLM(LM):
         local_requests = requests[dp_rank::dp_size]
         results = []
 
-        for req in _eval_progress(local_requests, "loglikelihood"):
+        for i, req in enumerate(_eval_progress(local_requests, "loglikelihood")):
+            sample_id = _request_sample_id(req, global_request_index=i * dp_size + dp_rank, rank=dp_rank)
             context, continuation = req.args[0], req.args[1]
 
             ctx_enc = self.tokenizer.encode(context).tolist()
@@ -1317,7 +1297,7 @@ class NativeLM(LM):
             # loglikelihood 对齐；Qwen 通常无 BOS，bos=False 与默认行为一致。
             cont_enc = self.tokenizer.encode(continuation, bos=False).tolist()
 
-            results.append(self._score_tokens(ctx_enc, cont_enc))
+            results.append(self._score_tokens(ctx_enc, cont_enc, sample_id=sample_id))
 
         # 清理 CUDA 缓存，避免 all_gather 时 OOM
         torch.cuda.empty_cache()
@@ -1522,7 +1502,8 @@ class NativeLM(LM):
         results = []
 
         max_len = self.model.max_seq_length
-        for req in _eval_progress(local_requests, "loglikelihood_rolling"):
+        for i, req in enumerate(_eval_progress(local_requests, "loglikelihood_rolling")):
+            sample_id = _request_sample_id(req, global_request_index=i * dp_size + dp_rank, rank=dp_rank)
             (text,) = req.args
             tokens = self.tokenizer.encode(text, bos=False).tolist()
 
@@ -1536,7 +1517,8 @@ class NativeLM(LM):
                     ctx = [self.tokenizer.bos_id]
                 else:
                     ctx = [tokens[start - 1]]
-                logprob, _ = self._score_tokens(ctx, chunk, request_type="loglikelihood_rolling")
+                logprob, _ = self._score_tokens(ctx, chunk, request_type="loglikelihood_rolling",
+                                                sample_id=f"{sample_id}|start={start}")
                 total_logprob += logprob
 
             results.append(total_logprob)
@@ -1576,7 +1558,7 @@ def main(
         # expand_env_vars：bash 风格 ${VAR} / ${VAR-default} 展开，与 demo.py 的
         # YAML 装载、majob.sh 的 bash 展开共用同一语义（详见 utils.expand_env_vars）。
         _yaml = _coerce_yaml_sci_floats(
-            expand_env_vars(_load_yaml_config(os.path.join(os.getcwd(), config), checkpoint_dir) or {})
+            load_eval_yaml(config)
         )
         _banned = sorted(_k for _k in _yaml if _k.startswith("eval_log_kv_"))
         if _banned:
@@ -1595,6 +1577,8 @@ def main(
 
     checkpoint_dir = _o("checkpoint_dir", checkpoint_dir)
     benchmark = _o("benchmark", benchmark)
+    if isinstance(benchmark, list):
+        benchmark = ",".join(benchmark)
     config_overrides = _o("config_overrides", config_overrides)
     output_path = _o("output_path", output_path)
     metadata = _o("metadata", metadata)
@@ -1651,8 +1635,10 @@ def main(
                             tokenizer_dir=tokenizer_dir, process_group=eval_group)
         if world_size > 1:
             _hb("checkpoint + tokenizer + 模型加载完成，即将进入 simple_evaluate")
+        requested_tasks = benchmark.split(",") if benchmark != "debug" else ["piqa"]
+        skipped_tasks = {}
         if benchmark != "debug":
-            benchmark = ",".join(_skip_optional_tasks(benchmark.split(","), lm_model.max_length))
+            benchmark = ",".join(_skip_optional_tasks(requested_tasks, lm_model.max_length, skipped_tasks))
             _check_task_lengths(benchmark.split(","), lm_model.max_length)
             _check_task_data(benchmark.split(","))
 
@@ -1704,6 +1690,7 @@ def main(
                 "slot_definition": "matrix states do not retain discrete KV pairs; slot ratios are null",
                 "byte_definition": "live FP32 matrices + BF16 convolution history / Qwen3-1.7B dense BF16 KV bytes at the same token count",
                 "summary": compression_summary,
+                "common_byte_budget": allocated_byte_ratios(lm_model.cache_budget, compression_summary),
                 "by_request_type": {
                     kind: summarize_compression([row for row in compression_samples if row["request_type"] == kind])
                     for kind in sorted({row["request_type"] for row in compression_samples})
@@ -1744,8 +1731,18 @@ def main(
                     "timestamp": ts,
                     **_code_version(),
                     "benchmark": benchmark,
+                    "requested_tasks": requested_tasks,
+                    "skipped_tasks": skipped_tasks,
+                    "limit": limit,
+                    "data_environment": {k: os.environ.get(k) for k in (
+                        "HF_HOME", "RULER_CACHE_DIR", "RULER_DATASET_CACHE_DIR", "BABILONG_DIR",
+                        "LONGBENCH2_DIR", "INFINITEBENCH_DIR", "LONG_PPL_DATA", "LONG_PPL_BOOKS",
+                        "LONG_PPL_DOCS", "LONG_PPL_CONCAT", "LONG_PPL_CACHE", "RULER_LONG_SAMPLES")},
                     "checkpoint_dir": checkpoint_dir,
                     "method": "upstream_hattention_mamba2",
+                    "implementation": "native_pytorch",
+                    "upstream_commit": "7f8644159c1406fae1ad863829a5b3a4fbf63022",
+                    "eval_protocol_commit": "0f4396b617a5cfcead9da3d6bb23a4f0693c97f5",
                     "checkpoint_source": lm_model.checkpoint_source,
                     "evaluation_device": str(lm_model.device),
                     "model_dtype": str(lm_model.model.lm_head.weight.dtype),
@@ -1757,7 +1754,8 @@ def main(
                     "tokenizer_dir": lm_model.resolved_tokenizer_dir,
                     "prefill_chunk_size": lm_model._prefill_chunk(),
                     "package_versions": {pkg: version(pkg) for pkg in
-                                         ("torch", "lm-eval", "datasets", "transformers", "huggingface-hub")},
+                                         ("torch", "lm-eval", "datasets", "transformers", "huggingface-hub",
+                                          "tokenizers", "numpy", "pyarrow", "pandas", "xlsxwriter")},
                     "inference_mlp_chunk_size": lm_model.config.inference_mlp_chunk_size,
                     "cache_budget": lm_model.cache_budget,
                     "kv_compression": compression_report,
@@ -1790,12 +1788,14 @@ def main(
                     print(f"❌ 保存完整结果失败: {e}")
                     print(f"⚠️ 尝试备用方案...")
                     try:
-                        json_output["results"] = str(results)
                         with open(output_file, "w", encoding="utf-8") as f:
-                            json.dump(json_output, f, indent=2, ensure_ascii=False)
+                            json.dump({**json_output, "results": str(results)}, f, indent=2, ensure_ascii=False)
                         print(f"✅ 完整结果已以备用方案保存到: {output_file}")
                     except Exception as e2:
                         print(f"❌ 备用方案也失败了: {e2}")
+
+                with output_file.with_suffix(".summary.csv").open("w", encoding="utf-8", newline="") as stream:
+                    write_summary(stream, output_file.name, json_output)
 
                 # 🌟 第四步：保存推理时延 xlsx
                 inference_xlsx = output_file.with_suffix(".inference_metrics.xlsx")
@@ -1813,8 +1813,10 @@ def main(
                             gen_df.to_excel(writer, sheet_name="generate_until", index=False)
                             # 按 prompt 长度分桶统计
                             gen_df["prompt_bucket"] = pd.cut(gen_df["prompt_len"],
-                                bins=[0, 1024, 4096, 8192, 16384, 32768, 999999],
-                                labels=["0-1K", "1K-4K", "4K-8K", "8K-16K", "16K-32K", "32K+"])
+                                bins=[0, 1024, 4096, 8192, 16384, *LENGTHS.values(), float("inf")],
+                                labels=["0-1K", "1K-4K", "4K-8K", "8K-16K", "16K-32K", "32K-64K",
+                                        "64K-128K", "128K-256K", "256K-512K", "512K-1M", ">1M"],
+                                include_lowest=True)
                             summary = pd.DataFrame([
                                 {"prompt_bucket": str(bucket), **summarize_inference_metrics(
                                     rows.to_dict("records"), [],
