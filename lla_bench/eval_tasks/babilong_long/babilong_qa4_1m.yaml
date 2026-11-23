@@ -1,0 +1,7 @@
+# Official 100-sample BABILong, read from ordinary files prepared by the downloader.
+include: _qa4_base
+task: babilong_qa4_1m
+dataset_kwargs:
+  qa_split: qa4
+  length: 1m
+  dataset: RMT-team/babilong

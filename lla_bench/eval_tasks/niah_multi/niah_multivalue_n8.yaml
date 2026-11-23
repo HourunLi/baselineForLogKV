@@ -1,0 +1,4 @@
+task: niah_multivalue_n8
+include: _niah_multi.yaml
+dataset_kwargs:
+  num_needle_v: 8

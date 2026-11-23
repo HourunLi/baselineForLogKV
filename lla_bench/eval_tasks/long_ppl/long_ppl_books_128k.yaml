@@ -1,0 +1,11 @@
+# Long-document perplexity curve in the 128k configuration: the same books (LONG_PPL_BOOKS) cut to 8k, 16k, 32k, 64k, 128k,
+# one task per point (each scores the last 4096 tokens of every book).
+group: long_ppl_books_128k
+task:
+  - long_ppl_books_128k_8k
+  - long_ppl_books_128k_16k
+  - long_ppl_books_128k_32k
+  - long_ppl_books_128k_64k
+  - long_ppl_books_128k_128k
+metadata:
+  version: 1.0

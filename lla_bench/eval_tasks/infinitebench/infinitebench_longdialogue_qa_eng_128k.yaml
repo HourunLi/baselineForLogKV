@@ -1,0 +1,11 @@
+# InfiniteBench En.Dia (longdialogue_qa_eng) cut to 128k tokens.
+include: _infinitebench_common
+task: infinitebench_longdialogue_qa_eng_128k
+dataset_kwargs:
+  infinitebench_task: longdialogue_qa_eng
+  infinitebench_length: 128k
+generation_kwargs:
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 40
+  until: []
