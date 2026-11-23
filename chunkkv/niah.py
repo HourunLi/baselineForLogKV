@@ -59,7 +59,9 @@ def run_stage(args, row, config, model, tokenizer, output):
     from .semanticlogkv_eval import file_sha256
 
     os.environ["EVAL_OPTIONAL_TASKS"] = ",".join(row["optional"])
-    options = args.chunkkv_options
+    options = dict(args.chunkkv_options)
+    if "kv_capacity_per_layer" in row:
+        options["budget"] = row["kv_capacity_per_layer"]
     needs_metadata = any(task.startswith(("niah_", "ruler_", "long_ppl", "infinitebench"))
                          for task in row["benchmark"].split(","))
     kwargs = dict(checkpoint_dir=model, tokenizer_dir=tokenizer, arch_name=config["arch_name"],
@@ -137,7 +139,7 @@ def main():
         if not isinstance(job, dict) or job.get("protocol") != "niahLogKV":
             parser.error("expected protocol: niahLogKV in job YAML")
         cli_fields = ("backend", "model_size", "reference", "lengths", "suites", "limit", "long_limit", "output")
-        unknown = set(job) - set(cli_fields) - {"protocol", "base_checkpoint", "cpt_checkpoint", "chunkkv", "main"}
+        unknown = set(job) - set(cli_fields) - {"protocol", "base_checkpoint", "cpt_checkpoint", "chunkkv", "main", "budget_by_length"}
         if unknown:
             parser.error(f"unknown job fields: {sorted(unknown)}")
         for field in cli_fields:
@@ -169,6 +171,16 @@ def main():
     args.chunkkv_options = dict(chunk_size=10, window_size=64, reuse_layers=1, streaming=True,
                                 prefill_chunk_size=config["log_kv_prefill_block"], budget="logkv")
     args.chunkkv_options.update(tuning)
+    budgets = job.get("budget_by_length")
+    if budgets is not None and args.backend == "chunkkv":
+        if not isinstance(budgets, dict):
+            parser.error("budget_by_length must map nominal context lengths to KV capacities")
+        for row in rows:
+            length = max(row["lengths"])
+            capacity = budgets.get(length)
+            if type(capacity) is not int or not args.chunkkv_options["window_size"] < capacity <= length:
+                parser.error(f"invalid or missing KV capacity for length {length}")
+            row["kv_capacity_per_layer"] = capacity
     # These eval_full configurations inherit the same gamma checkpoint and change only admission.
     if args.reference != "baseline":
         config["log_kv_gamma_surprisal"] = "word_first"
