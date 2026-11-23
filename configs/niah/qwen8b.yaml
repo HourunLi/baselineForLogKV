@@ -4,6 +4,15 @@ backend: pyramidkv
 model_size: 8b
 eval_lengths: [32k, 64k, 128k, 256k, 512k, 1m]
 long_limit: 100  # 每个长文本任务的样本数上限
+# Per-layer mean KV entries, calibrated from the previous 8B RULER run.
+# Each previous capacity is scaled by observed CR / target LogKV CR.
+budget_by_length:
+  32768: 7047  # 1.77x -> 4.45x
+  65536: 8880  # 3.35x -> 7.29x
+  131072: 10271  # 6.2x -> 12.65x
+  262144: 11580  # 11.27x -> 22.01x
+  524288: 13311  # 21.55x -> 39.34x
+  1048576: 14713  # 40.29x -> 71.23x
 pyramidkv:
   window_size: 64
   kernel_size: 7

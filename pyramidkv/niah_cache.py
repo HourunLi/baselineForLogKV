@@ -54,7 +54,7 @@ def snapshot(model, processed_tokens):
     return _with_ratios(dict(counts, processed_tokens=processed_tokens))
 
 
-def install_backend(evaluator, backend, provenance, settings=None):
+def install_backend(evaluator, backend, provenance, settings=None, capacity_per_layer=None):
     class RecordedLM(evaluator.LogKVLM):
         baseline_provenance = dict(provenance, model_backend=backend)
 
@@ -75,7 +75,7 @@ def install_backend(evaluator, backend, provenance, settings=None):
                 return
             # Use the actual preset, dtype, device and model window for sizing.
             super()._set_eval_cache()
-            target = self.cache_budget["persistent_cache_bytes"]
+            reference_bytes = self.cache_budget["persistent_cache_bytes"]
             dense = self.cache_budget["dense_cache_bytes"]
             self.model.clear_kv_cache()
             if torch.device(self._device).type == "cuda":
@@ -83,6 +83,7 @@ def install_backend(evaluator, backend, provenance, settings=None):
                 with torch.cuda.device(self._device):
                     torch.cuda.empty_cache()
             slot_bytes = dense // (self.config.n_layer * self.model.max_seq_length)
+            target = reference_bytes if capacity_per_layer is None else capacity_per_layer * slot_bytes * self.config.n_layer
             method = MatchedPyramid(self.config.n_layer, self.model.max_seq_length, target // slot_bytes, **selection)
             allocated = 0
             for layer, block in enumerate(self.model.transformer.h):
@@ -96,9 +97,10 @@ def install_backend(evaluator, backend, provenance, settings=None):
                 raise RuntimeError(f"PyramidKV allocated {allocated} bytes for a {target}-byte target")
             self.cache_budget = dict(method="PyramidKV", entries_per_layer=method.capacities,
                                      selection=method.config(), prefill_chunk=self._prefill_chunk(),
-                                     persistent_cache_bytes=allocated, reference_logkv_bytes=target,
+                                     persistent_cache_bytes=allocated, target_cache_bytes=target, reference_logkv_bytes=reference_bytes,
                                      dense_cache_bytes=dense, allocated_fraction_of_dense=allocated / dense,
-                                     reference_fraction_of_dense=target / dense, unused_reference_bytes=target - allocated)
+                                     reference_fraction_of_dense=reference_bytes / dense,
+                                     unused_reference_bytes=reference_bytes - allocated)
 
         def _reset_eval_cache(self):
             for block in self.model.transformer.h:
