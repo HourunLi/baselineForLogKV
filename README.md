@@ -14,6 +14,8 @@ export LLA_OUTPUT_DIR="$PWD/results/hattention"
 # 在能联网的节点执行一次。约 3.30 GB，下载后按固定 revision 校验所有文件。
 python -m lla_bench.download "$LLA_CHECKPOINT_DIR"
 
+# 下载期间每 5 秒打印已下载 MiB、百分比、最近速度及预计剩余秒数。最后一行显示全文件平均速度。
+
 # 检查实际任务、长度和分阶段去重后的清单
 bash eval.sh --print-config
 
