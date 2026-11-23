@@ -9,3 +9,5 @@ outputs/
 checkpoints/
 dms/training/datasets_cache/
 .DS_Store
+
+results/

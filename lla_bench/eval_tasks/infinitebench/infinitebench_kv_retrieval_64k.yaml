@@ -1,0 +1,11 @@
+# InfiniteBench Retr.KV (kv_retrieval) cut to 64k tokens.
+include: _infinitebench_common
+task: infinitebench_kv_retrieval_64k
+dataset_kwargs:
+  infinitebench_task: kv_retrieval
+  infinitebench_length: 64k
+generation_kwargs:
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 50
+  until: []

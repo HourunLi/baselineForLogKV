@@ -1,0 +1,6 @@
+checkpoint_dir: ${LLA_CHECKPOINT_DIR:-checkpoints/hattention-mamba2}
+output_path: ${LLA_OUTPUT_DIR:-results/hattention}
+eval_main: true
+eval_lengths: [32k, 64k, 128k, 256k, 512k, 1m]
+eval_max_seq_lengths: [1024, 2048, 4096, 8192, 16384, 32768]
+long_limit: 100

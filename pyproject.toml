@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "semanticlogkv-dms-baseline"
+name = "logkv-hattention-baseline"
 version = "0.1.0"
-description = "Qwen3-1.7B-Base with NVIDIA Dynamic Memory Sparsification"
+description = "Native log-linear HAttention evaluated with the niahLogKV harness"
 requires-python = ">=3.10,<3.14"
 # PyTorch/CUDA (and FlashAttention for inference) come from the environment. Lower bounds of what the code
 # imports: SemanticLogKV's environment (torch218) meets all of them and none excludes a version it has, because
@@ -35,9 +35,10 @@ test = ["pytest>=8"]
 eval = ["lm-eval[ruler,longbench,ifeval]>=0.4.9", "datasets>=4.7", "pandas>=1.9", "xlsxwriter>=3"]
 
 [tool.setuptools.packages.find]
-include = ["dms*", "models*"]
+include = ["dms*", "models*", "lla_bench*"]
 
 [tool.setuptools.package-data]
+"lla_bench" = ["eval_tasks/**/*", "LICENSE.md", "SOURCES.md"]
 "models._vendor.semanticlogkv" = ["LICENSE.md", "README.md", "SOURCE.json"]
 
 [tool.pytest.ini_options]
