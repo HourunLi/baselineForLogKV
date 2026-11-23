@@ -57,6 +57,16 @@ python -m lla_bench.unused.fetch_long_eval_data \
 
 JSON、评分 CSV、压缩明细 CSV 与速度 XLSX 沿用参考导出。速度包含 TTFT、prefill/decode 吞吐、每 token 解码耗时、生成及打分吞吐。CUDA 峰值同时记录 allocated/reserved，使用相同的请求同步及重置边界。PyTorch 实现的数值顺序和速度与作者的融合 CUDA/Triton kernel 有差异。
 
+## 论文汇总表
+
+`lla_bench.summary` 沿用参考版本的表头、指标映射和分组平均。可同时读两个模型的运行日志或带时间戳的结果 JSON，每行一个模型、共 458 列。六档 RULER、BABILong、LongBench v2、多轮问答、PPL 曲线及支持长度内的 InfiniteBench 都有独立列。仅传同一实验的文件，未测项目留空。和参考实现一样，各组平均按可用项计算，小样本或缺项结果需要在组间比较前核对覆盖范围。
+
+```bash
+# 各自将完整评测的 stdout/stderr 存为日志后
+python -m lla_bench.summary --model HAttention hattention.log \
+  --model LogKV logkv.log --output comparison.csv
+```
+
 ## 同预算比较
 
 矩阵状态没有逐 token KV 条目，对应的 `kv_retention_ratio`、`kv_saving_ratio`、`kv_compression_factor` 均为 null。每次请求结束时记录真实转入模型的 token 数、占用的矩阵数及卷积历史字节。分配预算在 `cache_budget.persistent_cache_bytes`。另存 `live_state_byte_ratio`、节省比例和压缩倍数，分母为相同 token 数下 Qwen3-1.7B 的 dense BF16 K/V（28 层、8 个 KV 组、维度 128）。汇总采用字节总和之比。实现先读后进位，已占用矩阵数会在二次幂边界下降。整卡峰值另受模型权重、激活、工作区和 allocator 影响。
@@ -85,4 +95,4 @@ LogKV 的动态有效槽位还取决于输入和路由。上表匹配持久分�
 
 ## 验证
 
-`python -m pytest -q tests/test_native_hattention.py` 检查门控因果定义、任意 prefill 分块、跨层级进位、逐 token 解码、重置与字节计数。本分支开发时还用作者公开权重、原配 tokenizer、上游 `make_masked_H_matrix` 做了独立 FP32 前向核对；7 个位置共 224,000 个 logits，最大绝对误差 7.63e-6。CPU 小型状态流覆盖 1,049,600 个位置。目标 GPU 上的全套结果需要在实际实验环境生成。
+`python -m pytest -q tests/test_native_hattention.py` 检查门控因果定义、任意 prefill 分块、跨层级进位、逐 token 解码、重置与字节计数。本分支开发时还用作者公开权重、原配 tokenizer、上游 `make_masked_H_matrix` 做了独立 FP32 前向核对；7 个位置共 224,000 个 logits，最大绝对误差 7.63e-6。CPU 小型状态流覆盖 1,049,600 个位置。使用作者权重在 CPU 上逐路跑通了 BoolQ 1 题（2 个选项）以及 32K `niah_single_1` 1 题（输入 32,585 token、生成 128 token、无截断），均产生 JSON、CSV、XLSX。两个样本均得 0 分，仅用于检查端到端执行。目标 GPU 上的全套质量、速度和显存峰值仍待实测。
