@@ -11,11 +11,12 @@ fi
 CONFIG_FILE=${1:-configs/hattention.yaml}
 eval_settings=$("${PYTHON_BIN}" - "${CONFIG_FILE}" <<'PYCONFIG'
 import json, os, shlex, sys
-import yaml
-from pathlib import Path
-from lla_bench.utils import expand_env_vars
-cfg = expand_env_vars(yaml.safe_load(Path(sys.argv[1]).read_text()))
 from importlib.metadata import version
+from lla_bench.utils import load_eval_yaml
+cfg = load_eval_yaml(sys.argv[1])
+def task_list(value):
+    return ",".join(value) if isinstance(value, list) else value or ""
+
 for package, expected in (("lm-eval", "0.4.11"), ("datasets", "4.8.4")):
     actual = version(package)
     if actual != expected:
@@ -29,15 +30,18 @@ emit("CONFIG_EVAL_SUITES", ",".join(cfg.get("eval_suites") or []))
 emit("CONFIG_EVAL_MAIN", int(cfg["eval_main"]))
 emit("CONFIG_LONG_LIMIT", cfg["long_limit"])
 emit("EVAL_MAX_SEQ_LENGTHS", json.dumps(cfg["eval_max_seq_lengths"]))
-emit("CONFIG_OVERRIDES", json.dumps({"block_size": 32768}))
-emit("CONFIG_BENCHMARKS", cfg.get("benchmark") or "")
-emit("CONFIG_NIAH_BENCHMARKS", cfg.get("niah_benchmark") or "")
+emit("CONFIG_OVERRIDES", json.dumps({"block_size": 32768, **(cfg.get("config_overrides") or {})}))
+emit("CONFIG_LIMIT", cfg.get("limit") if cfg.get("limit") is not None else "")
+for name in ("long_ppl_data", "long_ppl_books", "infinitebench_dir", "babilong_dataset"):
+    path = os.environ.get(name.upper()) or cfg.get(name)
+    if path:
+        emit("export " + name.upper(), path)
+emit("CONFIG_BENCHMARKS", task_list(cfg.get("benchmark")))
+emit("CONFIG_NIAH_BENCHMARKS", task_list(cfg.get("niah_benchmark")))
 PYCONFIG
 )
 eval "${eval_settings}"
-# Several lengths in one job (eval_lengths in the YAML, or EVAL_LENGTHS=32k,128k): one pass per length with its
-# own window and YaRN factor (YARN_MODE=per_length, the default, or fixed), tasks chosen by EVAL_SUITES and
-# NIAH_ONLY=1; see long_eval_plan.py. Each pass writes to <output_path>/long<L> (fixed: yarn<F>/long<L>).
+# Each selected length gets its own window and output_path/long<L> directory.
 # The full evaluation (eval_main: true in the YAML, or EVAL_MAIN=1) runs the 32K main line first (the default task
 # lists, main and NIAH stage, the YAML's limit, into <output_path>), then the passes (long_limit samples per task),
 # which leave out what the main line measured; EVAL_LENGTHS=none keeps the main line only.
@@ -65,7 +69,7 @@ if [[ ${YARN_MODE:-per_length} != per_length ]]; then
     exit 1
 fi
 MAIN_ARGS=(--config_overrides "${CONFIG_OVERRIDES}")
-EVAL_LIMIT=${LIMIT:-}
+EVAL_LIMIT=${LIMIT:-${CONFIG_LIMIT}}
 LONG_EVAL_LIMIT=${LIMIT:-${LONG_EVAL_LIMIT:-${CONFIG_LONG_LIMIT}}}
 [[ -z "${EVAL_LIMIT}" ]] || MAIN_ARGS+=(--limit "${EVAL_LIMIT}")
 DEFAULT_BENCHMARKS="boolq,piqa,social_iqa,hellaswag,winogrande,arc_easy,arc_challenge,openbookqa"
@@ -91,6 +95,12 @@ export EVAL_OPTIONAL_TASKS=  # tasks asked for by name must run
 if [ -z "${BENCHMARKS}" ]; then
     BENCHMARKS=${DEFAULT_BENCHMARKS}
     export EVAL_OPTIONAL_TASKS=${DEFAULT_OPTIONAL_BENCHMARKS}
+    # When the main line supplies the 32K books result to an explicit long
+    # suite, missing data must fail here before the planner deduplicates it.
+    if [[ "${EVAL_MAIN}" == 1 && ",${EVAL_LENGTHS,,}," =~ [,[:space:]]32k[,[:space:]] &&
+          ",${EVAL_SUITES,,}," =~ [,[:space:]]books[,[:space:]] ]]; then
+        export EVAL_OPTIONAL_TASKS=niah_turns_32k
+    fi
 fi
 
 # Every needle-in-a-haystack eval: RULER single needles, lm-eval's multi-needle tasks and the
@@ -144,6 +154,8 @@ if [[ "${print_only}" == 1 ]]; then
         echo "Main: ${BENCHMARKS}"
         echo "NIAH: ${NIAH_BENCHMARKS} at ${EVAL_MAX_SEQ_LENGTHS}"
     fi
+    echo "Main overrides: ${CONFIG_OVERRIDES}; main limit: ${EVAL_LIMIT:-all}; long limit: ${LONG_EVAL_LIMIT:-all}"
+    echo "NIAH data tokenizer: ${LLA_NIAH_DATA_TOKENIZER_DIR:-${SAVE_DIR}}"
     echo "Checkpoint: ${SAVE_DIR}"
     echo "Results: ${EVAL_OUTPUT_DIR}"
     exit 0
@@ -162,6 +174,12 @@ import os
 import sys
 
 import torch
+
+if os.environ.get("LLA_EVAL_DEVICE") == "cpu":
+    if int(os.environ.get("MA_NUM_HOSTS") or os.environ.get("GROUP_WORLD_SIZE") or 1) != 1:
+        raise SystemExit("LLA_EVAL_DEVICE=cpu supports one node")
+    print(1)
+    sys.exit(0)
 
 visible = torch.cuda.device_count()
 if visible < 1:
@@ -213,12 +231,16 @@ echo "Main eval rendezvous: ${MASTER_ADDR}:${MAIN_EVAL_MASTER_PORT}"
 echo "NIAH eval rendezvous: ${MASTER_ADDR}:${NIAH_EVAL_MASTER_PORT}"
 
 
+task_metadata() {
+    "${PYTHON_BIN}" -c 'import json, sys; print(json.dumps(dict(pretrained=sys.argv[1], max_seq_lengths=json.loads(sys.argv[2]))))' "$1" "${EVAL_MAX_SEQ_LENGTHS}"
+}
+
 # The main stage, then the NIAH stage, with the current task lists, lengths, output dir and PASS_ARGS.
 run_stages() {
     echo "Main benchmarks: ${BENCHMARKS}"
     echo "NIAH benchmarks: ${NIAH_BENCHMARKS}"
     # RULER / NIAH context lengths: the YAML's eval_max_seq_lengths (default 1K-32K).
-    META=$("${PYTHON_BIN}" -c 'import json,sys; print(json.dumps(dict(pretrained=sys.argv[1], max_seq_lengths=json.loads(sys.argv[2]))))' "${SAVE_DIR}" "${EVAL_MAX_SEQ_LENGTHS}")
+    META=$(task_metadata "${SAVE_DIR}")
     MAIN_METADATA_ARGS=()
     # Tasks that build their samples or cut their prompts with the tokenizer (RULER, long_ppl, InfiniteBench) need
     # the metadata.
@@ -252,6 +274,12 @@ run_stages() {
     fi
 
     if [ "${NIAH_BENCHMARKS}" != "none" ] && [ -n "${NIAH_BENCHMARKS}" ]; then
+        # Optional paired-text RULER experiment. Model inputs always use the
+        # tokenizer from SAVE_DIR, including when the builder uses Qwen's.
+        NIAH_META=${META}
+        if [[ -n "${LLA_NIAH_DATA_TOKENIZER_DIR:-}" ]]; then
+            NIAH_META=$(task_metadata "${LLA_NIAH_DATA_TOKENIZER_DIR}")
+        fi
         "${PYTHON_BIN}" -m torch.distributed.run \
             --nnodes=${NUM_NODES} \
             --nproc_per_node=${GPUS_PER_NODE} \
@@ -261,7 +289,7 @@ run_stages() {
             --module lla_bench.eval \
             --checkpoint_dir "${SAVE_DIR}" \
             --benchmark "${NIAH_BENCHMARKS}" \
-            --metadata "${META}" \
+            --metadata "${NIAH_META}" \
             --output_path "${EVAL_OUTPUT_DIR}" \
             "${PASS_ARGS[@]}" \
             --tokenizer_dir "${SAVE_DIR}"

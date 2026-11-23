@@ -23,18 +23,29 @@ class MatrixCache(nn.Module):
         self.count = 0
 
 
+def _tile_heads(tensor, heads):
+    """Broadcast shared projections only for the current tile."""
+    groups = tensor.size(1)
+    if groups == heads:
+        return tensor
+    if groups == 1:
+        return tensor.expand(-1, heads, -1, -1)
+    return tensor.repeat_interleave(heads // groups, dim=1)
+
+
 def weak_attention(q, k, v, log_decay, weights, cache=None, tile=128):
-    """q [B,H,T,K], k/v [B,G,T,K/V], log_decay [B,G,T], positive weights [B,H,T,L].
+    """q/k [B,Q/KG,T,K], v [B,G,T,V], log_decay [B,G,T], positive weights [B,H,T,L].
 
     FP32 states and sums. Tiles are aligned powers of two so outside prefix
     blocks stay at the same read level throughout a tile. The only pairwise
     workspace is bounded by tile x tile. With cache=None this is differentiable.
     """
-    batch, heads, length, key_dim = q.shape
-    groups, value_dim = k.size(1), v.size(-1)
+    batch, query_heads, length, key_dim = q.shape
+    heads, groups, value_dim = weights.size(1), v.size(1), v.size(-1)
     start = 0 if cache is None else cache.count
     end = start + length
-    if length < 1 or tile < 1 or heads % groups or weights.size(-1) < (end - 1).bit_length() + 1:
+    if (length < 1 or tile < 1 or heads % groups or heads % query_heads or groups % k.size(1)
+            or weights.size(-1) < (end - 1).bit_length() + 1):
         raise ValueError("invalid sequence length, GQA shape, tile size or number of read levels")
     if cache is not None and end > cache.window:
         raise ValueError("recurrent cache window exceeded")
@@ -46,8 +57,9 @@ def weak_attention(q, k, v, log_decay, weights, cache=None, tile=128):
         j = limit.bit_length() - 1
         width = 1 << j
         span = slice(pos - start, pos - start + width)
-        query = q[:, :, span].float().reshape(batch, groups, heads // groups, width, key_dim)
-        key, value = k[:, :, span].float(), v[:, :, span].float()
+        q_tile, k_tile = q[:, :, span].float(), k[:, :, span].float()
+        query = _tile_heads(q_tile, heads).reshape(batch, groups, heads // groups, width, key_dim)
+        key, value = _tile_heads(k_tile, groups), v[:, :, span].float()
         lam = weights[:, :, span].float().reshape(batch, groups, heads // groups, width, -1)
         decay = log_decay[:, :, span].float().cumsum(-1)
 
@@ -59,7 +71,13 @@ def weak_attention(q, k, v, log_decay, weights, cache=None, tile=128):
         factor = lam.gather(-1, levels.expand(*lam.shape[:-2], width, width))
         delta = decay.unsqueeze(-1) - decay.unsqueeze(-2)
         gate = delta.masked_fill(ids[:, None] < ids, -torch.inf).exp()
-        scores = query @ key.unsqueeze(2).transpose(-2, -1)
+        if query_heads == k.size(1):
+            # Mamba-2 shares B and C within a projection group. QK is identical
+            # for its heads, while decays, values and level weights remain head-specific.
+            shared_scores = q_tile @ k_tile.transpose(-2, -1)
+            scores = _tile_heads(shared_scores, heads).reshape(batch, groups, heads // groups, width, width)
+        else:
+            scores = query @ key.unsqueeze(2).transpose(-2, -1)
         y = (scores * factor * gate.unsqueeze(2)) @ value.unsqueeze(2)
 
         last = decay[..., -1:]

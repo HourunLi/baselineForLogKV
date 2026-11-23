@@ -162,6 +162,17 @@ def expand_env_vars(obj: Any) -> Any:
     return _deep_expand(obj)
 
 
+def load_eval_yaml(path: str) -> dict:
+    """Resolve parent configs relative to the child, as in the niahLogKV launcher."""
+    path = os.path.expanduser(path)
+    with open(path, encoding="utf-8") as stream:
+        settings = yaml.safe_load(stream) or {}
+    parent = settings.pop("config", None)
+    if parent:
+        settings = {**load_eval_yaml(os.path.join(os.path.dirname(path), parent)), **settings}
+    return expand_env_vars(settings)
+
+
 def _str_to_bool(value: str) -> bool:
     lowered = value.lower()
     if lowered in ("1", "true", "yes", "y", "on"):

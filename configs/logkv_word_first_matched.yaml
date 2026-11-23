@@ -1,0 +1,8 @@
+# Copy beside eval_full_word_first.yaml in LogKV/exp/qwen1.7b-32k.
+# The parent selects the original weights, task lists, data and limits.
+config: eval_full_word_first.yaml
+eval_tag: full_word_first_hattention_matched
+log_kv_B: 26
+log_kv_recent_size: 512
+log_kv_prefill_block: 512
+log_kv_semantic_flush_granularity: 512
