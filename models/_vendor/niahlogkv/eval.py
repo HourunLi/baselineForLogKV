@@ -411,15 +411,15 @@ def extract_results_to_csv(results: dict, benchmark: str, output_path: Path) -> 
     except Exception as e:
         print(f"❌ 保存 CSV 失败: {e}")
 
-BASE = os.environ.get('CAM_HF_CACHE', os.environ.get('HF_HOME', '/workspace/data/hf_cache'))
+BASE = os.environ.get('HF_HOME', os.environ.get('CAM_HF_CACHE', '/workspace/data/hf_cache'))
 os.environ['HF_HOME'] = BASE
-os.environ['HF_DATASETS_CACHE'] = f'{BASE}/hf_cache'
-os.environ['HF_EVALUATE_CACHE'] = f'{BASE}/evaluate'
-os.environ['HF_MODULES_CACHE'] = f'{BASE}/modules'
-os.environ['HUGGINGFACE_HUB_CACHE'] = f'{BASE}/hub'
-os.environ['HF_HUB_CACHE'] = f'{BASE}/hub'
-os.environ['RULER_CACHE_DIR'] = f'{BASE}/ruler_cache'
-os.environ['NLTK_DATA'] = f'{BASE}/nltk_data'
+os.environ.setdefault('HF_DATASETS_CACHE', f'{BASE}/hf_cache')
+os.environ.setdefault('HF_EVALUATE_CACHE', f'{BASE}/evaluate')
+os.environ.setdefault('HF_MODULES_CACHE', f'{BASE}/modules')
+os.environ.setdefault('HUGGINGFACE_HUB_CACHE', f'{BASE}/hub')
+os.environ.setdefault('HF_HUB_CACHE', f'{BASE}/hub')
+os.environ.setdefault('RULER_CACHE_DIR', f'{BASE}/ruler_cache')
+os.environ.setdefault('NLTK_DATA', f'{BASE}/nltk_data')
 os.environ['HF_HUB_OFFLINE'] = '1'
 os.environ['HF_DATASETS_OFFLINE'] = '1'
 os.environ['HF_DATASETS_IN_MEMORY_MAX_SIZE'] = '0'
@@ -2074,7 +2074,7 @@ def _resolve_checkpoint_dir(checkpoint_dir: str, group=None) -> str:
     rank 留在集合通信里等到超时。
     """
     resolved: str | None = None
-    if _is_main():
+    if not _dist_ready() or _is_main():
         base = Path(os.path.expandvars(os.path.expanduser(checkpoint_dir)))
         if (base / "lit_model.pth").exists():
             resolved = str(base)

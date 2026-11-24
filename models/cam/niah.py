@@ -50,15 +50,41 @@ def stages(args):
     return rows
 
 
+def full_cam_plan():
+    options = argparse.Namespace(lengths=",".join(reference.LENGTHS), yarn_mode="per_length",
+                                 main=True, suites=",".join(reference.SUITES), niah_only=False,
+                                 limit=None, long_limit=100)
+    rows = []
+    for budget in ("logkv", "target-bytes"):
+        if budget == "target-bytes":
+            options.main, options.suites = False, "ruler"
+        for row in stages(options):
+            rows.append({**row, "budget": budget, "folder": f"{budget}/{row['folder']}", "optional": []})
+    return rows
+
+
+def setup_cache_environment():
+    if os.getenv("HF_HOME") and not os.getenv("CAM_HF_CACHE"):
+        os.environ["CAM_HF_CACHE"] = os.environ["HF_HOME"]
+    configure_environment(keep_cache_paths=True)
+    for name, folder in (("BABILONG_DIR", "babilong"), ("LONGBENCH2_DIR", "longbench2")):
+        path = os.getenv(name) or Path(os.environ["HF_HOME"]) / folder
+        os.environ[name] = str(Path(path).expanduser().absolute())
+    for key in ("INFINITEBENCH_DIR", "LONG_PPL_DATA", "LONG_PPL_BOOKS", "LONG_PPL_CACHE", "RULER_ESSAYS_FILE",
+                "RULER_DATASET_CACHE_DIR"):
+        if os.getenv(key):
+            os.environ[key] = str(Path(os.environ[key]).expanduser().absolute())
+
+
 def run_stage(args, row, config, model, tokenizer, output):
     check_environment()
-    if os.getenv("HF_HOME"):
-        os.environ.setdefault("CAM_HF_CACHE", os.environ["HF_HOME"])
-    configure_environment()
+    setup_cache_environment()
+    if args.all:
+        from .full_data import ppl_sources
+        os.environ.update(ppl_sources(max(row["lengths"])))
+        os.environ["RULER_LONG_SAMPLES"] = "100"
     from models._vendor.niahlogkv import eval as evaluator
     from models.qwen3.provenance import file_sha256
-    for name, folder in (("BABILONG_DIR", "babilong"), ("LONGBENCH2_DIR", "longbench2")):
-        os.environ.setdefault(name, str(Path(os.environ["HF_HOME"]) / folder))
 
     os.environ["EVAL_OPTIONAL_TASKS"] = ",".join(row["optional"])
     needs_metadata = any(task.startswith(("niah_", "ruler_", "long_ppl", "infinitebench"))
@@ -112,12 +138,13 @@ def run_stage(args, row, config, model, tokenizer, output):
                                            for name in ("cache.py", "grouped.py", "niah_model.py", "niah_budget.py")}
     if args.backend == "cam":
         from .niah_model import install_adapter
-        install_adapter(evaluator, max(row["lengths"]), args.budget, args.merge_interval, args.prefill_chunk)
+        install_adapter(evaluator, max(row["lengths"]), row.get("budget", args.budget), args.merge_interval, args.prefill_chunk)
     run_evaluation(evaluator, kwargs, args.backend, contract, resolved=resolved)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--all", action="store_true", help="full CaM equal-byte evaluation and six target-byte RULER passes")
     parser.add_argument("--backend", choices=("cam", "dense", "logkv"), default="cam")
     parser.add_argument("--model-size", choices=("1.7b", "8b"), default="1.7b")
     parser.add_argument("--model", type=Path, help="LitGPT checkpoint; all backends default to the same Gamma CPT")
@@ -138,30 +165,48 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--print-config", action="store_true")
     parser.add_argument("--stage", type=int, help=argparse.SUPPRESS)
+    if "--all" in sys.argv[1:]:
+        # The complete preset is independent of smoke-test limits and task selectors in a previous job.
+        parser.set_defaults(lengths=",".join(reference.LENGTHS), suites=None, main=True, niah_only=False,
+                            yarn_mode="per_length", limit=None, long_limit=100)
     args = parser.parse_args()
+    if args.all and (args.backend != "cam" or args.budget != "logkv" or args.lengths != ",".join(reference.LENGTHS)
+                     or args.suites or not args.main or args.niah_only or args.yarn_mode != "per_length"
+                     or args.limit is not None or args.long_limit != 100):
+        parser.error("--all fixes the CaM budgets, lengths, suites and sample limits")
     if not 1 <= args.merge_interval <= args.prefill_chunk:
         parser.error("require 1 <= merge-interval <= prefill-chunk")
     if args.long_limit < 1 or (args.limit is not None and args.limit < 1):
         parser.error("sample limits must be positive")
     try:
-        rows = stages(args)
+        rows = full_cam_plan() if args.all else stages(args)
     except ValueError as error:
         parser.error(str(error))
     config = yaml.safe_load((CONFIGS/f"qwen{args.model_size}.yaml").read_text())
     args.weight_role = "explicit" if args.model else "gamma_cpt"
     model = str((args.model or Path(config["save_path"])).resolve())
     tokenizer = str((args.tokenizer or Path(config["ckpt_dir"])).resolve())
-    args.metadata_tokenizer = str((args.metadata_tokenizer or Path(model)).resolve())
+    generator_dir = Path(model)
+    if args.all and not (generator_dir / "tokenizer.json").is_file():
+        generator_dir = Path(tokenizer)
+    args.metadata_tokenizer = str((args.metadata_tokenizer or generator_dir).resolve())
     tag = f"cam-{args.budget}-step{args.merge_interval}" if args.backend == "cam" else args.backend
+    if args.all:
+        tag = f"cam-all-step{args.merge_interval}"
     output = (args.output or BASELINE_ROOT / "outputs/niahlogkv" / args.model_size / tag).resolve()
     if args.print_config:
         print(json.dumps(dict(checkpoint=model, weight_role=args.weight_role, tokenizer=tokenizer,
                               metadata_tokenizer=args.metadata_tokenizer, backend=args.backend,
-                              reference_config=config, budget=args.budget, merge_interval=args.merge_interval,
+                              reference_config=config, budget=("per stage" if args.all else args.budget), merge_interval=args.merge_interval,
                               prefill_chunk=args.prefill_chunk, output=str(output), stages=rows), indent=2))
     elif args.stage is not None:
         run_stage(args, rows[args.stage], config, model, tokenizer, output)
     else:
+        if args.all:
+            setup_cache_environment()
+            check_environment()
+            from .full_data import check_full_data
+            check_full_data(model, tokenizer, args.metadata_tokenizer)
         nodes = int(os.getenv("MA_NUM_HOSTS") or os.getenv("GROUP_WORLD_SIZE") or 1)
         gpus = os.getenv("MA_NUM_GPUS") or os.getenv("NPROC_PER_NODE") or "1"
         rendezvous = ["--standalone"]

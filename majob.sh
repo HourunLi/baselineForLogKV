@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# Training-platform entry point for training-free CaM evaluation on the prepared original Base.
-# Run once per node: main suite (47 entries), then NIAH (3 entries, 32768 only); a config with context: 64k or
-# 128k runs the long suite (BABILong, long_ppl), then RULER (13 tasks). A failed stage stops the job.
+# managed_cluster evaluation entry, once per node. --all runs both complete CaM experiments.
 set -eo pipefail
 cd "$(dirname "$0")"
 
 usage="Usage: bash majob.sh [configs/cam_qwen3_1.7b.yaml] [--backend cam|dense|logkv] [--model DIR] [--limit N] [--output DIR]"
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
     echo "Usage: bash majob.sh [--backend cam|dense|logkv] [--lengths 32k,...,1m] [--suites LIST] [--print-config]"
+    echo "bash majob.sh --all runs the full CaM suite and six target-budget RULER passes."
     echo "Supplying an original YAML runs the legacy protocol:"
     echo "$usage"
-    echo "Evaluates configs/eval_suites.yaml in two stages. Prepare the Base first (models.qwen3.prepare_base)."
+    echo "Only the legacy YAML path uses the HF-converted Base."
     echo "Default environment: conda torch218; set CAM_PYTHON to use an existing interpreter."
     exit 0
 fi
@@ -49,9 +48,32 @@ if (( niah_protocol )); then
         if [[ "$arg" == --print-config ]]; then exec "$CAM_PYTHON" -m models.cam.niah "$@"; fi
     done
 fi
-GPUS_PER_NODE=${MA_NUM_GPUS:-${NPROC_PER_NODE:-${LOCAL_WORLD_SIZE:-}}}
-if [[ -z "$GPUS_PER_NODE" ]]; then
-    GPUS_PER_NODE=$("$CAM_PYTHON" -c 'import torch; print(torch.cuda.device_count())')
+if (( niah_protocol )); then
+    export CUDA_DEVICE_MAX_CONNECTIONS=${CUDA_DEVICE_MAX_CONNECTIONS:-32}
+    export NCCL_NET_GDR_LEVEL=${NCCL_NET_GDR_LEVEL:-2} NCCL_MIN_NCHANNELS=${NCCL_MIN_NCHANNELS:-4}
+    GPUS_PER_NODE=$("$CAM_PYTHON" - <<'PY_GPU'
+import os
+import sys
+import torch
+
+visible = torch.cuda.device_count()
+allocated = int(os.environ.get("MA_NUM_GPUS") or visible)
+available = min(visible, allocated)
+explicit = os.getenv("GPUS_PER_NODE") or os.getenv("NPROC_PER_NODE") or os.getenv("LOCAL_WORLD_SIZE")
+workers = int(explicit) if explicit else available
+if not 1 <= workers <= available:
+    sys.exit(f"Invalid GPU count: requested={workers}, CUDA visible={visible}, MA_NUM_GPUS={allocated}")
+torch.cuda.init()
+if not torch.cuda.is_bf16_supported(including_emulation=False):
+    sys.exit("The selected Qwen3 evaluation needs a BF16-capable CUDA device")
+print(workers)
+PY_GPU
+)
+else
+    GPUS_PER_NODE=${MA_NUM_GPUS:-${NPROC_PER_NODE:-${LOCAL_WORLD_SIZE:-}}}
+    if [[ -z "$GPUS_PER_NODE" ]]; then
+        GPUS_PER_NODE=$("$CAM_PYTHON" -c 'import torch; print(torch.cuda.device_count())')
+    fi
 fi
 NUM_NODES=${MA_NUM_HOSTS:-${GROUP_WORLD_SIZE:-1}}
 NODE_RANK=${VC_TASK_INDEX:-${NODE_RANK:-${GROUP_RANK:-0}}}

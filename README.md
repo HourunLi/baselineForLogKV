@@ -3,15 +3,10 @@
 默认平台入口使用 niahLogKV 的 Gamma CPT 权重和评测协议。CaM、dense、LogKV 三个后端直接读取同一 LitGPT checkpoint。默认运行 32K 主线以及 32K–1M 六档长文本任务。
 
 ```bash
-# 每节点执行一次。预览六档 RULER 的窗口、任务和权重路径
-bash majob.sh --no-main --suites ruler --print-config
-# 与 LogKV 逐档等字节，完整参考协议
-bash majob.sh --backend cam --budget logkv
-# 按名义长度匹配给定的六档持久字节压缩率，单独跑全套 RULER
-bash majob.sh --no-main --suites ruler --budget target-bytes
+bash majob.sh --all
 ```
 
-默认逐 token 淘汰。完整运行方法、六档预算和验证范围见 [CaM 长文本评测说明](docs/CAM_NIAH.md)。
+该命令一次完成等字节 CaM 主线和六档长评测，再完成目标字节压缩率的六档 RULER，共 20 个阶段。每个节点执行一次，默认逐 token 淘汰。完整运行方法、六档预算和验证范围见 [CaM 长文本评测说明](docs/CAM_NIAH.md)。
 
 ## 旧版 Base 权重与 SemanticLogKV 评测
 

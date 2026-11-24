@@ -6,6 +6,21 @@ CaM、dense 和 LogKV 默认读取同一个 Qwen3-1.7B Gamma CPT，使用原始 
 
 在仓库根目录和原评测环境 torch218 运行。平台每节点执行一次。仅选择六档 RULER 时，`--no-main` 让 32K 的全部 13 个任务也在同一窗口及输出目录评测。完整协议按参考计划去重，主线已完成的任务不会重复计数。
 
+一条命令运行两组 CaM 实验，入口自动激活 torch218，按顺序启动全部 20 个阶段。完整模式固定六档长度、主线不限条数、长文本每任务上限 100，不继承旧作业的 LIMIT、NIAH_ONLY、EVAL_LENGTHS 或 EVAL_SUITES。PPL 的文档数及拼接设置沿用参考运行的 LONG_PPL_DOCS 和 LONG_PPL_CONCAT。任何阶段失败都终止作业。
+
+```bash
+bash majob.sh --all
+```
+
+等字节结果写入 `outputs/niahlogkv/1.7b/cam-all-step1/logkv/`，目标倍率 RULER 写入同级 `target-bytes/`。启动会核对版本、可见 GPU、checkpoint、tokenizer 和长文本输入。PPL 会用任务 tokenizer 在每个来源找到至少一篇达到所需长度的文档；主线 HF 任务在实际加载时检查离线缓存。启动器复用现有资源并报告本节点缺少的路径。
+
+- 共享根目录默认使用 `/workspace/data/hf_cache`。可以用 CAM_HF_CACHE 或 HF_HOME 指定根目录，HF_DATASETS_CACHE、RULER_CACHE_DIR、NLTK_DATA 等独立覆盖会保留。
+- 分词默认沿用参考 SAVE_DIR。完整模式在该目录缺 tokenizer.json 时，使用模型的原始 Base tokenizer 目录作为生成器来源，实际路径进入结果。
+- 普通 PPL 优先读取 LONG_PPL_DATA，否则使用共享根下的 `long_ppl_data/emozilla--pg19-test`。512K/1M 均需要至少 1,048,576 token 的参考文档。若这两档使用另一个已准备的单点 PPL 语料，用 LONG_PPL_DATA_1M 指向它。书籍曲线使用 LONG_PPL_BOOKS、可选的 LONG_PPL_BOOKS_1M，或参考下载器的 `long_ppl_books/emozilla--pg19`、`long_ppl_books_1m/emozilla--pg19`。
+- 512K/1M 需要 RULER 的 english_words.json、essay 背景、离线 QA 数据、NLTK punkt_tab，以及 BABILong QA1–QA5 的普通 Arrow 或 JSON。LongBench v2 需要 20 个完整子集，InfiniteBench 的 10 个任务到 256K。已准备的文件可直接复用。RULER_DATASET_CACHE_DIR 仅在指定了对应已生成的共享 Arrow 缓存时设置。
+
+以下为分项或小样本运行示例。
+
 ```bash
 bash majob.sh --no-main --suites ruler --print-config
 bash majob.sh --no-main --suites ruler --lengths 32k --limit 2 --output outputs/smoke

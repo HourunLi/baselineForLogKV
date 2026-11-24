@@ -34,14 +34,25 @@ TOKENIZER_NAMES = ("tokenizer.json", "tokenizer.model", "tokenizer_config.json",
                    "generation_config.json")
 
 
-def configure_environment():
+def configure_environment(*, keep_cache_paths=False):
     # HF libraries capture these values at first import. This path is data, not source code.
-    base = os.environ.get("CAM_HF_CACHE", DEFAULT_HF_CACHE)
+    base = os.getenv("CAM_HF_CACHE") or DEFAULT_HF_CACHE
+    base = str(Path(base).expanduser().absolute())
+    caches = dict(HF_DATASETS_CACHE=f"{base}/hf_cache", HF_EVALUATE_CACHE=f"{base}/evaluate",
+                  HF_MODULES_CACHE=f"{base}/modules", HF_HUB_CACHE=f"{base}/hub",
+                  HUGGINGFACE_HUB_CACHE=f"{base}/hub", RULER_CACHE_DIR=f"{base}/ruler_cache",
+                  NLTK_DATA=f"{base}/nltk_data")
+    if keep_cache_paths:
+        for key, default in caches.items():
+            value = os.getenv(key) or default
+            if key == "NLTK_DATA":
+                caches[key] = os.pathsep.join(str(Path(part).expanduser().absolute()) for part in value.split(os.pathsep))
+            else:
+                caches[key] = str(Path(value).expanduser().absolute())
+        hub = os.getenv("HF_HUB_CACHE") or os.getenv("HUGGINGFACE_HUB_CACHE") or caches["HF_HUB_CACHE"]
+        caches["HF_HUB_CACHE"] = caches["HUGGINGFACE_HUB_CACHE"] = str(Path(hub).expanduser().absolute())
     os.environ.update(
-        HF_HOME=base, HF_DATASETS_CACHE=f"{base}/hf_cache", HF_EVALUATE_CACHE=f"{base}/evaluate",
-        HF_MODULES_CACHE=f"{base}/modules", HF_HUB_CACHE=f"{base}/hub",
-        HUGGINGFACE_HUB_CACHE=f"{base}/hub", RULER_CACHE_DIR=f"{base}/ruler_cache",
-        NLTK_DATA=f"{base}/nltk_data", HF_HUB_OFFLINE="1", HF_DATASETS_OFFLINE="1",
+        HF_HOME=base, **caches, HF_HUB_OFFLINE="1", HF_DATASETS_OFFLINE="1",
         HF_DATASETS_IN_MEMORY_MAX_SIZE="0", HF_DATASETS_TRUST_REMOTE_CODE="1",
         TOKENIZERS_PARALLELISM="false", HF_ALLOW_CODE_EVAL="1",
     )

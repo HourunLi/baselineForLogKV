@@ -11,7 +11,8 @@
     "Report the same dense KV denominator for reference and full attention backends",
     "Resolve legacy LitGPT prompt style paths within the bundled package",
     "CaM namespace and cache environment variable",
-    "Allow CaM to reuse the reference chunked continuation scorer at every length"
+    "Allow CaM to reuse the reference chunked continuation scorer at every length",
+    "Preserve launcher-resolved cache paths and resolve a checkpoint locally in per-node preflight before torchrun"
   ],
   "generator_sources": {
     "ruler_patch.py": {

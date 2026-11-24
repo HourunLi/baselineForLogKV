@@ -103,3 +103,78 @@ def test_tiled_merge_propagates_across_tile_boundary(monkeypatch):
     cache.update(torch.zeros_like(cache.scores))
     for actual, wanted in zip((cache.keys, cache.values, cache.scores), expected):
         torch.testing.assert_close(actual, wanted, atol=2e-6, rtol=2e-5)
+
+
+def test_full_platform_plan_is_independent_of_previous_job(monkeypatch):
+    root = Path(__file__).resolve().parents[1]
+    for name, value in dict(CAM_PYTHON=sys.executable, NIAH_ONLY="1", EVAL_LENGTHS="32k",
+                            EVAL_SUITES="ruler", LIMIT="2", LONG_EVAL_LIMIT="2").items():
+        monkeypatch.setenv(name, value)
+    plan = json.loads(subprocess.check_output(["bash", "majob.sh", "--all", "--print-config"], cwd=root))
+    rows = plan["stages"]
+    assert len({r["folder"] for r in rows}) == len(rows) == 20
+    assert [r["budget"] for r in rows] == ["logkv"] * 14 + ["target-bytes"] * 6
+    assert [r["limit"] for r in rows] == [None, None] + [100] * 18
+    assert all(r["optional"] == [] for r in rows)
+    assert [r["lengths"][0] for r in rows[-6:]] == list(TARGET)
+    assert [len(r["benchmark"].split(",")) for r in rows[-6:]] == [13, 13, 13, 12, 12, 12]
+
+
+def test_full_ppl_uses_reference_assets_by_length(monkeypatch, tmp_path):
+    from models.cam.full_data import ppl_sources
+
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    for key in ("LONG_PPL_DATA", "LONG_PPL_BOOKS", "LONG_PPL_BOOKS_1M", "LONG_PPL_DATA_1M"):
+        monkeypatch.delenv(key, raising=False)
+    short = tmp_path / "long_ppl_books/emozilla--pg19"
+    ultra = tmp_path / "long_ppl_books_1m/emozilla--pg19"
+    short.mkdir(parents=True)
+    ultra.mkdir(parents=True)
+    assert ppl_sources(262144)["LONG_PPL_BOOKS"] == str(short)
+    assert ppl_sources(524288)["LONG_PPL_BOOKS"] == str(ultra)
+    monkeypatch.setenv("LONG_PPL_DATA", "/data/ref")
+    monkeypatch.setenv("LONG_PPL_DATA_1M", "/data/ref-ultra")
+    assert ppl_sources(262144)["LONG_PPL_DATA"] == "/data/ref"
+    assert ppl_sources(1048576)["LONG_PPL_DATA"] == "/data/ref-ultra"
+
+
+def test_niah_preserves_user_offline_cache_paths(monkeypatch, tmp_path):
+    from models.cam.niah import setup_cache_environment
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    monkeypatch.delenv("CAM_HF_CACHE", raising=False)
+    monkeypatch.setenv("RULER_CACHE_DIR", str(tmp_path / "ruler"))
+    monkeypatch.setenv("HF_DATASETS_CACHE", str(tmp_path / "datasets"))
+    monkeypatch.setenv("NLTK_DATA", "/data/shared/nltk:/data/local/nltk")
+    # Isolate all os.environ updates made by the launcher.
+    import os
+    from unittest.mock import patch
+    with patch.dict(os.environ):
+        setup_cache_environment()
+        assert os.environ["HF_HOME"] == str(tmp_path)
+        assert os.environ["HF_DATASETS_CACHE"] == str(tmp_path / "datasets")
+        assert os.environ["RULER_CACHE_DIR"] == str(tmp_path / "ruler")
+        assert os.environ["NLTK_DATA"] == "/data/shared/nltk:/data/local/nltk"
+        assert os.environ["HF_HUB_OFFLINE"] == "1"
+
+
+def test_managed_cluster_bounds_workers_by_visible_gpus(tmp_path):
+    import os
+    root = Path(__file__).resolve().parents[1]
+    # Only the launcher's standalone GPU-count probe sees this simulated CUDA topology.
+    (tmp_path / "torch.py").write_text(
+        "from types import SimpleNamespace\n"
+        "cuda = SimpleNamespace(device_count=lambda: 2, init=lambda: None, is_bf16_supported=lambda **kw: True)\n")
+    executable = tmp_path / "python"
+    executable.write_text('#!/bin/bash\nif [[ "$1" == "-" ]]; then\n'
+                          '  PYTHONPATH="$SIM_GPU_DIR" exec "$TEST_PYTHON" -\nfi\n'
+                          'echo "$MA_NUM_GPUS $LITGPT_EXPECTED_WORLD_SIZE $*"\n')
+    executable.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k not in
+           ("GPUS_PER_NODE", "NPROC_PER_NODE", "LOCAL_WORLD_SIZE", "VC_TASK_INDEX", "MA_VJ_NAME", "NODE_RANK")}
+    env.update(MA_NUM_GPUS="8", MA_NUM_HOSTS="1", CAM_PYTHON=str(executable),
+               TEST_PYTHON=sys.executable, SIM_GPU_DIR=str(tmp_path))
+    args = ["bash", "majob.sh", "--all"]
+    assert "2 2 -m models.cam.niah --all" in subprocess.check_output(args, cwd=root, env=env, text=True)
+    env["GPUS_PER_NODE"] = "3"
+    run = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True)
+    assert run.returncode != 0 and "CUDA visible=2" in run.stderr
