@@ -2,12 +2,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/nccl_env.sh
-python_bin=${NFINI_TRAIN_PYTHON:-python}
-if [[ -z ${NFINI_TRAIN_PYTHON:-} && -d /opt/conda ]]; then
+python_bin=${INFINI_TRAIN_PYTHON:-python}
+if [[ -z ${INFINI_TRAIN_PYTHON:-} && -d /opt/conda ]]; then
     python_bin=/opt/conda/envs/torch218/bin/python
 fi
 if ! command -v "$python_bin" >/dev/null; then
-    echo "Training interpreter unavailable: $python_bin. Set NFINI_TRAIN_PYTHON to the prepared environment." >&2
+    echo "Training interpreter unavailable: $python_bin. Set INFINI_TRAIN_PYTHON to the prepared environment." >&2
     exit 1
 fi
 echo "Training Python: $(command -v "$python_bin")" >&2
@@ -16,12 +16,12 @@ export PATH=/usr/local/cuda-12.8/bin:${PATH}
 export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/local/cuda-12.8/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 for arg in "$@"; do
-    if [[ $arg == --print-config ]]; then exec "$python_bin" -m nfini_attention.train "$@"; fi
+    if [[ $arg == --print-config ]]; then exec "$python_bin" -m infini_attention.train "$@"; fi
 done
 case "${1:-}" in
     prepare)
         if [[ ${VC_TASK_INDEX:-${NODE_RANK:-${GROUP_RANK:-0}}} != 0 ]]; then exit 0; fi
-        exec "$python_bin" -m nfini_attention.train "$@" ;;
+        exec "$python_bin" -m infini_attention.train "$@" ;;
     cpt|check) ;;
     *) echo "Usage: bash majob.sh --train {prepare|cpt} [--config FILE] [--steps N]" >&2; exit 2 ;;
 esac
@@ -36,4 +36,4 @@ if [[ $nodes != 1 && $addr == localhost ]]; then
 fi
 exec "$python_bin" -m torch.distributed.run --nproc_per_node "$gpus" --nnodes "$nodes" \
     --node_rank "${VC_TASK_INDEX:-${NODE_RANK:-${GROUP_RANK:-0}}}" --master_addr "$addr" --master_port "${MASTER_PORT:-6000}" \
-    -m nfini_attention.train "$@"
+    -m infini_attention.train "$@"

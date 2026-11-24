@@ -29,7 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
-nfini-train = ["litdata==0.2.61", "transformers==4.51.3", "huggingface-hub==0.36.2", "pyarrow"]
+infini-train = ["litdata==0.2.61", "transformers==4.51.3", "huggingface-hub==0.36.2", "pyarrow"]
 hattention-train = ["litdata>=0.2.61", "huggingface-hub>=0.27", "pyarrow"]
 # For a separate environment only. These are what the code and the shared offline cache need (its IFEval
 # entry uses the Json feature type of datasets>=4.7); each run records the exact versions, and compare_results
@@ -37,7 +37,7 @@ hattention-train = ["litdata>=0.2.61", "huggingface-hub>=0.27", "pyarrow"]
 eval = ["lm-eval[ruler,longbench,ifeval]>=0.4.9", "datasets>=4.7", "pandas>=1.9", "xlsxwriter>=3"]
 
 [tool.setuptools.packages.find]
-include = ["dms*", "models*", "lla_bench*", "nfini_attention*"]
+include = ["dms*", "models*", "lla_bench*", "infini_attention*"]
 
 [tool.setuptools.package-data]
 "lla_bench" = ["eval_tasks/**/*", "LICENSE.md", "SOURCES.md"]

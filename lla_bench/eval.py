@@ -1054,7 +1054,7 @@ class NativeLM(LM):
         self.tokenizer = Tokenizer(resolved)
         self.infini = "infini_segment_length" in json.loads((Path(checkpoint_dir) / "config.json").read_text())
         if self.infini:
-            from nfini_attention.evaluation import load_model
+            from infini_attention.evaluation import load_model
             self.model, self.config, self.checkpoint_source = load_model(checkpoint_dir, device, options)
             _configure_inference_memory(self.config, options)
             self.model.mlp_chunk = self.config.inference_mlp_chunk_size
@@ -1092,7 +1092,7 @@ class NativeLM(LM):
             return
         self.model.set_cache()
         if self.infini:
-            from nfini_attention.evaluation import cache_budget
+            from infini_attention.evaluation import cache_budget
             self.cache_budget = cache_budget(self.model)
             self._eval_cache_ready = True
             return
@@ -1798,7 +1798,7 @@ def main(
                     json.dump(json_output, f, ensure_ascii=False, cls=SafeJSONEncoder)
                 print(f"完整结果已保存到 {output_file}", flush=True)
                 if lm_model.infini:
-                    from nfini_attention.report import write_summary
+                    from infini_attention.report import write_summary
                     with output_file.with_suffix(".summary.csv").open("w", newline="", encoding="utf-8") as stream:
                         write_summary(stream, str(output_file), json_output)
 

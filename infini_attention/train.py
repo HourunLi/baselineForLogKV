@@ -234,8 +234,8 @@ def check_storage_marker(path, *, publish=False, timeout=60):
             if publish:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with path.open("xb") as marker:
-                    marker.write(b"nfini")
-            elif path.read_bytes() != b"nfini":
+                    marker.write(b"infini")
+            elif path.read_bytes() != b"infini":
                 raise RuntimeError(f"Unexpected shared probe contents at {path}")
             return
         except FileNotFoundError as exc:
@@ -277,7 +277,7 @@ def check_job(base, raw, cache, root, device):
             dist.barrier()  # All hosts have read the marker before the leader can remove it.
         if device.index == 0:
             if (root / "cpt").exists() or any(root.glob("step-*")):
-                raise FileExistsError(f"Existing training output at {root}; use a fresh NFINI_OUTPUT_ROOT "
+                raise FileExistsError(f"Existing training output at {root}; use a fresh INFINI_OUTPUT_ROOT "
                                       "or use the standalone resume/evaluation entry point")
             config = json.loads((base / "config.json").read_text())
             check_base_config(config, base)
@@ -295,7 +295,7 @@ def check_job(base, raw, cache, root, device):
             if (cache / "index.json").is_file():
                 prolong.check_chunks(cache)
                 source = cache
-            elif os.environ.get("NFINI_PROLONG_CACHE_ROOT") or cache.exists() or not next(prolong.raw_files(raw), None):
+            elif os.environ.get("INFINI_PROLONG_CACHE_ROOT") or cache.exists() or not next(prolong.raw_files(raw), None):
                 raise FileNotFoundError(f"No usable ProLong data at cache={cache}, raw={raw}")
             else:
                 source = raw
@@ -312,21 +312,21 @@ def check_job(base, raw, cache, root, device):
 def main():
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("stage", choices=("prepare", "cpt", "check"))
-    cli.add_argument("--config", type=Path, default=Path("configs/nfini_cpt.yaml"))
+    cli.add_argument("--config", type=Path, default=Path("configs/infini_cpt.yaml"))
     cli.add_argument("--steps", type=int, help="stop at this optimizer step with the original LR schedule")
     cli.add_argument("--resume", type=Path, help="complete step directory from this recipe")
     cli.add_argument("--print-config", action="store_true")
     args = cli.parse_args()
     cfg = yaml.safe_load(args.config.read_text())
-    base = Path(os.environ.get("NFINI_QWEN_BASE", cfg["base"])).resolve()
-    raw = Path(os.environ.get("NFINI_PROLONG_DATA", cfg["prolong"])).resolve()
-    root = Path(os.environ.get("NFINI_OUTPUT_ROOT", cfg["output_root"])).resolve()
+    base = Path(os.environ.get("INFINI_QWEN_BASE", cfg["base"])).resolve()
+    raw = Path(os.environ.get("INFINI_PROLONG_DATA", cfg["prolong"])).resolve()
+    root = Path(os.environ.get("INFINI_OUTPUT_ROOT", cfg["output_root"])).resolve()
     if args.print_config:
         print(json.dumps({**cfg, "base": str(base), "prolong": str(raw), "output_root": str(root),
                           "target_input_tokens": cfg["context_length"] * cfg["global_batch_size"] * (args.steps or cfg["steps"])}, indent=2))
         return
     name = prolong.cache_name(base, cfg["context_length"])
-    override = os.environ.get("NFINI_PROLONG_CACHE_ROOT")
+    override = os.environ.get("INFINI_PROLONG_CACHE_ROOT")
     cache = Path(override or raw) / name
     if not override and not cache.exists():
         cache = root / "prolong_cache" / name

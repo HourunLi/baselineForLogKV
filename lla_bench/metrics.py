@@ -11,7 +11,7 @@ def with_ratios(counts):
 
 def cache_compression_snapshot(model, processed_tokens):
     if hasattr(model.config, "infini_segment_length"):
-        from nfini_attention.evaluation import snapshot
+        from infini_attention.evaluation import snapshot
         return snapshot(model, processed_tokens)
     layers, groups, width = model.config.dense_geometry
     live_bytes = live_matrices = conv_bytes = 0

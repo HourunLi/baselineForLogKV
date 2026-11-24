@@ -16,7 +16,7 @@ def main(main_tasks, passes):
         if not ok:
             problems.append(message)
 
-    base = os.environ["NFINI_QWEN_BASE"]
+    base = os.environ["INFINI_QWEN_BASE"]
     lengths = {}
     manager = _task_manager({"pretrained": base, "tokenizer": base})
     for task in main_tasks.split(","):
@@ -54,7 +54,7 @@ def main(main_tasks, passes):
     for long_group in (False, True):
         if long_group:
             for key in ("DATA", "BOOKS", "DOCS"):
-                os.environ[f"LONG_PPL_{key}"] = os.environ[f"NFINI_LONG_PPL_{key}_1M"]
+                os.environ[f"LONG_PPL_{key}"] = os.environ[f"INFINI_LONG_PPL_{key}_1M"]
         for suite in ("ppl", "books"):
             selected = sorted(n for n in lengths.get(suite, ()) if (n in extended) == long_group)
             if selected:

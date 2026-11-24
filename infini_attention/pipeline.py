@@ -22,19 +22,19 @@ def main():
     gpus = int(env.get("GPUS_PER_NODE") or allocated)
     if gpus > allocated:
         cli.error(f"Requested {gpus} GPUs per node but only {allocated} allocated")
-    cfg = yaml.safe_load(Path("configs/nfini_cpt.yaml").read_text())
+    cfg = yaml.safe_load(Path("configs/infini_cpt.yaml").read_text())
     world = nodes * gpus
     if gpus < 1 or cfg["global_batch_size"] % world:
         cli.error(f"Global batch {cfg['global_batch_size']} must be divisible by {nodes} nodes x {gpus} GPUs")
     print(f"Topology: {nodes} nodes x {gpus} GPUs, accumulation={cfg['global_batch_size'] // world}", flush=True)
-    root = Path(env.get("NFINI_OUTPUT_ROOT") or
+    root = Path(env.get("INFINI_OUTPUT_ROOT") or
                 Path("/workspace/ckpt-logKV/Infini-Attention") /
                 env.get("MA_VJ_NAME", "qwen8b-32k")).resolve()
-    env.update(NFINI_OUTPUT_ROOT=str(root), NFINI_CHECKPOINT_DIR=str(root / "cpt"),
-               GPUS_PER_NODE=str(gpus), NFINI_QWEN_BASE=env.get("NFINI_QWEN_BASE") or cfg["base"])
-    env.setdefault("NFINI_OUTPUT_DIR", str(root / "evaluate"))
-    print(f"CPT output: {root}/cpt\nEvaluation: {env['NFINI_OUTPUT_DIR']}", flush=True)
-    train = ["bash", "scripts/train_nfini.sh"]
+    env.update(INFINI_OUTPUT_ROOT=str(root), INFINI_CHECKPOINT_DIR=str(root / "cpt"),
+               GPUS_PER_NODE=str(gpus), INFINI_QWEN_BASE=env.get("INFINI_QWEN_BASE") or cfg["base"])
+    env.setdefault("INFINI_OUTPUT_DIR", str(root / "evaluate"))
+    print(f"CPT output: {root}/cpt\nEvaluation: {env['INFINI_OUTPUT_DIR']}", flush=True)
+    train = ["bash", "scripts/train_infini.sh"]
     stages = [
         ("GPU, NCCL, base and shared storage", train + ["check"], False),
         ("offline evaluation environment", ["bash", "eval.sh", "--check-runtime"], False),

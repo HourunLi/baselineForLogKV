@@ -12,8 +12,8 @@ if [[ ${1:-} == --print-config ]]; then
     print_only=1
     shift
 fi
-CONFIG_FILE=${1:-configs/nfini_eval.yaml}
-export NFINI_CHECKPOINT_DIR=${NFINI_CHECKPOINT_DIR:-${NFINI_OUTPUT_ROOT:-checkpoints/Infini-Attention}/cpt}
+CONFIG_FILE=${1:-configs/infini_eval.yaml}
+export INFINI_CHECKPOINT_DIR=${INFINI_CHECKPOINT_DIR:-${INFINI_OUTPUT_ROOT:-checkpoints/Infini-Attention}/cpt}
 eval_settings=$("${PYTHON_BIN}" - "${CONFIG_FILE}" <<'PYCONFIG'
 import json, os, shlex, sys
 import yaml
@@ -75,14 +75,14 @@ fi
 
 planner=lla_bench.long_eval_plan
 if [[ ${METHOD} == Infini-Attention ]]; then
-    planner=nfini_attention.long_eval_plan
+    planner=infini_attention.long_eval_plan
     # An explicitly supplied common corpus/count applies to both length groups.
-    export NFINI_LONG_PPL_BOOKS_1M=${NFINI_LONG_PPL_BOOKS_1M:-${LONG_PPL_BOOKS:-${HF_HOME}/long_ppl_books_1m/emozilla--pg19}}
-    export NFINI_LONG_PPL_DOCS_1M=${NFINI_LONG_PPL_DOCS_1M:-${LONG_PPL_DOCS:-10}}
+    export INFINI_LONG_PPL_BOOKS_1M=${INFINI_LONG_PPL_BOOKS_1M:-${LONG_PPL_BOOKS:-${HF_HOME}/long_ppl_books_1m/emozilla--pg19}}
+    export INFINI_LONG_PPL_DOCS_1M=${INFINI_LONG_PPL_DOCS_1M:-${LONG_PPL_DOCS:-10}}
     export LONG_PPL_BOOKS=${LONG_PPL_BOOKS:-${HF_HOME}/long_ppl_books/emozilla--pg19}
     export LONG_PPL_DATA=${LONG_PPL_DATA:-${HF_HOME}/long_ppl_data/emozilla--pg19-test}
     export LONG_PPL_DOCS=${LONG_PPL_DOCS:-100}
-    export NFINI_LONG_PPL_DATA_1M=${NFINI_LONG_PPL_DATA_1M:-${LONG_PPL_DATA}}
+    export INFINI_LONG_PPL_DATA_1M=${INFINI_LONG_PPL_DATA_1M:-${LONG_PPL_DATA}}
     export LOGKV_EVAL_PREFILL_CHUNK=${LOGKV_EVAL_PREFILL_CHUNK:-2048}
 elif [[ ${YARN_MODE:-per_length} != per_length ]]; then
     echo "The native SSM uses no rotary embeddings. Fixed YaRN runs would duplicate the same model." >&2
@@ -166,7 +166,7 @@ fi
 if [[ "${check_data}" == 1 ]]; then
     main_tasks=none
     if [[ -z "${EVAL_LENGTHS}" || "${EVAL_MAIN}" == 1 ]]; then main_tasks=${BENCHMARKS}; fi
-    exec "${PYTHON_BIN}" -m nfini_attention.check_eval "${main_tasks}" "${LONG_EVAL_PASSES[@]}"
+    exec "${PYTHON_BIN}" -m infini_attention.check_eval "${main_tasks}" "${LONG_EVAL_PASSES[@]}"
 fi
 if [[ "${check_runtime}" == 1 ]]; then
     "${PYTHON_BIN}" - "${EVAL_OUTPUT_DIR}" <<'PY_RUNTIME'
@@ -177,7 +177,7 @@ from pathlib import Path
 from importlib.metadata import version
 import torch
 from lla_bench import eval
-from nfini_attention.evaluation import load_model
+from infini_attention.evaluation import load_model
 if torch.cuda.device_count() < int(os.environ["GPUS_PER_NODE"]) or not torch.cuda.is_bf16_supported() or not torch.distributed.is_gloo_available():
     raise SystemExit("Evaluation requires the requested number of visible CUDA GPUs per node, BF16 and Gloo")
 out = Path(sys.argv[1])
@@ -354,7 +354,7 @@ for PASS in "${LONG_EVAL_PASSES[@]}"; do
     echo "===== Long-context pass: ${EVAL_OUTPUT_DIR} | ${PASS_OVERRIDES} ====="
     (
         if [[ ${METHOD} == Infini-Attention && ( ${EVAL_MAX_SEQ_LENGTHS} == '[524288]' || ${EVAL_MAX_SEQ_LENGTHS} == '[1048576]' ) ]]; then
-            export LONG_PPL_BOOKS=${NFINI_LONG_PPL_BOOKS_1M} LONG_PPL_DOCS=${NFINI_LONG_PPL_DOCS_1M} LONG_PPL_DATA=${NFINI_LONG_PPL_DATA_1M}
+            export LONG_PPL_BOOKS=${INFINI_LONG_PPL_BOOKS_1M} LONG_PPL_DOCS=${INFINI_LONG_PPL_DOCS_1M} LONG_PPL_DATA=${INFINI_LONG_PPL_DATA_1M}
         fi
         run_stages
     )

@@ -9,9 +9,9 @@ from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import Whitespace
 from transformers import PreTrainedTokenizerFast, Qwen3Config, Qwen3ForCausalLM
 
-from nfini_attention.evaluation import cache_budget, snapshot
-from nfini_attention.model import InfiniLM
-from nfini_attention.train import train
+from infini_attention.evaluation import cache_budget, snapshot
+from infini_attention.model import InfiniLM
+from infini_attention.train import train
 
 
 @pytest.fixture
@@ -114,8 +114,8 @@ def test_cpt_resume_export_and_harness(base, tmp_path):
 def test_formal_recipe_and_passes():
     from pathlib import Path
     import yaml
-    from nfini_attention.long_eval_plan import plan, SUITES
-    cfg = yaml.safe_load((Path(__file__).parents[1] / "configs/nfini_cpt.yaml").read_text())
+    from infini_attention.long_eval_plan import plan, SUITES
+    cfg = yaml.safe_load((Path(__file__).parents[1] / "configs/infini_cpt.yaml").read_text())
     assert cfg["steps"] * cfg["global_batch_size"] * cfg["context_length"] == 8388608000
     assert cfg["global_batch_size"] // (32 * cfg["micro_batch_size"]) == 4
     passes = plan("32k,64k,128k,256k,512k,1m", ",".join(SUITES))
@@ -127,7 +127,7 @@ def test_formal_recipe_and_passes():
 
 
 def test_needle_depth_counts_actual_tokens(base):
-    from nfini_attention.depth import depth_report
+    from infini_attention.depth import depth_report
     tokenizer = Tokenizer.from_file(str(base / "tokenizer.json"))
     prompt = "tea One of the special magic numbers for tea is: 77. " + "red " * 120
     n = len(tokenizer.encode(prompt))
