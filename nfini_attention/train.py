@@ -225,13 +225,16 @@ def check_job(base, raw, cache, root, device):
     from safetensors import safe_open
     from transformers import AutoTokenizer
 
-    rank = dist.get_rank()
-    if torch.cuda.device_count() != 8 or dist.get_world_size() != 32 or not torch.cuda.is_bf16_supported():
-        raise ValueError("Expected 4 x 8 visible CUDA devices with BF16 and 32 NCCL ranks")
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    local = int(os.environ["LOCAL_WORLD_SIZE"])
+    expected = int(os.environ.get("MA_NUM_HOSTS", "1")) * local
+    if local > torch.cuda.device_count() or not torch.cuda.is_bf16_supported():
+        raise ValueError(f"Expected {local} visible CUDA devices with BF16")
     value = torch.ones(1, device=device, dtype=torch.bfloat16)
-    dist.all_reduce(value)
-    if value.item() != 32:
-        raise RuntimeError("32-rank BF16 NCCL sum failed")
+    if distributed():
+        dist.all_reduce(value)
+    if value.item() != expected:
+        raise RuntimeError(f"NCCL sum failed for expected world size {expected}")
     # Each host must read a file actually created by the leader on shared storage.
     marker = [None]
     if rank == 0:
@@ -239,7 +242,8 @@ def check_job(base, raw, cache, root, device):
         with tempfile.NamedTemporaryFile(dir=root, prefix=".check-", delete=False) as f:
             f.write(b"nfini")
             marker[0] = Path(f.name).name
-    dist.broadcast_object_list(marker, src=0)
+    if distributed():
+        dist.broadcast_object_list(marker, src=0)
     try:
         if device.index == 0:
             if (root / marker[0]).read_bytes() != b"nfini":
@@ -267,11 +271,12 @@ def check_job(base, raw, cache, root, device):
                 raise FileNotFoundError(f"No usable ProLong data at cache={cache}, raw={raw}")
             else:
                 source = raw
-            print(f"[node {rank // 8}] {torch.cuda.get_device_name(device)} | torch {torch.__version__} | "
+            print(f"[node {rank // local}] {torch.cuda.get_device_name(device)} | torch {torch.__version__} | "
                   f"CUDA {torch.version.cuda} | NCCL {torch.cuda.nccl.version()} | transformers {version('transformers')} | "
                   f"litdata {version('litdata')} | base={base} | ProLong={source}",
                   flush=True)
-        dist.barrier()
+        if distributed():
+            dist.barrier()
     finally:
         if rank == 0:
             (root / marker[0]).unlink(missing_ok=True)
@@ -293,8 +298,6 @@ def main():
         print(json.dumps({**cfg, "base": str(base), "prolong": str(raw), "output_root": str(root),
                           "target_input_tokens": cfg["context_length"] * cfg["global_batch_size"] * (args.steps or cfg["steps"])}, indent=2))
         return
-    if args.stage == "check" and int(os.getenv("WORLD_SIZE", "1")) != 32:
-        cli.error("managed_cluster preflight requires 32 training ranks")
     name = prolong.cache_name(base, cfg["context_length"])
     override = os.environ.get("NFINI_PROLONG_CACHE_ROOT")
     cache = Path(override or raw) / name

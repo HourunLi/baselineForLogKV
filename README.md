@@ -4,13 +4,13 @@
 
 ## managed_cluster 一次提交训练和评测
 
-选用上次 LogKV 的 CUDA / torch218 镜像与共享桶挂载，分配 **4 个节点，每节点 8 张 GPU**。使用本分支仓库根目录作为工作目录，每节点由 managed_cluster 执行一次同一条启动命令：
+选用上次 LogKV 的 CUDA / torch218 镜像与共享桶挂载，按当前作业分配 GPU，启动器读取 `MA_NUM_HOSTS` 和每节点卡数；2×8 时累积 8 次，4×8 时累积 4 次。使用本分支仓库根目录作为工作目录，每节点由 managed_cluster 执行一次同一条启动命令：
 
 ```bash
 bash majob.sh --pipeline
 ```
 
-作业先实际执行 32 个训练进程的 BF16 NCCL 求和，检查各节点的底模分片、tokenizer、ProLong 输入、共享输出和评测环境。主节点离线打开主线任务数据，并核查各档长测语料。已有兼容的 ProLong 缓存直接复用，只有缺缓存且原始语料可读时，主节点才在本次输出目录准备数据。所有节点完成 CPT，写出最终权重后，自动运行 32K 主线及 32K–1M 六档评测。任一阶段失败，全作业停止。单独使用 `bash majob.sh --check` 只执行预检，默认一键命令已包含它；预检可能生成数据集或分词缓存。
+作业先实际执行 全部训练进程的 NCCL 求和，检查各节点的底模分片、tokenizer、ProLong 输入、共享输出和评测环境。主节点离线打开主线任务数据，并核查各档长测语料。已有兼容的 ProLong 缓存直接复用，只有缺缓存且原始语料可读时，主节点才在本次输出目录准备数据。所有节点完成 CPT，写出最终权重后，自动运行 32K 主线及 32K–1M 六档评测。任一阶段失败，全作业停止。单独使用 `bash majob.sh --check` 只执行预检，默认一键命令已包含它；预检可能生成数据集或分词缓存。
 
 平台提供 `MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MA_NUM_GPUS` 和主节点地址；沿用原作业的网络设置，节点间需能访问默认端口 6000–6002。每次输出根目录默认为 `/workspace/ckpt-logKV/nfini-attention/${MA_VJ_NAME}`（未设置作业名时使用 `qwen8b-32k`）。`cpt/` 为最终权重，`evaluate/` 为成绩。可用 `NFINI_OUTPUT_ROOT` 指定新的共享目录。训练已成功而仅需重跑评测时，设置 `NFINI_OUTPUT_ROOT` 为原作业根目录、`NFINI_OUTPUT_DIR` 为目标结果目录，然后运行原有的 `bash majob.sh`。
 

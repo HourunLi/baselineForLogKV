@@ -1,4 +1,4 @@
-"""managed_cluster entry point for a budget-matched four-node CPT and evaluation."""
+"""managed_cluster entry point for a budget-matched distributed CPT and evaluation."""
 import argparse
 import os
 from pathlib import Path
@@ -15,16 +15,23 @@ def main():
     modes.add_argument("--check", action="store_true")
     args = cli.parse_args()
     nodes, rank, env = node_environment()
-    if nodes != 4 or not any(os.getenv(k) for k in ("VC_TASK_INDEX", "NODE_RANK", "GROUP_RANK")):
-        cli.error("Expected 4 managed_cluster nodes with MA_NUM_HOSTS=4 and a node rank per host.")
-    if any(int(env.get(k) or 8) != 8 for k in ("GPUS_PER_NODE", "MA_NUM_GPUS")):
-        cli.error("This job requires eight GPUs per node.")
+    if nodes > 1 and not any(os.getenv(k) for k in ("VC_TASK_INDEX", "NODE_RANK", "GROUP_RANK")):
+        cli.error("Multi-node managed_cluster jobs require a node rank on each host.")
+    import torch
+    allocated = int(env.get("MA_NUM_GPUS") or torch.cuda.device_count())
+    gpus = int(env.get("GPUS_PER_NODE") or allocated)
+    if gpus > allocated:
+        cli.error(f"Requested {gpus} GPUs per node but only {allocated} allocated")
     cfg = yaml.safe_load(Path("configs/nfini_cpt.yaml").read_text())
+    world = nodes * gpus
+    if gpus < 1 or cfg["global_batch_size"] % world:
+        cli.error(f"Global batch {cfg['global_batch_size']} must be divisible by {nodes} nodes x {gpus} GPUs")
+    print(f"Topology: {nodes} nodes x {gpus} GPUs, accumulation={cfg['global_batch_size'] // world}", flush=True)
     root = Path(env.get("NFINI_OUTPUT_ROOT") or
                 Path("/workspace/ckpt-logKV/nfini-attention") /
                 env.get("MA_VJ_NAME", "qwen8b-32k")).resolve()
     env.update(NFINI_OUTPUT_ROOT=str(root), NFINI_CHECKPOINT_DIR=str(root / "cpt"),
-               GPUS_PER_NODE="8", NFINI_QWEN_BASE=env.get("NFINI_QWEN_BASE") or cfg["base"])
+               GPUS_PER_NODE=str(gpus), NFINI_QWEN_BASE=env.get("NFINI_QWEN_BASE") or cfg["base"])
     env.setdefault("NFINI_OUTPUT_DIR", str(root / "evaluate"))
     print(f"CPT output: {root}/cpt\nEvaluation: {env['NFINI_OUTPUT_DIR']}", flush=True)
     train = ["bash", "scripts/train_nfini.sh"]

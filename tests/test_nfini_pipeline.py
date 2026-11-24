@@ -8,7 +8,7 @@ import sys
 import pytest
 
 
-@pytest.mark.parametrize("mode,fail", [("--pipeline", ""), ("--check", ""), ("--pipeline", "cpt:2")])
+@pytest.mark.parametrize("mode,fail", [("--pipeline", ""), ("--check", ""), ("--pipeline", "cpt:1")])
 def test_managed_cluster_entrypoint(tmp_path, mode, fail):
     repo = Path(__file__).resolve().parents[1]
     (tmp_path / "scripts").mkdir()
@@ -24,12 +24,12 @@ def test_managed_cluster_entrypoint(tmp_path, mode, fail):
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1] - 2
-    env = dict(os.environ, PYTHONPATH=str(repo), TEST_PYTHON=sys.executable, MA_NUM_HOSTS="4",
+    env = dict(os.environ, PYTHONPATH=str(repo), TEST_PYTHON=sys.executable, MA_NUM_HOSTS="2",
                MA_NUM_GPUS="8", MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port),
                NFINI_OUTPUT_ROOT=str(tmp_path / "output"), FAIL_STAGE=fail)
     env.pop("MA_VJ_NAME", None)
     workers = [subprocess.Popen(["bash", "majob.sh", mode], cwd=tmp_path,
-                                env=dict(env, VC_TASK_INDEX=str(i))) for i in range(4)]
+                                env=dict(env, VC_TASK_INDEX=str(i))) for i in range(2)]
     try:
         for worker in workers:
             assert (worker.wait(timeout=90) != 0) == bool(fail)
@@ -37,7 +37,7 @@ def test_managed_cluster_entrypoint(tmp_path, mode, fail):
         for worker in workers:
             worker.kill()
             worker.wait()
-    for rank in range(4):
+    for rank in range(2):
         expected = ["check", "--check-runtime"]
         if rank == 0:
             expected.append("--check-data")

@@ -172,13 +172,14 @@ if [[ "${check_runtime}" == 1 ]]; then
     "${PYTHON_BIN}" - "${EVAL_OUTPUT_DIR}" <<'PY_RUNTIME'
 import sys
 import tempfile
+import os
 from pathlib import Path
 from importlib.metadata import version
 import torch
 from lla_bench import eval
 from nfini_attention.evaluation import load_model
-if torch.cuda.device_count() != 8 or not torch.cuda.is_bf16_supported() or not torch.distributed.is_gloo_available():
-    raise SystemExit("Evaluation requires 8 visible CUDA GPUs per node, BF16 and Gloo")
+if torch.cuda.device_count() < int(os.environ["GPUS_PER_NODE"]) or not torch.cuda.is_bf16_supported() or not torch.distributed.is_gloo_available():
+    raise SystemExit("Evaluation requires the requested number of visible CUDA GPUs per node, BF16 and Gloo")
 out = Path(sys.argv[1])
 out.mkdir(parents=True, exist_ok=True)
 with tempfile.NamedTemporaryFile(dir=out):
