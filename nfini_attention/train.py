@@ -81,6 +81,10 @@ def save_progress(folder, model, optimizer, loader, meta, rank):
 
 def restore(folder, model, optimizer, loader, identity, rank):
     meta = json.loads((folder / "progress.json").read_text())
+    # The output directory is not a training hyperparameter.
+    saved_recipe = meta["identity"]["recipe"]
+    if "output_root" in identity["recipe"]:
+        saved_recipe["output_root"] = identity["recipe"]["output_root"]
     if meta["identity"] != identity:
         raise ValueError("resume requires the same base, recipe, cache and world size")
     model_state, optim_state = get_state_dict(model, optimizer)
@@ -216,7 +220,7 @@ def train(cfg, base, cache, root, device, *, resume=None, stop_after=None, requi
         state = model.state_dict()
     if rank == 0:
         export(out, model.module if distributed() else model, state, base,
-               dict(**progress, method="nfini-attention", base=str(base), resume_step=begin, ranks=ranks,
+               dict(**progress, method="Infini-Attention", base=str(base), resume_step=begin, ranks=ranks,
                     trainable_parameters=count, precision="bf16-true" if gpu else "float32",
                     **code_identity(),
                     versions={k: version(k) for k in ("torch", "transformers", "litdata", "safetensors")}))

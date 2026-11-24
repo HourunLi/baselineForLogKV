@@ -12,7 +12,7 @@ bash majob.sh --pipeline
 
 作业先实际执行 全部训练进程的 NCCL 求和，检查各节点的底模分片、tokenizer、ProLong 输入、共享输出和评测环境。主节点离线打开主线任务数据，并核查各档长测语料。已有兼容的 ProLong 缓存直接复用，只有缺缓存且原始语料可读时，主节点才在本次输出目录准备数据。所有节点完成 CPT，写出最终权重后，自动运行 32K 主线及 32K–1M 六档评测。任一阶段失败，全作业停止。单独使用 `bash majob.sh --check` 只执行预检，默认一键命令已包含它；预检可能生成数据集或分词缓存。
 
-平台提供 `MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MA_NUM_GPUS` 和主节点地址；沿用原作业的网络设置，节点间需能访问默认端口 6000–6002。每次输出根目录默认为 `/workspace/ckpt-logKV/nfini-attention/${MA_VJ_NAME}`（未设置作业名时使用 `qwen8b-32k`）。`cpt/` 为最终权重，`evaluate/` 为成绩。可用 `NFINI_OUTPUT_ROOT` 指定新的共享目录。训练已成功而仅需重跑评测时，设置 `NFINI_OUTPUT_ROOT` 为原作业根目录、`NFINI_OUTPUT_DIR` 为目标结果目录，然后运行原有的 `bash majob.sh`。
+平台提供 `MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MA_NUM_GPUS` 和主节点地址；沿用原作业的网络设置，节点间需能访问默认端口 6000–6002。每次输出根目录默认为 `/workspace/ckpt-logKV/Infini-Attention/${MA_VJ_NAME}`（未设置作业名时使用 `qwen8b-32k`）。`cpt/` 为最终权重，`evaluate/` 为成绩。可用 `NFINI_OUTPUT_ROOT` 指定新的共享目录。训练已成功而仅需重跑评测时，设置 `NFINI_OUTPUT_ROOT` 为原作业根目录、`NFINI_OUTPUT_DIR` 为目标结果目录，然后运行原有的 `bash majob.sh`。
 
 **下载与数据。** 启动器离线运行。共享桶已有原始 HF 格式的 Qwen3-8B-Base、ProLong 和完整评测资产，且镜像具备下述依赖时，无需下载模型、数据或安装 Infini-Attention 包。只有 LitGPT 的 `lit_model.pth` 时，需先补齐原始 HF 权重和 tokenizer。长测缺失的数据可在联网准备机按预检报告补齐，再挂载同一目录。
 
@@ -42,14 +42,14 @@ bash majob.sh --train cpt
 
 默认从原始 HF 权重装载，各层只新增 32 个门控。全部 8,190,736,512 个参数参与训练。每条 32,769-token 数据块形成 32,768 个预测位置。全局 batch 128、每卡 batch 1、32 进程累积 4 次，共 2,000 步。使用 BF16、分层 FSDP、分段激活检查点和分块交叉熵。AdamW 的 betas 为 (0.9, 0.95)，eps 为 1e-8，衰减组为 0.1。前 100 步线性预热至 5e-6，此后按 LogKV 的零起始步号执行余弦计划，最低学习率为 3e-6。
 
-可通过 `NFINI_QWEN_BASE`、`NFINI_PROLONG_DATA`、`NFINI_PROLONG_CACHE_ROOT`、`NFINI_OUTPUT_ROOT` 分别覆盖底模、原始数据、包含 `litdata_<指纹>_ctx32768` 的缓存父目录和共享输出根目录。需要多个训练节点看到相同路径。默认每 400 步保存模型分片、优化器和各 rank 的数据位置。恢复使用相同配方和 world size。最终导出目录为 `checkpoints/nfini-attention/cpt`；`training.json` 含底模和产物的哈希、缓存索引、训练步数、实际 token、训练耗时和各 rank 峰值显存。
+可通过 `NFINI_QWEN_BASE`、`NFINI_PROLONG_DATA`、`NFINI_PROLONG_CACHE_ROOT`、`NFINI_OUTPUT_ROOT` 分别覆盖底模、原始数据、包含 `litdata_<指纹>_ctx32768` 的缓存父目录和共享输出根目录。需要多个训练节点看到相同路径。默认每 400 步保存模型分片、优化器和各 rank 的数据位置。恢复使用相同配方和 world size。最终导出目录为 `checkpoints/Infini-Attention/cpt`；`training.json` 含底模和产物的哈希、缓存索引、训练步数、实际 token、训练耗时和各 rank 峰值显存。
 
 ```bash
 # 另设目录完成一个真实优化器步，沿用正式全局 batch；结果导出到 trial-1
 NFINI_OUTPUT_ROOT=checkpoints/nfini-smoke bash majob.sh --train cpt --steps 1
 
 # 示例，显式从已完整写出的第 800 步续训
-bash majob.sh --train cpt --resume checkpoints/nfini-attention/step-800
+bash majob.sh --train cpt --resume checkpoints/Infini-Attention/step-800
 ```
 
 ## 分段与预算

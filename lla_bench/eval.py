@@ -1757,7 +1757,7 @@ def main(
                     **_code_version(),
                     "benchmark": benchmark,
                     "checkpoint_dir": checkpoint_dir,
-                    "method": "nfini-attention" if lm_model.infini else "qwen3_hattention_mamba2" if lm_model.config.student else "upstream_hattention_mamba2",
+                    "method": "Infini-Attention" if lm_model.infini else "qwen3_hattention_mamba2" if lm_model.config.student else "upstream_hattention_mamba2",
                     "checkpoint_source": lm_model.checkpoint_source,
                     "evaluation_device": str(lm_model.device),
                     "model_dtype": str(lm_model.model.lm_head.weight.dtype),

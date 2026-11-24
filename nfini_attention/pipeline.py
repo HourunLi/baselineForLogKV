@@ -28,7 +28,7 @@ def main():
         cli.error(f"Global batch {cfg['global_batch_size']} must be divisible by {nodes} nodes x {gpus} GPUs")
     print(f"Topology: {nodes} nodes x {gpus} GPUs, accumulation={cfg['global_batch_size'] // world}", flush=True)
     root = Path(env.get("NFINI_OUTPUT_ROOT") or
-                Path("/workspace/ckpt-logKV/nfini-attention") /
+                Path("/workspace/ckpt-logKV/Infini-Attention") /
                 env.get("MA_VJ_NAME", "qwen8b-32k")).resolve()
     env.update(NFINI_OUTPUT_ROOT=str(root), NFINI_CHECKPOINT_DIR=str(root / "cpt"),
                GPUS_PER_NODE=str(gpus), NFINI_QWEN_BASE=env.get("NFINI_QWEN_BASE") or cfg["base"])

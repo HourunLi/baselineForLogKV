@@ -13,7 +13,7 @@ if [[ ${1:-} == --print-config ]]; then
     shift
 fi
 CONFIG_FILE=${1:-configs/nfini_eval.yaml}
-export NFINI_CHECKPOINT_DIR=${NFINI_CHECKPOINT_DIR:-${NFINI_OUTPUT_ROOT:-checkpoints/nfini-attention}/cpt}
+export NFINI_CHECKPOINT_DIR=${NFINI_CHECKPOINT_DIR:-${NFINI_OUTPUT_ROOT:-checkpoints/Infini-Attention}/cpt}
 eval_settings=$("${PYTHON_BIN}" - "${CONFIG_FILE}" <<'PYCONFIG'
 import json, os, shlex, sys
 import yaml
@@ -54,7 +54,7 @@ if [[ $(printf '%s' "${EVAL_LENGTHS:-}" | tr '[:upper:]' '[:lower:]') =~ ^[[:spa
     DEFAULT_EVAL_MAIN=0
     DEFAULT_EVAL_SUITES=${CONFIG_EVAL_SUITES:-ruler,babilong,books,longbench2}
 fi
-if [[ ${METHOD} == nfini-attention && -z ${CONFIG_EVAL_SUITES} ]]; then
+if [[ ${METHOD} == Infini-Attention && -z ${CONFIG_EVAL_SUITES} ]]; then
     DEFAULT_EVAL_SUITES=ruler,babilong,ppl,books,turns,longbench2
     suite_lengths=$(printf '%s' "${EVAL_LENGTHS:-${CONFIG_EVAL_LENGTHS}}" | tr '[:upper:] ' '[:lower:],')
     case ",${suite_lengths}," in
@@ -74,7 +74,7 @@ fi
 
 
 planner=lla_bench.long_eval_plan
-if [[ ${METHOD} == nfini-attention ]]; then
+if [[ ${METHOD} == Infini-Attention ]]; then
     planner=nfini_attention.long_eval_plan
     # An explicitly supplied common corpus/count applies to both length groups.
     export NFINI_LONG_PPL_BOOKS_1M=${NFINI_LONG_PPL_BOOKS_1M:-${LONG_PPL_BOOKS:-${HF_HOME}/long_ppl_books_1m/emozilla--pg19}}
@@ -114,7 +114,7 @@ fi
 export EVAL_OPTIONAL_TASKS=  # tasks asked for by name must run
 if [ -z "${BENCHMARKS}" ]; then
     BENCHMARKS=${DEFAULT_BENCHMARKS}
-    if [[ ${METHOD} != nfini-attention ]]; then export EVAL_OPTIONAL_TASKS=${DEFAULT_OPTIONAL_BENCHMARKS}; fi
+    if [[ ${METHOD} != Infini-Attention ]]; then export EVAL_OPTIONAL_TASKS=${DEFAULT_OPTIONAL_BENCHMARKS}; fi
 fi
 
 # Every needle-in-a-haystack eval: RULER single needles, lm-eval's multi-needle tasks and the
@@ -208,7 +208,7 @@ for file in config.json tokenizer.json tokenizer_config.json; do
         exit 1
     fi
 done
-if [[ ${METHOD} == nfini-attention ]]; then
+if [[ ${METHOD} == Infini-Attention ]]; then
     "${PYTHON_BIN}" -c 'import json,sys; from pathlib import Path; p=Path(sys.argv[1]); sys.exit(0 if "infini_segment_length" in json.loads((p/"config.json").read_text()) and (p/"training.json").is_file() else "Expected an exported Infini checkpoint: "+str(p))' "${SAVE_DIR}"
 fi
 mkdir -p "${EVAL_OUTPUT_DIR}"
@@ -272,7 +272,7 @@ echo "NIAH eval rendezvous: ${MASTER_ADDR}:${NIAH_EVAL_MASTER_PORT}"
 
 # The main stage, then the NIAH stage, with the current task lists, lengths, output dir and PASS_ARGS.
 run_stages() {
-    if [[ ${METHOD} == nfini-attention && ${BENCHMARKS} == *long_ppl* ]]; then
+    if [[ ${METHOD} == Infini-Attention && ${BENCHMARKS} == *long_ppl* ]]; then
         echo "PPL data=${LONG_PPL_DATA} books=${LONG_PPL_BOOKS} docs=${LONG_PPL_DOCS}"
     fi
     echo "Main benchmarks: ${BENCHMARKS}"
@@ -353,7 +353,7 @@ for PASS in "${LONG_EVAL_PASSES[@]}"; do
     fi
     echo "===== Long-context pass: ${EVAL_OUTPUT_DIR} | ${PASS_OVERRIDES} ====="
     (
-        if [[ ${METHOD} == nfini-attention && ( ${EVAL_MAX_SEQ_LENGTHS} == '[524288]' || ${EVAL_MAX_SEQ_LENGTHS} == '[1048576]' ) ]]; then
+        if [[ ${METHOD} == Infini-Attention && ( ${EVAL_MAX_SEQ_LENGTHS} == '[524288]' || ${EVAL_MAX_SEQ_LENGTHS} == '[1048576]' ) ]]; then
             export LONG_PPL_BOOKS=${NFINI_LONG_PPL_BOOKS_1M} LONG_PPL_DOCS=${NFINI_LONG_PPL_DOCS_1M} LONG_PPL_DATA=${NFINI_LONG_PPL_DATA_1M}
         fi
         run_stages

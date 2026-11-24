@@ -1,6 +1,6 @@
 base: /workspace/checkpoints/Qwen/Qwen3-8B-Base
 prolong: /workspace/longcontext/prolong/data
-output_root: checkpoints/nfini-attention
+output_root: checkpoints/Infini-Attention
 context_length: 32768
 segment_length: 2048
 seed: 42
