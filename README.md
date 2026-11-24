@@ -1,6 +1,30 @@
 # Log-Linear Attention × niahLogKV
 
-本分支用作者发布的 **HAttention Mamba-2** 权重（825,465,312 个参数）和原配 tokenizer，接入 `niahLogKV` 的 lm-eval 流程。模型保留因果深度卷积、逐头选择性衰减、base-2 weak 层级矩阵状态、按输入计算的层级读出、门控 RMSNorm 和 SwiGLU。作者发布的 Gated DeltaNet 是另一套模型，本分支选用 Mamba-2 版本。权重、架构和 tokenizer 均与 Qwen3-1.7B-Base 不同。[来源及提交](lla_bench/SOURCES.md)
+默认配置使用作者发布的 **HAttention Mamba-2** 权重（825,465,312 个参数）和原配 tokenizer，接入 `niahLogKV` 的 lm-eval 流程。模型保留因果深度卷积、逐头选择性衰减、base-2 weak 层级矩阵状态、按输入计算的层级读出、门控 RMSNorm 和 SwiGLU。作者发布的 Gated DeltaNet 是另一套模型，本分支选用 Mamba-2 版本。权重、架构和 tokenizer 均与 Qwen3-1.7B-Base 不同。[来源及提交](lla_bench/SOURCES.md)
+
+## Qwen3-8B 转换、蒸馏与 32K CPT
+
+这一入口复用 Qwen3-8B-Base 的 tokenizer、embedding、36 层 RMSNorm 和 SwiGLU、最终 RMSNorm 与 LM head。每层替换一个原生 Mamba-2 HAttention mixer，宽度 4096、32 头、8 组、状态及值维度均为 128。转换后模型有 8,876,197,248 个参数，其中 mixer 有 2,195,420,544 个。新 mixer 独立初始化，输出投影从零开始。32K 有 16 个可训练读出级别，超长时复用当前 token 对最深已训练级别的读出权重。
+
+managed_cluster 默认使用已有的 `/opt/conda/envs/torch218/bin/python`，启动时打印实际解释器。共享环境直接运行仓库代码，无需安装项目或训练 extra。独立管理的训练环境可用 `LLA_TRAIN_PYTHON` 指定。参照栈为 PyTorch 2.11.0+cu128、Transformers 4.51.3 和 LitData 0.2.61。教师走 PyTorch SDPA，学生使用项目内的 PyTorch HAttention，多卡由 torchrun、NCCL 和 FSDP 分片。各阶段独立提交，成功才进入下一阶段。[服务器环境清单](docs/BASELINE_ENVIRONMENT.md)
+
+```bash
+bash majob.sh --train convert
+# 已有匹配的 ProLong 32K 缓存可直接使用；仅有原始数据时运行下一行。
+# bash majob.sh --train prepare
+bash majob.sh --train probe
+bash majob.sh --train distill
+bash majob.sh --train cpt
+bash majob.sh configs/qwen8b_hattention_eval.yaml
+```
+
+- **数据与路径。** 默认读取 [训练配置](configs/qwen8b_hattention_train.yaml) 指定的共享原始权重、数据和以 tokenizer 指纹命名的 32K LitData 缓存。可用 `LLA_QWEN_BASE`、`LLA_PROLONG_DATA`、`LLA_STUDENT_ROOT` 覆盖。缺少共享缓存时，`prepare` 将原始数据打包到学生输出目录的 `prolong_cache/`，训练自动读取。也可通过 `LLA_PROLONG_CACHE_ROOT` 指定包含 `litdata_<指纹>_ctx32768/` 的父目录。两种训练均从 32769-token 的块取数据，文档分词使用 `bos=False, eos=True`。CPT 将末尾 token 用作移位标签。
+- **蒸馏。** 每个 32K 块切成八段连续 4K 输入。冻结原始 Qwen 教师及学生复用的主干。每层用同一份教师 pre-attention RMSNorm 输出，拟合教师经过输出投影、进入残差前的注意力输出。每层 MSE 除以教师输出的均方值，再对所有层取平均。初始配方为全局 batch 32、100 步、学习率 3e-4，共 13,107,200 输入 token。
+- **CPT。** 从 `distill/` 加载学生，全参数做 next-token 交叉熵。默认全局 batch 32、1,200 步，共 1,258,291,200 输入 token。每卡 micro-batch 1，多卡 FSDP 分片；按实际 world size 累积梯度。默认 100 步 warmup 至 5e-6，余下步数余弦下降至 3e-6。训练使用 block 激活重算和分块词表投影。
+- **试跑与成本。** `probe` 在一张卡上从转换权重取第一个真实 block，使用 32K 样本、冻结的 embedding 和 LM head 完成一次交叉熵更新，打印耗时与峰值 allocated/reserved 显存。这个数值只覆盖单层。训练预览用 `bash majob.sh --train cpt --print-config`，缩短蒸馏或 CPT 可加 `--steps 1`。使用独立输出根目录做试跑，每阶段成功后原子发布 checkpoint，已有阶段输出会报错。阶段内部中断需从上一阶段产物重新运行该阶段。
+- **平台与结果。** 蒸馏和 CPT 每节点启动一次 `majob.sh`；转换、准备和单卡试跑仅在首节点执行。每个学生 checkpoint 包含模型、tokenizer、源权重与产物哈希、阶段记录。最终产物分别保留蒸馏和 CPT 的训练 token 与 GPU 小时。训练记录另含实际步数、token 数、各 rank 的输入流摘要、时间和峰值显存。评测默认读取 `checkpoints/qwen8b-hattention/cpt`，自定义根目录时设置 `LLA_CHECKPOINT_DIR="$LLA_STUDENT_ROOT/cpt"`。沿用分支的 32K 主线与六档长测；学生单独标记，dense KV 分母按 Qwen3-8B 的 36 层、8 个 KV 头、每头 128 维计算。所有长测使用同一个 32K CPT checkpoint。
+
+本地使用微型 Qwen3 在 Python 3.12 CPU 环境复测了服务器对应的 PyTorch 2.11.0、Transformers 4.51.3、LitData 0.2.61、Hugging Face Hub 0.36.2 和 Safetensors 0.7.0。单进程与双进程 FSDP 均跑通蒸馏、CPT 和导出，评测适配器完成了一次打分和生成。宽度 16 的单层通过 32,768-token 前向、反向和参数更新。8B 权重、CUDA/NCCL 资源开销及 1M 任务得分仍需目标平台实测。
 
 ## 启动
 

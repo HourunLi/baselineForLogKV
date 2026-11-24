@@ -148,9 +148,13 @@ if [[ "${print_only}" == 1 ]]; then
     echo "Results: ${EVAL_OUTPUT_DIR}"
     exit 0
 fi
-for file in model.safetensors config.json tokenizer.json tokenizer_config.json; do
+if [[ ! -s "${SAVE_DIR}/model.safetensors" && ! -s "${SAVE_DIR}/model.safetensors.index.json" ]]; then
+    echo "Missing model weights in ${SAVE_DIR}" >&2
+    exit 1
+fi
+for file in config.json tokenizer.json tokenizer_config.json; do
     if [[ ! -s "${SAVE_DIR}/${file}" ]]; then
-        echo "Missing ${SAVE_DIR}/${file}; prepare the checkpoint with python -m lla_bench.download" >&2
+        echo "Missing ${SAVE_DIR}/${file}" >&2
         exit 1
     fi
 done

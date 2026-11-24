@@ -29,6 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+hattention-train = ["litdata>=0.2.61", "huggingface-hub>=0.27", "pyarrow"]
 # For a separate environment only. These are what the code and the shared offline cache need (its IFEval
 # entry uses the Json feature type of datasets>=4.7); each run records the exact versions, and compare_results
 # requires both sides to match. transformers comes with lm-eval as well.

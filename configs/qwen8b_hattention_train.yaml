@@ -1,0 +1,19 @@
+base: /workspace/checkpoints/Qwen/Qwen3-8B-Base
+prolong: /workspace/longcontext/prolong/data
+output_root: checkpoints/qwen8b-hattention
+context_length: 32768
+seed: 42
+num_workers: 16
+distill:
+  window: 4096
+  steps: 100
+  global_batch_size: 32
+  lr: 0.0003
+  weight_decay: 0.0
+cpt:
+  steps: 1200
+  global_batch_size: 32
+  lr: 0.000005
+  min_lr: 0.000003
+  warmup_steps: 100
+  weight_decay: 0.1

@@ -2,7 +2,7 @@
 
 本文件适用于所有 baseline。完整要求见 [Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md)；评测环境、路径、环境变量、依赖写法与已知坑的当前取值见 [Baseline 环境与避坑清单](docs/BASELINE_ENVIRONMENT.md)。
 
-本分支使用作者发布的 HAttention Mamba-2 权重与 tokenizer。第 4、5 条的共同 Qwen 起点与仅 32K 约束适用于其他 baseline。本分支的任务清单以固定的 niahLogKV 分支版本为准，包含 32K 主线和六档 32K–1M 长测。
+本分支支持作者发布的 HAttention Mamba-2 权重及 tokenizer，以及从 Qwen3-8B-Base 转换、蒸馏并经 32K ProLong CPT 的学生模型。第 4、5 条的共同 Qwen 起点与仅 32K 约束适用于其他 baseline。本分支的任务清单以固定的 niahLogKV 分支版本为准，包含 32K 主线和六档 32K–1M 长测。
 
 1. 默认中文交流，先结论后依据；区分源码事实、实验结果与推断。目标或口径有实质歧义时先问一个问题；已明确的低风险工作直接推进。
 2. 每个项目必须自带模型适配、评测代码、配置和启动器。禁止运行时读取其他实验项目的源码、实验 YAML 或脚本，也禁止用软链接、路径注入或外部 editable 安装绕过边界。

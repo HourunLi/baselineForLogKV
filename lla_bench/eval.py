@@ -1065,6 +1065,9 @@ class NativeLM(LM):
                    and (Path(checkpoint_dir) / name).stat().st_mtime_ns == entry["mtime_ns"]
                    for name, entry in source["files"].items()):
                 self.checkpoint_source = source
+        if self.config.student:
+            from .student import checkpoint_report
+            self.checkpoint_source = checkpoint_report(Path(checkpoint_dir))
         self.model = HAttentionLM.load(checkpoint_dir, self.config, device)
         # 推理时延指标收集
         self.gen_metrics: list[dict] = []      # generate_until
@@ -1702,7 +1705,8 @@ def main(
             compression_report = {
                 "measurement_point": "request_end_before_cache_reset",
                 "slot_definition": "matrix states do not retain discrete KV pairs; slot ratios are null",
-                "byte_definition": "live FP32 matrices + BF16 convolution history / Qwen3-1.7B dense BF16 KV bytes at the same token count",
+                "byte_definition": "live FP32 matrices + BF16 convolution history / reference dense BF16 KV bytes at the same token count",
+                "dense_reference_layers_groups_head_dim": lm_model.config.dense_geometry,
                 "summary": compression_summary,
                 "by_request_type": {
                     kind: summarize_compression([row for row in compression_samples if row["request_type"] == kind])
@@ -1745,7 +1749,7 @@ def main(
                     **_code_version(),
                     "benchmark": benchmark,
                     "checkpoint_dir": checkpoint_dir,
-                    "method": "upstream_hattention_mamba2",
+                    "method": "qwen3_hattention_mamba2" if lm_model.config.student else "upstream_hattention_mamba2",
                     "checkpoint_source": lm_model.checkpoint_source,
                     "evaluation_device": str(lm_model.device),
                     "model_dtype": str(lm_model.model.lm_head.weight.dtype),

@@ -10,8 +10,7 @@ def with_ratios(counts):
 
 
 def cache_compression_snapshot(model, processed_tokens):
-    # Common baseline denominator: Qwen3-1.7B-Base dense BF16, 28 layers,
-    # 8 KV groups and width 128, at this model's actual forwarded token count.
+    layers, groups, width = model.config.dense_geometry
     live_bytes = live_matrices = conv_bytes = 0
     for block in model.backbone.layers:
         cache = block.mixer.cache
@@ -23,10 +22,10 @@ def cache_compression_snapshot(model, processed_tokens):
         live_matrices += count
         conv = cache.conv
         conv_bytes += conv.shape[0] * conv.shape[1] * min(processed_tokens, conv.shape[2]) * conv.element_size()
-    dense_slots = processed_tokens * batch * 28 * 8
+    dense_slots = processed_tokens * batch * layers * groups
     return with_ratios(dict(processed_tokens=processed_tokens, live_matrices=live_matrices,
                             live_state_bytes=live_bytes + conv_bytes, live_conv_bytes=conv_bytes,
-                            dense_kv_bytes=dense_slots * 2 * 128 * 2, dense_slots=dense_slots))
+                            dense_kv_bytes=dense_slots * 2 * width * 2, dense_slots=dense_slots))
 
 
 def summarize_compression(records):

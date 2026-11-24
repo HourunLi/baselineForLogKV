@@ -43,11 +43,12 @@ def main():
     parser.add_argument("--match-logkv", action="store_true",
                         help="size separate word_first comparison settings, B=2..128, recent/prefill/flush=512,1024,2048")
     args = parser.parse_args()
-    cfg = Config.from_name("Qwen3-1.7B-Base")
+    native_cfg = HConfig.read(args.model_config, args.window or 32768)
+    cfg = Config.from_name("Qwen3-8B-Base" if native_cfg.student else "Qwen3-1.7B-Base")
     if args.reference_json and not args.window:
         parser.error("--reference-json requires its matching --window")
     for window in ([args.window] if args.window else [32768, *(v + 1024 for v in LENGTHS.values())]):
-        native = native_bytes(HConfig.read(args.model_config, window), window)
+        native = native_bytes(native_cfg, window)
         reference = (json.loads(args.reference_json.read_text())["cache_budget"]["persistent_cache_bytes"]
                      if args.reference_json else word_first_bytes(cfg, window))
         result = dict(window=window, native_persistent_bytes=native, reference_persistent_bytes=reference,
