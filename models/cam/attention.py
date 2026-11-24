@@ -6,9 +6,7 @@ import torch
 from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention, rotate_half
 
 from .cache import CaMCache
-
-QUERY_BLOCK = 256  # queries per attention block: bounds the float32 logits of a long prompt chunk
-
+from .grouped import attend_and_merge
 
 def install_cam_attention(hf_model, start_size, recent_size, merge_size=16, seed=0, merge_interval=1):
     """Bind CaM to Qwen3 attention, preserving pretrained projections and norms.
@@ -51,9 +49,7 @@ def install_cam_attention(hf_model, start_size, recent_size, merge_size=16, seed
     def step(self, hidden_states, query, keys, values):
         """Append, attend and evict for one step of ``token_count`` tokens; returns (B, tokens, heads x dim)."""
         cache = self.cam_cache
-        batch_size, _, token_count, _ = query.shape
-        kv_heads = keys.shape[1]
-        groups = self.num_key_value_groups
+        token_count = query.shape[2]
         cache.append(keys, values)
         length = cache.keys.shape[2]
         positions = torch.arange(length, device=hidden_states.device).unsqueeze(0)
@@ -62,25 +58,7 @@ def install_cam_attention(hf_model, start_size, recent_size, merge_size=16, seed
         rotated_keys = cache.keys * cos + rotate_half(cache.keys) * sin
         query_cos, query_sin = cos[:, :, length - token_count:], sin[:, :, length - token_count:]
         query = query * query_cos + rotate_half(query) * query_sin
-        grouped_query = query.reshape(batch_size, kv_heads, groups, token_count, self.head_dim)
-        keys_t = rotated_keys.transpose(-1, -2).unsqueeze(2)
-        outputs = []
-        received = torch.zeros(batch_size, kv_heads, length, dtype=torch.float32, device=hidden_states.device)
-        for begin in range(0, token_count, QUERY_BLOCK):
-            end = min(begin + QUERY_BLOCK, token_count)
-            weights = torch.matmul(grouped_query[:, :, :, begin:end], keys_t) * self.scaling
-            if token_count > 1:  # query i sits at cache slot length - token_count + i
-                hidden = torch.ones(end - begin, length, dtype=torch.bool, device=weights.device).tril(
-                    diagonal=length - token_count + begin).logical_not()
-                weights = weights.masked_fill(hidden, float("-inf"))
-            probabilities = weights.float().softmax(dim=-1)
-            outputs.append(torch.matmul(probabilities.to(cache.values.dtype), cache.values.unsqueeze(2)))
-            # Shared KV heads: mean over their query heads, summed over this forward's queries.
-            received += probabilities.mean(dim=2).sum(dim=2)
-        output = torch.cat(outputs, dim=3).permute(0, 3, 1, 2, 4).reshape(batch_size, token_count, -1)
-        # Merge after producing the outputs: this step's attention sees the victims.
-        cache.update(received)
-        return output
+        return attend_and_merge(query, rotated_keys, cache, self.scaling)
 
     caches = []
     for layer_index, layer in enumerate(backbone.layers):

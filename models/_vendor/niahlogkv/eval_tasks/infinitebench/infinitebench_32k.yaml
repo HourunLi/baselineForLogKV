@@ -1,0 +1,18 @@
+# InfiniteBench's ten tasks at 32k tokens; score is their plain mean (the papers' Avg).
+group: infinitebench_32k
+task:
+  - infinitebench_passkey_32k
+  - infinitebench_number_string_32k
+  - infinitebench_kv_retrieval_32k
+  - infinitebench_longbook_sum_eng_32k
+  - infinitebench_longbook_qa_eng_32k
+  - infinitebench_longbook_choice_eng_32k
+  - infinitebench_longbook_qa_chn_32k
+  - infinitebench_longdialogue_qa_eng_32k
+  - infinitebench_code_debug_32k
+  - infinitebench_math_find_32k
+aggregate_metric_list:
+  - metric: score
+    weight_by_size: false
+metadata:
+  version: 1.0

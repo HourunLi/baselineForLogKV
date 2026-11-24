@@ -1,4 +1,19 @@
-# CaM baseline（Qwen3-1.7B-Base，SemanticLogKV 评测口径）
+# CaM baseline
+
+默认平台入口使用 niahLogKV 的 Gamma CPT 权重和评测协议。CaM、dense、LogKV 三个后端直接读取同一 LitGPT checkpoint。默认运行 32K 主线以及 32K–1M 六档长文本任务。
+
+```bash
+# 每节点执行一次。预览六档 RULER 的窗口、任务和权重路径
+bash majob.sh --no-main --suites ruler --print-config
+# 与 LogKV 逐档等字节，完整参考协议
+bash majob.sh --backend cam --budget logkv
+# 按名义长度匹配给定的六档持久字节压缩率，单独跑全套 RULER
+bash majob.sh --no-main --suites ruler --budget target-bytes
+```
+
+默认逐 token 淘汰。完整运行方法、六档预算和验证范围见 [CaM 长文本评测说明](docs/CAM_NIAH.md)。
+
+## 旧版 Base 权重与 SemanticLogKV 评测
 
 `CaM` 分支是 **CaM 在线缓存合并** 的独立项目。CaM 免训练，直接使用与 SemanticLogKV CPT 相同起点的原始 Qwen3-1.7B-Base；适配 Qwen3 的 GQA、Q/K normalization，真实删除 KV，并通过项目内的 SemanticLogKV 评测协议快照复用其请求、评分与指标接口。统一规则见 [AGENTS.md](AGENTS.md) 与 [Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md)。
 

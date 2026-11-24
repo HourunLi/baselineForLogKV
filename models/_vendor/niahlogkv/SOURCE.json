@@ -1,0 +1,27 @@
+{
+  "repository": "LogKV",
+  "branch": "niahLogKV",
+  "commit": "0f4396b617a5cfcead9da3d6bb23a4f0693c97f5",
+  "license": "Apache-2.0",
+  "changes": [
+    "Private package imports and minimal litgpt exports",
+    "Configurable offline cache root",
+    "Strict checkpoint loading for same-weight comparisons",
+    "Normalize private import prefix only when fingerprinting upstream RULER generator source",
+    "Report the same dense KV denominator for reference and full attention backends",
+    "Resolve legacy LitGPT prompt style paths within the bundled package",
+    "CaM namespace and cache environment variable",
+    "Allow CaM to reuse the reference chunked continuation scorer at every length"
+  ],
+  "generator_sources": {
+    "ruler_patch.py": {
+      "upstream": "07a13cfb66e15b50a6fbaad631972f2e336cd413d98559e7c8b712d6812e061e",
+      "bundled": "be1825c6658bcf41c367d4653fe508c99b20d6e5d8cf0a69a5ae62816e4c8818"
+    },
+    "ruler_dataset_cache.py": {
+      "upstream": "23039e42bb98be62d71704b9aeea1a99bf42bdad216e3e6e3b05337e09a75328",
+      "bundled": "905ce896c9e5fe9135da2a879d4f162442165864be1466bc13efeed0be88aeff"
+    }
+  },
+  "adapted_from": "baselineForLogKV@5341f9e5cf3017c156ddddcae8de35c5dd62035c (chunkKV private runtime and flattened evaluation presets)"
+}

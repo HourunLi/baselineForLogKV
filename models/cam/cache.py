@@ -26,6 +26,7 @@ class CaMCache:
         self.merge_size = merge_size
         self.cache_size = start_size + recent_size
         self.seed = seed
+        self.storage = None
         self.reset()
 
     def reset(self, seed=None):
@@ -38,16 +39,34 @@ class CaMCache:
         self.processed_tokens = 0
         self._generator = None
 
+    def allocate(self, weight, groups, head_size):
+        """Reserve the whole batch-one budget once; reset only releases active views."""
+        shape = (1, groups, self.cache_size, head_size)
+        self.storage = (weight.new_empty(shape), weight.new_empty(shape),
+                        weight.new_empty(shape[:3], dtype=torch.float32))
+        self.reset()
+
     def append(self, keys, values):
         if keys.ndim != 4 or keys.shape != values.shape or keys.shape[2] < 1:
             raise ValueError("CaM appends K/V tokens with shape [batch, kv_heads, tokens, head_dim]")
-        if self.keys is None:
-            self.keys, self.values = keys, values
-            self.scores = keys.new_zeros(keys.shape[:3], dtype=torch.float32)
+        used = 0 if self.keys is None else self.keys.shape[2]
+        end = used + keys.shape[2]
+        if used > self.cache_size:
+            raise RuntimeError("CaM.update must follow each forward's attention output")
+        if self._generator is None:
             self._generator = torch.Generator(device=keys.device).manual_seed(self.seed)
+        if self.storage is not None and end <= self.cache_size:
+            raw_k, raw_v, scores = self.storage
+            raw_k[:, :, used:end].copy_(keys)
+            raw_v[:, :, used:end].copy_(values)
+            scores[:, :, used:end].zero_()
+            self.keys, self.values, self.scores = (t[:, :, :end] for t in self.storage)
+        elif not used:
+            self.keys = keys
+            # An oversized first step may merge in-place before compaction.
+            self.values = values.clone() if end > self.cache_size else values
+            self.scores = keys.new_zeros(keys.shape[:3], dtype=torch.float32)
         else:
-            if self.keys.shape[2] > self.cache_size:
-                raise RuntimeError("CaM.update must follow each forward's attention output")
             self.keys = torch.cat((self.keys, keys), dim=2)
             self.values = torch.cat((self.values, values), dim=2)
             self.scores = torch.cat((self.scores, self.scores.new_zeros(keys.shape[:3])), dim=2)
@@ -71,22 +90,33 @@ class CaMCache:
         # The upstream maps 0/0 to zero, and clamps positive infinity to one.
         probability = probability.nan_to_num(nan=0.0).clamp_(0, 1)
         selected = torch.bernoulli(probability, generator=self._generator)
-        # V' = V + L V' with L[j, k] = selected_k / merge for 1 <= j - k <= merge (k a victim): CaM's chain of
-        # merges, every victim passing on what earlier victims gave it. Solved in float32.
-        size = excess + merge
-        offset = torch.arange(size, device=scores.device)
-        gap = offset[:, None] - offset[None, :]
-        band = (gap >= 1) & (gap <= merge) & (offset[None, :] < excess)
-        weights = torch.zeros(*selected.shape[:2], size, size, device=scores.device, dtype=torch.float32)
-        weights[..., :, :excess] = selected[..., None, :] / merge
-        system = torch.eye(size, device=scores.device) - weights * band
-        merged = torch.linalg.solve_triangular(system, self.values[:, :, span].float(), upper=False,
-                                               unitriangular=True)
-        # CaM transfers V, but does not transfer the evicted cumulative scores.
-        keep = torch.cat((torch.arange(start, device=scores.device),
-                          torch.arange(start + excess, self.keys.shape[2], device=scores.device)))
-        self.keys = self.keys.index_select(2, keep)
-        self.values = self.values.index_select(2, keep)
-        self.scores = self.scores.index_select(2, keep)
-        # The entries right after the victims (now at start ... start + merge) received their merges.
-        self.values[:, :, start:start + merge] = merged[:, :, excess:].to(self.values.dtype)
+        if excess == 1:
+            # The streaming paper path has a single victim. No triangular system is needed.
+            contribution = self.values[:, :, start:start + 1].float() * selected[..., None] / merge
+            self.values[:, :, start + 1:start + 1 + merge].add_(contribution)
+        else:
+            # Propagate the banded recurrence in small tiles. The fp32 carry contains the
+            # contributions to the next tile, including victims that will themselves merge.
+            carry = self.values[:, :, span].float().clone()
+            for begin in range(0, excess, 64):
+                n = min(64, excess - begin)
+                offsets = torch.arange(n + merge, device=scores.device)
+                gap = offsets[:, None] - offsets[:n]
+                band = ((gap > 0) & (gap <= merge)) * (selected[..., None, begin:begin + n] / merge)
+                system = torch.eye(n, device=scores.device) - band[..., :n, :]
+                victims = torch.linalg.solve_triangular(system, carry[:, :, begin:begin + n],
+                                                        upper=False, unitriangular=True)
+                carry[:, :, begin + n:begin + n + merge].add_(band[..., n:, :] @ victims)
+            self.values[:, :, start + excess:start + excess + merge] = carry[:, :, excess:]
+
+        def compact(tensor, out):
+            if out is None:
+                return torch.cat((tensor[:, :, :start], tensor[:, :, start + excess:]), dim=2)
+            out[:, :, :start].copy_(tensor[:, :, :start])
+            out[:, :, start:].copy_(tensor[:, :, start + excess:])
+            return out
+
+        buffers = self.storage if self.storage is not None else (None, None, None)
+        self.keys, self.values, self.scores = (
+            compact(t, out) for t, out in zip((self.keys, self.values, self.scores), buffers)
+        )

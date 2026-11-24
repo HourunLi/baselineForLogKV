@@ -7,11 +7,16 @@ cd "$(dirname "$0")"
 
 usage="Usage: bash majob.sh [configs/cam_qwen3_1.7b.yaml] [--backend cam|dense|logkv] [--model DIR] [--limit N] [--output DIR]"
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
+    echo "Usage: bash majob.sh [--backend cam|dense|logkv] [--lengths 32k,...,1m] [--suites LIST] [--print-config]"
+    echo "Supplying an original YAML runs the legacy protocol:"
     echo "$usage"
     echo "Evaluates configs/eval_suites.yaml in two stages. Prepare the Base first (models.qwen3.prepare_base)."
     echo "Default environment: conda torch218; set CAM_PYTHON to use an existing interpreter."
     exit 0
 fi
+# A positional legacy YAML selects the existing HF/SemanticLogKV entry point.
+niah_protocol=1
+[[ $# -gt 0 && "$1" != -* ]] && niah_protocol=0
 CONFIG_FILE=configs/cam_qwen3_1.7b.yaml
 if [[ $# -gt 0 && "$1" != -* ]]; then
     CONFIG_FILE=$1
@@ -20,6 +25,7 @@ fi
 [[ -f "$CONFIG_FILE" ]] || { echo "Missing CaM YAML: $CONFIG_FILE" >&2; exit 2; }
 # The task lists, NIAH lengths and experiment YAML are fixed for a formal run.
 for arg in "$@"; do
+    (( niah_protocol )) && break
     case "$arg" in
         --suite|--suite=*|--tasks|--tasks=*|--config|--config=*|--print-config)
             echo "majob.sh runs the full suites of the config's context; $arg is not allowed here (use models.cam.evaluate)." >&2
@@ -38,7 +44,15 @@ set -u
 export PATH=/usr/local/cuda-12.8/bin:${PATH}
 export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/local/cuda-12.8/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 export NCCL_NVLS_ENABLE=${NCCL_NVLS_ENABLE:-0} NCCL_NET_PLUGIN=${NCCL_NET_PLUGIN:-none}
-GPUS_PER_NODE=${MA_NUM_GPUS:-${NPROC_PER_NODE:-${LOCAL_WORLD_SIZE:-8}}}
+if (( niah_protocol )); then
+    for arg in "$@"; do
+        if [[ "$arg" == --print-config ]]; then exec "$CAM_PYTHON" -m models.cam.niah "$@"; fi
+    done
+fi
+GPUS_PER_NODE=${MA_NUM_GPUS:-${NPROC_PER_NODE:-${LOCAL_WORLD_SIZE:-}}}
+if [[ -z "$GPUS_PER_NODE" ]]; then
+    GPUS_PER_NODE=$("$CAM_PYTHON" -c 'import torch; print(torch.cuda.device_count())')
+fi
 NUM_NODES=${MA_NUM_HOSTS:-${GROUP_WORLD_SIZE:-1}}
 NODE_RANK=${VC_TASK_INDEX:-${NODE_RANK:-${GROUP_RANK:-0}}}
 MASTER_ADDR=${MASTER_ADDR:-localhost}
@@ -68,6 +82,11 @@ fi
 export LITGPT_EXPECTED_WORLD_SIZE=$((NUM_NODES * GPUS_PER_NODE))
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 export NCCL_IB_TIMEOUT=${NCCL_IB_TIMEOUT:-22}
+
+if (( niah_protocol )); then
+    export MA_NUM_HOSTS="$NUM_NODES" MA_NUM_GPUS="$GPUS_PER_NODE" NODE_RANK MASTER_ADDR EVAL_MASTER_PORT
+    exec "$CAM_PYTHON" -m models.cam.niah "$@"
+fi
 
 # The YAML's top-level context: key (32k when absent) picks the stages.
 CONTEXT=$(sed -n -E 's/^context:[[:space:]]*["'"'"']?([0-9a-z]+)["'"'"']?[[:space:]]*(#.*)?$/\1/p' "$CONFIG_FILE" | tail -n 1)
