@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/nccl_env.sh
 python_bin=${NFINI_TRAIN_PYTHON:-python}
 if [[ -z ${NFINI_TRAIN_PYTHON:-} && -d /opt/conda ]]; then
     python_bin=/opt/conda/envs/torch218/bin/python

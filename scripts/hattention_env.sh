@@ -41,15 +41,11 @@ export NVTE_WITH_USER_CUDA=1
 export CUDNN_PATH=/usr
 export NVTE_CUDA_INCLUDE_DIR=/usr/local/cuda-12.8/include
 
-export NCCL_NVLS_ENABLE=0
-export NCCL_NET_PLUGIN=none
+source scripts/nccl_env.sh
 # IB/RoCE ACK 超时是指数而非秒数：4.096us x 2^N，网卡只取低 5 bit（有效 1..31）。
 # 12000 截成 uint8 是 224，低 5 bit 为 0 = 无限等待：尾包丢失后永不重传，NCCL
 # 内核以 100% 利用率空等，表现为随机卡死。22 约 17s 重传一次，重试耗尽后报错。
-export NCCL_IB_TIMEOUT=22
 # LogKV 路由决策与注意力重叠（侧流）。先在目标 GPU 上运行
 # python unused/check_route_overlap.py，输出 bitwise_equal=true 后再设为 1。
 export LOGKV_ROUTE_OVERLAP=${LOGKV_ROUTE_OVERLAP:-0}
-export NCCL_NET_GDR_LEVEL=2
-export NCCL_MIN_NCHANNELS=4
 

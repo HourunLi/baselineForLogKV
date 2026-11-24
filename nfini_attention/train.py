@@ -14,6 +14,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 import torch
+from torch.distributed.elastic.multiprocessing.errors import record
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 import yaml
@@ -235,6 +236,8 @@ def check_job(base, raw, cache, root, device):
         dist.all_reduce(value)
     if value.item() != expected:
         raise RuntimeError(f"NCCL sum failed for expected world size {expected}")
+    if device.index == 0:
+        print(f"[rank {rank}] NCCL all_reduce passed, world_size={expected}; checking shared storage", flush=True)
     # Each host must read a file actually created by the leader on shared storage.
     marker = [None]
     if rank == 0:
@@ -248,6 +251,9 @@ def check_job(base, raw, cache, root, device):
         if device.index == 0:
             if (root / marker[0]).read_bytes() != b"nfini":
                 raise RuntimeError(f"Output is not shared across nodes: {root}")
+        if distributed():
+            dist.barrier()  # All hosts have read the marker before the leader can remove it.
+        if device.index == 0:
             if (root / "cpt").exists() or any(root.glob("step-*")):
                 raise FileExistsError(f"Existing training output at {root}; use a fresh NFINI_OUTPUT_ROOT "
                                       "or use the standalone resume/evaluation entry point")
@@ -275,13 +281,12 @@ def check_job(base, raw, cache, root, device):
                   f"CUDA {torch.version.cuda} | NCCL {torch.cuda.nccl.version()} | transformers {version('transformers')} | "
                   f"litdata {version('litdata')} | base={base} | ProLong={source}",
                   flush=True)
-        if distributed():
-            dist.barrier()
     finally:
         if rank == 0:
             (root / marker[0]).unlink(missing_ok=True)
 
 
+@record
 def main():
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("stage", choices=("prepare", "cpt", "check"))
