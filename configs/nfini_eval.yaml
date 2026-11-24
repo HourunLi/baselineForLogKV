@@ -1,0 +1,7 @@
+method: nfini-attention
+checkpoint_dir: ${NFINI_CHECKPOINT_DIR:-checkpoints/nfini-attention/cpt}
+output_path: ${NFINI_OUTPUT_DIR:-results/nfini-attention}
+eval_main: true
+eval_lengths: [32k, 64k, 128k, 256k, 512k, 1m]
+eval_max_seq_lengths: [1024, 2048, 4096, 8192, 16384, 32768]
+long_limit: 100

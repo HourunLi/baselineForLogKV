@@ -10,6 +10,9 @@ def with_ratios(counts):
 
 
 def cache_compression_snapshot(model, processed_tokens):
+    if hasattr(model.config, "infini_segment_length"):
+        from nfini_attention.evaluation import snapshot
+        return snapshot(model, processed_tokens)
     layers, groups, width = model.config.dense_geometry
     live_bytes = live_matrices = conv_bytes = 0
     for block in model.backbone.layers:
@@ -30,4 +33,7 @@ def cache_compression_snapshot(model, processed_tokens):
 
 def summarize_compression(records):
     fields = ("processed_tokens", "live_matrices", "live_conv_bytes", "live_state_bytes", "dense_kv_bytes", "dense_slots")
+    if records and "live_local_kv_bytes" in records[0]:
+        fields = ("processed_tokens", "local_kv_slots", "live_memory_bytes", "live_local_kv_bytes",
+                  "live_state_bytes", "dense_kv_bytes", "dense_slots")
     return with_ratios({"request_count": len(records), **{f: sum(r[f] for r in records) for f in fields}})

@@ -4,6 +4,7 @@ import os
 import re
 import csv
 import glob
+import hashlib
 import json
 import builtins
 import sys
@@ -24,7 +25,7 @@ os.environ['HF_MODULES_CACHE'] = f'{BASE}/modules'
 os.environ['HUGGINGFACE_HUB_CACHE'] = f'{BASE}/hub'
 os.environ['HF_HUB_CACHE'] = f'{BASE}/hub'
 os.environ['RULER_CACHE_DIR'] = f'{BASE}/ruler_cache'
-os.environ['NLTK_DATA'] = f'{BASE}/nltk_data'
+os.environ.setdefault("NLTK_DATA", f"{BASE}/nltk_data")
 os.environ['HF_HUB_OFFLINE'] = '1'
 os.environ['HF_DATASETS_OFFLINE'] = '1'
 os.environ['HF_DATASETS_IN_MEMORY_MAX_SIZE'] = '0'
@@ -414,7 +415,7 @@ def extract_results_to_csv(results: dict, benchmark: str, output_path: Path) -> 
             writer.writerows(csv_rows)
         print(f"📊 CSV 结果已保存到: {csv_file}")
     except Exception as e:
-        print(f"❌ 保存 CSV 失败: {e}")
+        raise RuntimeError(f"保存 CSV 失败: {csv_file}") from e
 
 
 import datasets.config as _hf_datasets_config
@@ -1038,7 +1039,7 @@ def summarize_inference_metrics(gen_metrics: list[dict], ppl_metrics: list[dict]
 
 
 class NativeLM(LM):
-    """The niahLogKV request/scoring harness using the native HAttention model."""
+    """The niahLogKV request/scoring harness using the selected native model."""
 
     def __init__(self, checkpoint_dir, device="cuda", config_overrides=None, tokenizer_dir=None, process_group=None):
         super().__init__()
@@ -1048,27 +1049,34 @@ class NativeLM(LM):
         self.cache_budget = {}
         self._truncation_counts = {}
         options = config_overrides or {}
-        if set(options) - {"block_size", "inference_mlp_chunk_size"}:
-            raise ValueError(f"unsupported native model options: {options}")
-        self.config = HConfig.read(Path(checkpoint_dir) / "config.json", int(options.get("block_size", 32768)))
-        _configure_inference_memory(self.config, options)
         resolved = _find_tokenizer_dir(checkpoint_dir, tokenizer_dir, group=process_group)
         self.resolved_tokenizer_dir = str(resolved)
         self.tokenizer = Tokenizer(resolved)
-        self.checkpoint_source = None
-        manifest = Path(checkpoint_dir) / "hattention_source.json"
-        if manifest.is_file():
-            source = json.loads(manifest.read_text())
-            # If a prepared file was subsequently replaced, drop its published identity.
-            if all((Path(checkpoint_dir) / name).is_file()
-                   and (Path(checkpoint_dir) / name).stat().st_size == entry["size"]
-                   and (Path(checkpoint_dir) / name).stat().st_mtime_ns == entry["mtime_ns"]
-                   for name, entry in source["files"].items()):
-                self.checkpoint_source = source
-        if self.config.student:
-            from .student import checkpoint_report
-            self.checkpoint_source = checkpoint_report(Path(checkpoint_dir))
-        self.model = HAttentionLM.load(checkpoint_dir, self.config, device)
+        self.infini = "infini_segment_length" in json.loads((Path(checkpoint_dir) / "config.json").read_text())
+        if self.infini:
+            from nfini_attention.evaluation import load_model
+            self.model, self.config, self.checkpoint_source = load_model(checkpoint_dir, device, options)
+            _configure_inference_memory(self.config, options)
+            self.model.mlp_chunk = self.config.inference_mlp_chunk_size
+        else:
+            if set(options) - {"block_size", "inference_mlp_chunk_size"}:
+                raise ValueError(f"unsupported native model options: {options}")
+            self.config = HConfig.read(Path(checkpoint_dir) / "config.json", int(options.get("block_size", 32768)))
+            _configure_inference_memory(self.config, options)
+            self.checkpoint_source = None
+            manifest = Path(checkpoint_dir) / "hattention_source.json"
+            if manifest.is_file():
+                source = json.loads(manifest.read_text())
+                # If a prepared file was subsequently replaced, drop its published identity.
+                if all((Path(checkpoint_dir) / name).is_file()
+                       and (Path(checkpoint_dir) / name).stat().st_size == entry["size"]
+                       and (Path(checkpoint_dir) / name).stat().st_mtime_ns == entry["mtime_ns"]
+                       for name, entry in source["files"].items()):
+                    self.checkpoint_source = source
+            if self.config.student:
+                from .student import checkpoint_report
+                self.checkpoint_source = checkpoint_report(Path(checkpoint_dir))
+            self.model = HAttentionLM.load(checkpoint_dir, self.config, device)
         # 推理时延指标收集
         self.gen_metrics: list[dict] = []      # generate_until
         self.ppl_metrics: list[dict] = []      # loglikelihood
@@ -1083,6 +1091,11 @@ class NativeLM(LM):
             self._reset_eval_cache()
             return
         self.model.set_cache()
+        if self.infini:
+            from nfini_attention.evaluation import cache_budget
+            self.cache_budget = cache_budget(self.model)
+            self._eval_cache_ready = True
+            return
         caches = [layer.mixer.cache for layer in self.model.backbone.layers]
         self.cache_budget = dict(persistent_cache_bytes=sum(buf.numel() * buf.element_size()
                                  for cache in caches for buf in cache.buffers()),
@@ -1204,7 +1217,7 @@ class NativeLM(LM):
         return torch.cat(out)
 
     def _score_tokens(
-        self, ctx_enc: list[int], cont_enc: list[int], *, request_type: str = "loglikelihood"
+        self, ctx_enc: list[int], cont_enc: list[int], *, request_type: str = "loglikelihood", sample_id=None
     ) -> tuple[float, bool]:
         """Forward (context + continuation) and return
         ``(sum log p(continuation | context), is_greedy)``.
@@ -1228,7 +1241,9 @@ class NativeLM(LM):
         if len(ctx_enc) == 0:
             ctx_enc = [self.tokenizer.bos_id]
 
-        inps = torch.tensor([ctx_enc + cont_enc], dtype=torch.long, device=self._device)
+        cpu_ids = torch.tensor([ctx_enc + cont_enc], dtype=torch.long)
+        input_hash = hashlib.sha256(cpu_ids.numpy().astype("<i8", copy=False)).hexdigest()
+        inps = cpu_ids.to(self._device)
         seq_len = inps.size(1)
         ctx_len = len(ctx_enc)
 
@@ -1254,7 +1269,8 @@ class NativeLM(LM):
                 peak_memory = _inference_peak_memory(self._device)
                 self.compression_metrics.append({
                     "request_type": request_type, "rank": _global_rank(),
-                    "context_len": ctx_len, "cont_len": len(cont_enc),
+                    "context_len": ctx_len, "cont_len": len(cont_enc), "sample_id": sample_id,
+                    "scoring_input_ids_sha256": input_hash,
                     **cache_compression_snapshot(self.model, seq_len),
                 })
             finally:
@@ -1312,7 +1328,7 @@ class NativeLM(LM):
         local_requests = requests[dp_rank::dp_size]
         results = []
 
-        for req in _eval_progress(local_requests, "loglikelihood"):
+        for i, req in enumerate(_eval_progress(local_requests, "loglikelihood")):
             context, continuation = req.args[0], req.args[1]
 
             ctx_enc = self.tokenizer.encode(context).tolist()
@@ -1320,7 +1336,8 @@ class NativeLM(LM):
             # loglikelihood 对齐；Qwen 通常无 BOS，bos=False 与默认行为一致。
             cont_enc = self.tokenizer.encode(continuation, bos=False).tolist()
 
-            results.append(self._score_tokens(ctx_enc, cont_enc))
+            sample_id = _request_sample_id(req, global_request_index=i * dp_size + dp_rank, rank=dp_rank)
+            results.append(self._score_tokens(ctx_enc, cont_enc, sample_id=sample_id))
 
         # 清理 CUDA 缓存，避免 all_gather 时 OOM
         torch.cuda.empty_cache()
@@ -1428,7 +1445,7 @@ class NativeLM(LM):
                 results.append(self._generate_turns(prompt, gen_args["turn_separator"], max_new_tokens, sample_id))
                 continue
 
-            prompt_tensor = self.tokenizer.encode(prompt, device=self._device)
+            prompt_tensor = self.tokenizer.encode(prompt)
             original_prompt_tokens = int(prompt_tensor.size(0))
             prompt_token_offset = 0
 
@@ -1440,6 +1457,8 @@ class NativeLM(LM):
                 prompt_tensor = prompt_tensor[-keep_prompt_len:]
                 self._warn_truncation("generate_until", keep_prompt_len)
 
+            prompt_hash = hashlib.sha256(prompt_tensor.numpy().astype("<i8", copy=False)).hexdigest()
+            prompt_tensor = prompt_tensor.to(self._device)
             total_max_len = prompt_tensor.size(0) + max_new_tokens
             prompt_len = prompt_tensor.size(0)
 
@@ -1488,6 +1507,7 @@ class NativeLM(LM):
                 "rank": dp_rank, "sample_id": sample_id,
                 "prompt_len": prompt_len, "generated_tokens": gen_len,
                 "original_prompt_len": original_prompt_tokens, "truncated_prompt_tokens": prompt_token_offset,
+                "prompt_ids_sha256": prompt_hash,
                 "total_time_s": total_time_s,
                 "prefill_time_s": prefill_time_s,
                 "ttft_ms": prefill_time_s * 1000,
@@ -1525,7 +1545,8 @@ class NativeLM(LM):
         results = []
 
         max_len = self.model.max_seq_length
-        for req in _eval_progress(local_requests, "loglikelihood_rolling"):
+        for i, req in enumerate(_eval_progress(local_requests, "loglikelihood_rolling")):
+            sample_id = _request_sample_id(req, global_request_index=i * dp_size + dp_rank, rank=dp_rank)
             (text,) = req.args
             tokens = self.tokenizer.encode(text, bos=False).tolist()
 
@@ -1539,7 +1560,7 @@ class NativeLM(LM):
                     ctx = [self.tokenizer.bos_id]
                 else:
                     ctx = [tokens[start - 1]]
-                logprob, _ = self._score_tokens(ctx, chunk, request_type="loglikelihood_rolling")
+                logprob, _ = self._score_tokens(ctx, chunk, request_type="loglikelihood_rolling", sample_id=sample_id)
                 total_logprob += logprob
 
             results.append(total_logprob)
@@ -1704,8 +1725,9 @@ def main(
             compression_summary = summarize_compression(compression_samples)
             compression_report = {
                 "measurement_point": "request_end_before_cache_reset",
-                "slot_definition": "matrix states do not retain discrete KV pairs; slot ratios are null",
-                "byte_definition": "live FP32 matrices + BF16 convolution history / reference dense BF16 KV bytes at the same token count",
+                "slot_definition": ("local_kv_slots counts exact per-head entries; compressed history has no token slots"
+                                    if lm_model.infini else "matrix states do not retain discrete KV pairs; slot ratios are null"),
+                "byte_definition": "live local KV + committed FP32 memory and normalizer / dense BF16 KV bytes" if lm_model.infini else "live FP32 matrices + BF16 convolution history / reference dense BF16 KV bytes at the same token count",
                 "dense_reference_layers_groups_head_dim": lm_model.config.dense_geometry,
                 "summary": compression_summary,
                 "by_request_type": {
@@ -1714,29 +1736,15 @@ def main(
                 },
                 "samples": compression_samples,
             }
-            print("Log-linear state bytes:", compression_summary, flush=True)
+            print("Cache state bytes:", compression_summary, flush=True)
 
             # 🌟 第一步：立即保存原始 results 对象，便于后续恢复
             result_base = Path(output_path or ".")
             cache_dir = result_base.parent if result_base.suffix == ".json" else result_base
             results_cache_file = cache_dir / "eval_results_cache.json"
             results_cache_file.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                with open(results_cache_file, "w", encoding="utf-8") as f:
-                    json.dump(results, f, indent=2, ensure_ascii=False, cls=SafeJSONEncoder)
-                print(f"💾 原始 results 已缓存到: {results_cache_file}")
-            except Exception as e:
-                print(f"❌ 缓存 results 失败: {e}")
-                print(f"⚠️ 尝试使用备用方案...")
-                try:
-                    # 备用方案：先转换为字符串表示
-                    results_str = str(results)
-                    with open(results_cache_file, "w", encoding="utf-8") as f:
-                        json.dump({"results_str": results_str}, f, indent=2, ensure_ascii=False)
-                    print(f"💾 results 已以字符串形式缓存到: {results_cache_file}")
-                except Exception as e2:
-                    print(f"❌ 备用方案也失败了: {e2}")
-                    return
+            with results_cache_file.open("w", encoding="utf-8") as f:
+                json.dump(results, f, ensure_ascii=False, cls=SafeJSONEncoder)
 
             # 🌟 第二步：打印表格
             from lm_eval.utils import make_table
@@ -1749,13 +1757,13 @@ def main(
                     **_code_version(),
                     "benchmark": benchmark,
                     "checkpoint_dir": checkpoint_dir,
-                    "method": "qwen3_hattention_mamba2" if lm_model.config.student else "upstream_hattention_mamba2",
+                    "method": "nfini-attention" if lm_model.infini else "qwen3_hattention_mamba2" if lm_model.config.student else "upstream_hattention_mamba2",
                     "checkpoint_source": lm_model.checkpoint_source,
                     "evaluation_device": str(lm_model.device),
                     "model_dtype": str(lm_model.model.lm_head.weight.dtype),
                     "device_name": torch.cuda.get_device_name() if torch.device(lm_model.device).type == "cuda" else "CPU",
-                    "level_extrapolation": "share_deepest_trained_lambda",
-                    "position_encoding": "native SSM (no RoPE)",
+                    "level_extrapolation": None if lm_model.infini else "share_deepest_trained_lambda",
+                    "position_encoding": ("Qwen3 RoPE" if lm_model.infini else "native SSM (no RoPE)"),
                     "checkpoint_parameters": sum(p.numel() for p in lm_model.model.parameters()),
                     "model_config": dataclasses.asdict(lm_model.config),
                     "tokenizer_dir": lm_model.resolved_tokenizer_dir,
@@ -1786,20 +1794,13 @@ def main(
                         writer.writerows(compression_samples)
                     print(f"📊 KV 槽位压缩明细已保存至 {compression_csv}")
 
-                try:
-                    with open(output_file, "w", encoding="utf-8") as f:
-                        json.dump(json_output, f, indent=2, ensure_ascii=False, cls=SafeJSONEncoder)
-                    print(f"✅ 完整结果已保存到: {output_file}")
-                except Exception as e:
-                    print(f"❌ 保存完整结果失败: {e}")
-                    print(f"⚠️ 尝试备用方案...")
-                    try:
-                        json_output["results"] = str(results)
-                        with open(output_file, "w", encoding="utf-8") as f:
-                            json.dump(json_output, f, indent=2, ensure_ascii=False)
-                        print(f"✅ 完整结果已以备用方案保存到: {output_file}")
-                    except Exception as e2:
-                        print(f"❌ 备用方案也失败了: {e2}")
+                with output_file.open("w", encoding="utf-8") as f:
+                    json.dump(json_output, f, ensure_ascii=False, cls=SafeJSONEncoder)
+                print(f"完整结果已保存到 {output_file}", flush=True)
+                if lm_model.infini:
+                    from nfini_attention.report import write_summary
+                    with output_file.with_suffix(".summary.csv").open("w", newline="", encoding="utf-8") as stream:
+                        write_summary(stream, str(output_file), json_output)
 
                 # 🌟 第四步：保存推理时延 xlsx
                 inference_xlsx = output_file.with_suffix(".inference_metrics.xlsx")
@@ -1817,8 +1818,8 @@ def main(
                             gen_df.to_excel(writer, sheet_name="generate_until", index=False)
                             # 按 prompt 长度分桶统计
                             gen_df["prompt_bucket"] = pd.cut(gen_df["prompt_len"],
-                                bins=[0, 1024, 4096, 8192, 16384, 32768, 999999],
-                                labels=["0-1K", "1K-4K", "4K-8K", "8K-16K", "16K-32K", "32K+"])
+                                bins=[0, 1024, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, float("inf")],
+                                labels=["0-1K", "1K-4K", "4K-8K", "8K-16K", "16K-32K", "32K-64K", "64K-128K", "128K-256K", "256K-512K", "512K-1M", ">1M"])
                             summary = pd.DataFrame([
                                 {"prompt_bucket": str(bucket), **summarize_inference_metrics(
                                     rows.to_dict("records"), [],
@@ -1831,7 +1832,7 @@ def main(
                             ppl_df.to_excel(writer, sheet_name="loglikelihood", index=False)
                     print(f"📊 推理时延指标已保存至 {inference_xlsx}")
                 except Exception as e:
-                    print(f"⚠️ 推理时延 xlsx 保存失败: {e}")
+                    raise RuntimeError(f"推理时延 xlsx 保存失败: {inference_xlsx}") from e
 
                 # 🌟 第五步：生成 CSV 结果文件
                 extract_results_to_csv(results, benchmark, output_file)

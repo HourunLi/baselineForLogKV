@@ -1,0 +1,15 @@
+base: /workspace/checkpoints/Qwen/Qwen3-8B-Base
+prolong: /workspace/longcontext/prolong/data
+output_root: checkpoints/nfini-attention
+context_length: 32768
+segment_length: 2048
+seed: 42
+num_workers: 16
+steps: 2000
+global_batch_size: 128
+micro_batch_size: 1
+lr: 5.0e-6
+min_lr: 3.0e-6
+warmup_steps: 100
+weight_decay: 0.1
+save_interval: 400

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Native HAttention evaluation. Run once per node, as in niahLogKV.
+# Baseline evaluation. Run once per node, as in niahLogKV.
 set -e
 cd "$(dirname "$0")"
 source scripts/hattention_env.sh
@@ -8,7 +8,8 @@ if [[ ${1:-} == --print-config ]]; then
     print_only=1
     shift
 fi
-CONFIG_FILE=${1:-configs/hattention.yaml}
+CONFIG_FILE=${1:-configs/nfini_eval.yaml}
+export NFINI_CHECKPOINT_DIR=${NFINI_CHECKPOINT_DIR:-${NFINI_OUTPUT_ROOT:-checkpoints/nfini-attention}/cpt}
 eval_settings=$("${PYTHON_BIN}" - "${CONFIG_FILE}" <<'PYCONFIG'
 import json, os, shlex, sys
 import yaml
@@ -22,6 +23,7 @@ for package, expected in (("lm-eval", "0.4.11"), ("datasets", "4.8.4")):
         raise SystemExit(f"{package} {actual}, expected {expected} for the pinned evaluation protocol")
 def emit(name, value):
     print(name+'='+shlex.quote(str(value)))
+emit("METHOD", cfg.get("method", "hattention"))
 emit("SAVE_DIR", cfg["checkpoint_dir"])
 emit("EVAL_OUTPUT_DIR", cfg["output_path"])
 emit("CONFIG_EVAL_LENGTHS", ",".join(cfg["eval_lengths"]))
@@ -44,9 +46,16 @@ eval "${eval_settings}"
 # An explicit 512K/1M-only selection uses those passes and their standard suites by default.
 DEFAULT_EVAL_MAIN=${CONFIG_EVAL_MAIN}
 DEFAULT_EVAL_SUITES=${CONFIG_EVAL_SUITES}
-if [[ ${EVAL_LENGTHS,,} =~ ^[[:space:],]*(512k|1m)([[:space:],]+(512k|1m))*[[:space:],]*$ ]]; then
+if [[ $(printf '%s' "${EVAL_LENGTHS:-}" | tr '[:upper:]' '[:lower:]') =~ ^[[:space:],]*(512k|1m)([[:space:],]+(512k|1m))*[[:space:],]*$ ]]; then
     DEFAULT_EVAL_MAIN=0
     DEFAULT_EVAL_SUITES=${CONFIG_EVAL_SUITES:-ruler,babilong,books,longbench2}
+fi
+if [[ ${METHOD} == nfini-attention && -z ${CONFIG_EVAL_SUITES} ]]; then
+    DEFAULT_EVAL_SUITES=ruler,babilong,ppl,books,turns,longbench2
+    suite_lengths=$(printf '%s' "${EVAL_LENGTHS:-${CONFIG_EVAL_LENGTHS}}" | tr '[:upper:] ' '[:lower:],')
+    case ",${suite_lengths}," in
+        *,32k,*|*,64k,*|*,128k,*|*,256k,*) DEFAULT_EVAL_SUITES+=,infinitebench ;;
+    esac
 fi
 EVAL_LENGTHS=${EVAL_LENGTHS:-${CONFIG_EVAL_LENGTHS}}
 EVAL_SUITES=${EVAL_SUITES:-${DEFAULT_EVAL_SUITES}}
@@ -60,7 +69,11 @@ if [ -n "${EVAL_LENGTHS}" ] && { [ -n "${2:-}" ] || [ -n "${3:-}" ]; }; then
 fi
 
 
-if [[ ${YARN_MODE:-per_length} != per_length ]]; then
+planner=lla_bench.long_eval_plan
+if [[ ${METHOD} == nfini-attention ]]; then
+    planner=nfini_attention.long_eval_plan
+    export LOGKV_EVAL_PREFILL_CHUNK=${LOGKV_EVAL_PREFILL_CHUNK:-2048}
+elif [[ ${YARN_MODE:-per_length} != per_length ]]; then
     echo "The native SSM uses no rotary embeddings. Fixed YaRN runs would duplicate the same model." >&2
     exit 1
 fi
@@ -90,7 +103,7 @@ fi
 export EVAL_OPTIONAL_TASKS=  # tasks asked for by name must run
 if [ -z "${BENCHMARKS}" ]; then
     BENCHMARKS=${DEFAULT_BENCHMARKS}
-    export EVAL_OPTIONAL_TASKS=${DEFAULT_OPTIONAL_BENCHMARKS}
+    if [[ ${METHOD} != nfini-attention ]]; then export EVAL_OPTIONAL_TASKS=${DEFAULT_OPTIONAL_BENCHMARKS}; fi
 fi
 
 # Every needle-in-a-haystack eval: RULER single needles, lm-eval's multi-needle tasks and the
@@ -131,11 +144,11 @@ LONG_EVAL_PASSES=()
 if [ -n "${EVAL_LENGTHS}" ]; then
     LONG_EVAL_SKIP=""
     if [ "${EVAL_MAIN}" = "1" ]; then
-        LONG_EVAL_SKIP=$("${PYTHON_BIN}" -m lla_bench.long_eval_plan measured "${BENCHMARKS}" "${NIAH_BENCHMARKS}" "${EVAL_MAX_SEQ_LENGTHS}") || exit 1
+        LONG_EVAL_SKIP=$("${PYTHON_BIN}" -m "${planner}" measured "${BENCHMARKS}" "${NIAH_BENCHMARKS}" "${EVAL_MAX_SEQ_LENGTHS}") || exit 1
     fi
-    LONG_EVAL_PLAN=$("${PYTHON_BIN}" -m lla_bench.long_eval_plan "${EVAL_LENGTHS}" "${EVAL_SUITES:-}" "${YARN_MODE:-per_length}" \
+    LONG_EVAL_PLAN=$("${PYTHON_BIN}" -m "${planner}" "${EVAL_LENGTHS}" "${EVAL_SUITES:-}" "${YARN_MODE:-per_length}" \
         "${NIAH_ONLY:-0}" "${CONFIG_OVERRIDES}" "${EVAL_OUTPUT_DIR}" "${LONG_EVAL_SKIP}") || exit 1
-    mapfile -t LONG_EVAL_PASSES <<< "${LONG_EVAL_PLAN}"
+    while IFS= read -r pass; do LONG_EVAL_PASSES+=("$pass"); done <<< "${LONG_EVAL_PLAN}"
     echo "Long-context passes (YARN_MODE=${YARN_MODE:-per_length}, EVAL_SUITES=${EVAL_SUITES:-all}, main line first: ${EVAL_MAIN:-0}):"
     printf '  %s\n' "${LONG_EVAL_PASSES[@]}"
 fi
@@ -158,6 +171,9 @@ for file in config.json tokenizer.json tokenizer_config.json; do
         exit 1
     fi
 done
+if [[ ${METHOD} == nfini-attention ]]; then
+    "${PYTHON_BIN}" -c 'import json,sys; from pathlib import Path; p=Path(sys.argv[1]); sys.exit(0 if "infini_segment_length" in json.loads((p/"config.json").read_text()) and (p/"training.json").is_file() else "Expected an exported Infini checkpoint: "+str(p))' "${SAVE_DIR}"
+fi
 mkdir -p "${EVAL_OUTPUT_DIR}"
 # Detect GPUs visible to this job (including CUDA_VISIBLE_DEVICES); managed_cluster
 # allocation is an upper bound. GPUS_PER_NODE may explicitly select fewer GPUs.
@@ -300,4 +316,4 @@ for PASS in "${LONG_EVAL_PASSES[@]}"; do
 done
 
 
-echo "HAttention evaluation finished."
+echo "${METHOD} evaluation finished."
