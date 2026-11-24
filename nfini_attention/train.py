@@ -26,6 +26,17 @@ from lla_bench.student import base_identity, file_hash
 from .model import InfiniLM, SegmentLayer
 
 
+def code_identity():
+    here = Path(__file__).resolve().parent
+    try:
+        commit = subprocess.run(["git", "-C", here, "rev-parse", "HEAD"], check=True,
+                                capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        commit = None
+    return dict(commit=commit, source_sha256={p.name: file_hash(p) for p in
+                (Path(__file__), here / "model.py", Path(prolong.__file__))})
+
+
 def learning_rate(step, cfg):
     # The reference schedules with zero-based optimizer step before the update.
     warm = cfg["warmup_steps"]
@@ -91,6 +102,14 @@ def export(folder, model, state, base, report):
         stage.rename(folder)
 
 
+def check_base_config(config, base):
+    expected = dict(model_type="qwen3", num_hidden_layers=36, hidden_size=4096, intermediate_size=12288,
+                    num_attention_heads=32, num_key_value_heads=8, head_dim=128, vocab_size=151936,
+                    tie_word_embeddings=False, max_position_embeddings=32768)
+    if any(config.get(key) != value for key, value in expected.items()):
+        raise ValueError(f"Expected original HF Qwen3-8B-Base geometry at {base}")
+
+
 def train(cfg, base, cache, root, device, *, resume=None, stop_after=None, require_8b=True):
     rank = dist.get_rank() if distributed() else 0
     world = dist.get_world_size() if distributed() else 1
@@ -112,10 +131,8 @@ def train(cfg, base, cache, root, device, *, resume=None, stop_after=None, requi
     model = InfiniLM.load_local(base, base=True, segment=cfg["segment_length"],
                                 dtype=torch.bfloat16 if gpu else torch.float32)
     c = model.config
-    if require_8b and (c.num_hidden_layers, c.hidden_size, c.intermediate_size, c.num_attention_heads,
-                        c.num_key_value_heads, c.head_dim, c.vocab_size, c.tie_word_embeddings) != (
-                            36, 4096, 12288, 32, 8, 128, 151936, False):
-        raise ValueError(f"expected Qwen3-8B-Base at {base}")
+    if require_8b:
+        check_base_config(c.to_dict(), base)
     if length > c.max_position_embeddings:
         raise ValueError("CPT exceeds the base RoPE context")
     model.train().requires_grad_(True)
@@ -198,14 +215,71 @@ def train(cfg, base, cache, root, device, *, resume=None, stop_after=None, requi
         export(out, model.module if distributed() else model, state, base,
                dict(**progress, method="nfini-attention", base=str(base), resume_step=begin, ranks=ranks,
                     trainable_parameters=count, precision="bf16-true" if gpu else "float32",
-                    commit=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+                    **code_identity(),
                     versions={k: version(k) for k in ("torch", "transformers", "litdata", "safetensors")}))
     return out
 
 
+def check_job(base, raw, cache, root, device):
+    from litdata import StreamingDataset, StreamingDataLoader, TokensLoader  # verify the training loader imports
+    from safetensors import safe_open
+    from transformers import AutoTokenizer
+
+    rank = dist.get_rank()
+    if torch.cuda.device_count() != 8 or dist.get_world_size() != 32 or not torch.cuda.is_bf16_supported():
+        raise ValueError("Expected 4 x 8 visible CUDA devices with BF16 and 32 NCCL ranks")
+    value = torch.ones(1, device=device, dtype=torch.bfloat16)
+    dist.all_reduce(value)
+    if value.item() != 32:
+        raise RuntimeError("32-rank BF16 NCCL sum failed")
+    # Each host must read a file actually created by the leader on shared storage.
+    marker = [None]
+    if rank == 0:
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=root, prefix=".check-", delete=False) as f:
+            f.write(b"nfini")
+            marker[0] = Path(f.name).name
+    dist.broadcast_object_list(marker, src=0)
+    try:
+        if device.index == 0:
+            if (root / marker[0]).read_bytes() != b"nfini":
+                raise RuntimeError(f"Output is not shared across nodes: {root}")
+            if (root / "cpt").exists() or any(root.glob("step-*")):
+                raise FileExistsError(f"Existing training output at {root}; use a fresh NFINI_OUTPUT_ROOT "
+                                      "or use the standalone resume/evaluation entry point")
+            config = json.loads((base / "config.json").read_text())
+            check_base_config(config, base)
+            if "infini_segment_length" in config:
+                raise ValueError(f"Expected original HF Qwen3-8B-Base at {base}")
+            if not (base / "tokenizer_config.json").is_file():
+                raise FileNotFoundError(base / "tokenizer_config.json")
+            AutoTokenizer.from_pretrained(base, local_files_only=True)
+            index = base / "model.safetensors.index.json"
+            shards = set(json.loads(index.read_text())["weight_map"].values()) if index.exists() else {"model.safetensors"}
+            for shard in shards:
+                with safe_open(base / shard, framework="pt", device="cpu") as weights:
+                    if not weights.keys():
+                        raise ValueError(f"Empty weights: {base / shard}")
+            if (cache / "index.json").is_file():
+                prolong.check_chunks(cache)
+                source = cache
+            elif os.environ.get("NFINI_PROLONG_CACHE_ROOT") or cache.exists() or not next(prolong.raw_files(raw), None):
+                raise FileNotFoundError(f"No usable ProLong data at cache={cache}, raw={raw}")
+            else:
+                source = raw
+            print(f"[node {rank // 8}] {torch.cuda.get_device_name(device)} | torch {torch.__version__} | "
+                  f"CUDA {torch.version.cuda} | NCCL {torch.cuda.nccl.version()} | transformers {version('transformers')} | "
+                  f"litdata {version('litdata')} | base={base} | ProLong={source}",
+                  flush=True)
+        dist.barrier()
+    finally:
+        if rank == 0:
+            (root / marker[0]).unlink(missing_ok=True)
+
+
 def main():
     cli = argparse.ArgumentParser(description=__doc__)
-    cli.add_argument("stage", choices=("prepare", "cpt"))
+    cli.add_argument("stage", choices=("prepare", "cpt", "check"))
     cli.add_argument("--config", type=Path, default=Path("configs/nfini_cpt.yaml"))
     cli.add_argument("--steps", type=int, help="stop at this optimizer step with the original LR schedule")
     cli.add_argument("--resume", type=Path, help="complete step directory from this recipe")
@@ -219,6 +293,8 @@ def main():
         print(json.dumps({**cfg, "base": str(base), "prolong": str(raw), "output_root": str(root),
                           "target_input_tokens": cfg["context_length"] * cfg["global_batch_size"] * (args.steps or cfg["steps"])}, indent=2))
         return
+    if args.stage == "check" and int(os.getenv("WORLD_SIZE", "1")) != 32:
+        cli.error("managed_cluster preflight requires 32 training ranks")
     name = prolong.cache_name(base, cfg["context_length"])
     override = os.environ.get("NFINI_PROLONG_CACHE_ROOT")
     cache = Path(override or raw) / name
@@ -237,6 +313,9 @@ def main():
     if int(os.getenv("WORLD_SIZE", "1")) > 1:
         dist.init_process_group("nccl")
     try:
+        if args.stage == "check":
+            check_job(base, raw, cache, root, device)
+            return
         train(cfg, base, cache, root, device, resume=args.resume, stop_after=args.steps)
     finally:
         if dist.is_initialized():

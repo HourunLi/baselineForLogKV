@@ -2,7 +2,30 @@
 
 本分支实现基于原始 Qwen3-8B-Base 的 GQA Infini-Attention。训练与 LogKV 8B 使用相同起点、32K ProLong 语言建模目标和 **8,388,608,000 个输入 token**。评测对齐固定版本的 niahLogKV，包括 32K 主线和 32K、64K、128K、256K、512K、1M 长测。8B 对照配置
 
-## 训练
+## managed_cluster 一次提交训练和评测
+
+选用上次 LogKV 的 CUDA / torch218 镜像与共享桶挂载，分配 **4 个节点，每节点 8 张 GPU**。使用本分支仓库根目录作为工作目录，每节点由 managed_cluster 执行一次同一条启动命令：
+
+```bash
+bash majob.sh --pipeline
+```
+
+作业先实际执行 32 个训练进程的 BF16 NCCL 求和，检查各节点的底模分片、tokenizer、ProLong 输入、共享输出和评测环境。主节点离线打开主线任务数据，并核查各档长测语料。已有兼容的 ProLong 缓存直接复用，只有缺缓存且原始语料可读时，主节点才在本次输出目录准备数据。所有节点完成 CPT，写出最终权重后，自动运行 32K 主线及 32K–1M 六档评测。任一阶段失败，全作业停止。单独使用 `bash majob.sh --check` 只执行预检，默认一键命令已包含它；预检可能生成数据集或分词缓存。
+
+平台提供 `MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MA_NUM_GPUS` 和主节点地址；沿用原作业的网络设置，节点间需能访问默认端口 6000–6002。每次输出根目录默认为 `/workspace/ckpt-logKV/nfini-attention/${MA_VJ_NAME}`（未设置作业名时使用 `qwen8b-32k`）。`cpt/` 为最终权重，`evaluate/` 为成绩。可用 `NFINI_OUTPUT_ROOT` 指定新的共享目录。训练已成功而仅需重跑评测时，设置 `NFINI_OUTPUT_ROOT` 为原作业根目录、`NFINI_OUTPUT_DIR` 为目标结果目录，然后运行原有的 `bash majob.sh`。
+
+**下载与数据。** 启动器离线运行。共享桶已有原始 HF 格式的 Qwen3-8B-Base、ProLong 和完整评测资产，且镜像具备下述依赖时，无需下载模型、数据或安装 Infini-Attention 包。只有 LitGPT 的 `lit_model.pth` 时，需先补齐原始 HF 权重和 tokenizer。长测缺失的数据可在联网准备机按预检报告补齐，再挂载同一目录。
+
+| 评测输入 | 沿用的 LogKV 默认路径 |
+| --- | --- |
+| HF_HOME | `/workspace/data/hf_cache` |
+| 普通长文 PPL | `$HF_HOME/long_ppl_data/emozilla--pg19-test` |
+| 32K–256K 书籍 PPL | `$HF_HOME/long_ppl_books/emozilla--pg19`，上限 100 本 |
+| 512K/1M 书籍 PPL | `$HF_HOME/long_ppl_books_1m/emozilla--pg19`，上限 10 本 |
+
+已导出的 `LONG_PPL_DATA`、`LONG_PPL_BOOKS`、`LONG_PPL_DOCS` 对所有档位生效。仅长两档使用了不同设置时，可以用 `NFINI_LONG_PPL_DATA_1M`、`NFINI_LONG_PPL_BOOKS_1M`、`NFINI_LONG_PPL_DOCS_1M` 指向上次对照的取值。普通 PPL 与书籍 PPL 各自都需要至少一篇经同一 tokenizer 分词后达到 1,048,576 token 的文档。上次只做了书籍 PPL 时，普通 PPL 的 1M 数据仍需实际核实；若无合格样本，预检会报出具体来源并停止。LogKV 长测数据说明
+
+## 单独训练
 
 共享底模目录需有原始 Hugging Face safetensors、config 和 tokenizer。优先复用 LogKV 已有的、tokenizer 指纹一致的 ProLong 32K LitData 缓存。默认路径见 [CPT 配置](configs/nfini_cpt.yaml)。训练解释器需提供 PyTorch 2.11、Transformers 4.51.3、LitData 0.2.61 及项目依赖。可以通过 `NFINI_TRAIN_PYTHON` 指定单独准备的环境。
 

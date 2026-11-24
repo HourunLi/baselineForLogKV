@@ -3,6 +3,10 @@
 set -e
 cd "$(dirname "$0")"
 source scripts/hattention_env.sh
+check_runtime=0
+if [[ ${1:-} == --check-runtime ]]; then check_runtime=1; shift; fi
+check_data=0
+if [[ ${1:-} == --check-data ]]; then check_data=1; shift; fi
 print_only=0
 if [[ ${1:-} == --print-config ]]; then
     print_only=1
@@ -72,6 +76,13 @@ fi
 planner=lla_bench.long_eval_plan
 if [[ ${METHOD} == nfini-attention ]]; then
     planner=nfini_attention.long_eval_plan
+    # An explicitly supplied common corpus/count applies to both length groups.
+    export NFINI_LONG_PPL_BOOKS_1M=${NFINI_LONG_PPL_BOOKS_1M:-${LONG_PPL_BOOKS:-${HF_HOME}/long_ppl_books_1m/emozilla--pg19}}
+    export NFINI_LONG_PPL_DOCS_1M=${NFINI_LONG_PPL_DOCS_1M:-${LONG_PPL_DOCS:-10}}
+    export LONG_PPL_BOOKS=${LONG_PPL_BOOKS:-${HF_HOME}/long_ppl_books/emozilla--pg19}
+    export LONG_PPL_DATA=${LONG_PPL_DATA:-${HF_HOME}/long_ppl_data/emozilla--pg19-test}
+    export LONG_PPL_DOCS=${LONG_PPL_DOCS:-100}
+    export NFINI_LONG_PPL_DATA_1M=${NFINI_LONG_PPL_DATA_1M:-${LONG_PPL_DATA}}
     export LOGKV_EVAL_PREFILL_CHUNK=${LOGKV_EVAL_PREFILL_CHUNK:-2048}
 elif [[ ${YARN_MODE:-per_length} != per_length ]]; then
     echo "The native SSM uses no rotary embeddings. Fixed YaRN runs would duplicate the same model." >&2
@@ -151,6 +162,31 @@ if [ -n "${EVAL_LENGTHS}" ]; then
     while IFS= read -r pass; do LONG_EVAL_PASSES+=("$pass"); done <<< "${LONG_EVAL_PLAN}"
     echo "Long-context passes (YARN_MODE=${YARN_MODE:-per_length}, EVAL_SUITES=${EVAL_SUITES:-all}, main line first: ${EVAL_MAIN:-0}):"
     printf '  %s\n' "${LONG_EVAL_PASSES[@]}"
+fi
+if [[ "${check_data}" == 1 ]]; then
+    main_tasks=none
+    if [[ -z "${EVAL_LENGTHS}" || "${EVAL_MAIN}" == 1 ]]; then main_tasks=${BENCHMARKS}; fi
+    exec "${PYTHON_BIN}" -m nfini_attention.check_eval "${main_tasks}" "${LONG_EVAL_PASSES[@]}"
+fi
+if [[ "${check_runtime}" == 1 ]]; then
+    "${PYTHON_BIN}" - "${EVAL_OUTPUT_DIR}" <<'PY_RUNTIME'
+import sys
+import tempfile
+from pathlib import Path
+from importlib.metadata import version
+import torch
+from lla_bench import eval
+from nfini_attention.evaluation import load_model
+if torch.cuda.device_count() != 8 or not torch.cuda.is_bf16_supported() or not torch.distributed.is_gloo_available():
+    raise SystemExit("Evaluation requires 8 visible CUDA GPUs per node, BF16 and Gloo")
+out = Path(sys.argv[1])
+out.mkdir(parents=True, exist_ok=True)
+with tempfile.NamedTemporaryFile(dir=out):
+    pass
+print(f"Eval runtime {sys.executable} | torch={torch.__version__} | CUDA={torch.version.cuda} | "
+      + " ".join(f"{p}={version(p)}" for p in ("transformers", "lm-eval", "datasets", "xlsxwriter")))
+PY_RUNTIME
+    print_only=1
 fi
 if [[ "${print_only}" == 1 ]]; then
     if [[ -z "${EVAL_LENGTHS}" || "${EVAL_MAIN}" == 1 ]]; then
@@ -235,6 +271,9 @@ echo "NIAH eval rendezvous: ${MASTER_ADDR}:${NIAH_EVAL_MASTER_PORT}"
 
 # The main stage, then the NIAH stage, with the current task lists, lengths, output dir and PASS_ARGS.
 run_stages() {
+    if [[ ${METHOD} == nfini-attention && ${BENCHMARKS} == *long_ppl* ]]; then
+        echo "PPL data=${LONG_PPL_DATA} books=${LONG_PPL_BOOKS} docs=${LONG_PPL_DOCS}"
+    fi
     echo "Main benchmarks: ${BENCHMARKS}"
     echo "NIAH benchmarks: ${NIAH_BENCHMARKS}"
     # RULER / NIAH context lengths: the YAML's eval_max_seq_lengths (default 1K-32K).
@@ -312,7 +351,12 @@ for PASS in "${LONG_EVAL_PASSES[@]}"; do
         PASS_ARGS+=(--limit "${LONG_EVAL_LIMIT}")
     fi
     echo "===== Long-context pass: ${EVAL_OUTPUT_DIR} | ${PASS_OVERRIDES} ====="
-    run_stages
+    (
+        if [[ ${METHOD} == nfini-attention && ( ${EVAL_MAX_SEQ_LENGTHS} == '[524288]' || ${EVAL_MAX_SEQ_LENGTHS} == '[1048576]' ) ]]; then
+            export LONG_PPL_BOOKS=${NFINI_LONG_PPL_BOOKS_1M} LONG_PPL_DOCS=${NFINI_LONG_PPL_DOCS_1M} LONG_PPL_DATA=${NFINI_LONG_PPL_DATA_1M}
+        fi
+        run_stages
+    )
 done
 
 

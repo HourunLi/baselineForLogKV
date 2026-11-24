@@ -107,20 +107,20 @@ def check_storage(report):
 
 
 def check_babilong(report, lengths=None) -> None:
-    import datasets
+    from lla_bench.unused.long_eval_download import babi_utils
 
+    utils = babi_utils()
     for path, length in BABILONG:
         if lengths and length not in lengths:
             continue
         for split in (f"qa{i}" for i in range(1, 6)):
             try:
-                rows = len(datasets.load_dataset(path, name=length, split=split))
+                kwargs = {"dataset": path} if length == "256k" else {}
+                rows = len(utils.load_dataset(length=length, qa_split=split, **kwargs)[split])
                 report(rows > 0, f"BABILong {path} {length} {split}: {rows} rows")
             except Exception as error:  # noqa: BLE001
                 report(False, f"BABILong {path} {length} {split}: {type(error).__name__}: {str(error)[:200]}")
     if lengths:
-        from lla_bench.unused.long_eval_download import babi_utils
-        utils = babi_utils()
         for length in (n for n in lengths if n in ("512k", "1m")):
             for split in (f"qa{i}" for i in range(1, 6)):
                 try:
@@ -208,7 +208,7 @@ def check_infinitebench(report) -> None:
             report(False, f"InfiniteBench {task}: {type(error).__name__}: {str(error)[:800]}")
 
 
-def check_ppl(report, tokenizer: str | None, lengths=None, suites=None) -> None:
+def check_ppl(report, tokenizer: str | None, lengths=None, suites=None, *, require_book_count=True) -> None:
     spec = importlib.util.spec_from_file_location("long_ppl_utils", ROOT / "eval_tasks" / "long_ppl" / "long_ppl_utils.py")
     utils = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(utils)
@@ -225,9 +225,9 @@ def check_ppl(report, tokenizer: str | None, lengths=None, suites=None) -> None:
             checks.append(("LONG_PPL_DATA", utils.LONGEST_1M, "long_ppl 512k/1m shared documents", 1))
     if "books" in suites:
         if any(n in ("32k", "64k", "128k", "256k") for n in lengths):
-            checks.append(("LONG_PPL_BOOKS", utils.LONGEST_256K, "long_ppl_books <=256k", want))
+            checks.append(("LONG_PPL_BOOKS", utils.LONGEST_256K, "long_ppl_books <=256k", want if require_book_count else 1))
         if any(n in ("512k", "1m") for n in lengths):
-            checks.append(("LONG_PPL_BOOKS", utils.LONGEST_1M, "long_ppl_books 512k/1m shared documents", want))
+            checks.append(("LONG_PPL_BOOKS", utils.LONGEST_1M, "long_ppl_books 512k/1m shared documents", want if require_book_count else 1))
     for env, longest, label, need in checks:
         if not os.environ.get(env):
             report(False, f"{label}: {env} is not set")

@@ -55,13 +55,17 @@ def tokens(path, tokenizer):
                     yield tokenizer.encode(str(text).strip(), bos=False, eos=True)
 
 
+def raw_files(raw):
+    return (p for p in raw.rglob("*") if p.suffix in {".json", ".jsonl", ".parquet"}
+            and not any(s.startswith("litdata_") for s in p.relative_to(raw).parts[:-1]))
+
+
 def prepare(raw, destination, base, length, workers):
     from litdata import optimize
     from litdata.streaming import TokensLoader
     from .litgpt.tokenizer import Tokenizer
 
-    files = sorted(p for p in raw.rglob("*") if p.suffix in {".json", ".jsonl", ".parquet"}
-                   and not any(s.startswith("litdata_") for s in p.relative_to(raw).parts[:-1]))
+    files = sorted(raw_files(raw))
     if not files:
         raise FileNotFoundError(f"no ProLong source files in {raw}")
     if destination.exists() or destination.is_relative_to(raw):
@@ -89,9 +93,7 @@ def prepare(raw, destination, base, length, workers):
         built.rename(destination)
 
 
-def loader(cache, length, seed, workers):
-    from litdata import StreamingDataset, StreamingDataLoader, TokensLoader
-
+def check_chunks(cache):
     index = json.loads((cache / "index.json").read_text())
     if index["config"].get("compression"):
         raise ValueError(f"expected the uncompressed reference ProLong cache in {cache}")
@@ -101,6 +103,12 @@ def loader(cache, length, seed, workers):
         path = cache / chunk["filename"]
         if not path.is_file() or path.stat().st_size != chunk["chunk_bytes"]:
             raise ValueError(f"incomplete ProLong chunk: {path}")
+
+
+def loader(cache, length, seed, workers):
+    from litdata import StreamingDataset, StreamingDataLoader, TokensLoader
+
+    check_chunks(cache)
     dataset = StreamingDataset(input_dir=str(cache), item_loader=TokensLoader(block_size=length + 1),
                                shuffle=True, seed=seed)
     return StreamingDataLoader(dataset, batch_size=1, num_workers=workers, drop_last=True)

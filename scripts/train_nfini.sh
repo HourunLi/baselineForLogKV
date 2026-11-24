@@ -21,7 +21,7 @@ case "${1:-}" in
     prepare)
         if [[ ${VC_TASK_INDEX:-${NODE_RANK:-${GROUP_RANK:-0}}} != 0 ]]; then exit 0; fi
         exec "$python_bin" -m nfini_attention.train "$@" ;;
-    cpt) ;;
+    cpt|check) ;;
     *) echo "Usage: bash majob.sh --train {prepare|cpt} [--config FILE] [--steps N]" >&2; exit 2 ;;
 esac
 gpus=${GPUS_PER_NODE:-${MA_NUM_GPUS:-$("$python_bin" -c 'import torch; print(torch.cuda.device_count())')}}

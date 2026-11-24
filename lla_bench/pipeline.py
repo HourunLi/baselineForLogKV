@@ -8,14 +8,16 @@ import torch
 import torch.distributed as dist
 
 
-def main():
+def node_environment():
     nodes = int(os.environ.get("MA_NUM_HOSTS", os.environ.get("GROUP_WORLD_SIZE", "1")))
     rank = int(os.environ.get("VC_TASK_INDEX", os.environ.get("NODE_RANK", os.environ.get("GROUP_RANK", "0"))))
     if not 0 <= rank < nodes:
         raise ValueError(f"Invalid node rank {rank} for {nodes} nodes")
     env = dict(os.environ, MA_NUM_HOSTS=str(nodes), NODE_RANK=str(rank))
-    root = Path(env.get("LLA_STUDENT_ROOT") or "checkpoints/qwen8b-hattention").resolve()
-    env.update(LLA_STUDENT_ROOT=str(root), LLA_CHECKPOINT_DIR=str(root / "cpt"))
+    return nodes, rank, env
+
+
+def run_stages(nodes, rank, env, stages):
     if nodes > 1:
         addr = env.get("MASTER_ADDR")
         if env.get("MA_VJ_NAME"):
@@ -28,12 +30,10 @@ def main():
         dist.init_process_group("gloo", init_method=f"tcp://{addr}:{port}", rank=rank,
                                 world_size=nodes, timeout=timedelta(days=7))
     try:
-        for stage in ("convert", "prepare", "probe", "distill", "cpt", "eval"):
+        for stage, command, leader_only in stages:
             failed = False
-            if rank == 0 or stage in {"distill", "cpt", "eval"}:
+            if rank == 0 or not leader_only:
                 print(f"[pipeline node {rank}] {stage}", flush=True)
-                command = (["bash", "eval.sh", "configs/qwen8b_hattention_eval.yaml"] if stage == "eval"
-                           else ["bash", "scripts/train_hattention.sh", stage])
                 failed = subprocess.run(command, env=env).returncode != 0
             if nodes > 1:
                 status = torch.tensor(int(failed))
@@ -44,6 +44,16 @@ def main():
     finally:
         if nodes > 1:
             dist.destroy_process_group()
+
+
+def main():
+    nodes, rank, env = node_environment()
+    root = Path(env.get("LLA_STUDENT_ROOT") or "checkpoints/qwen8b-hattention").resolve()
+    env.update(LLA_STUDENT_ROOT=str(root), LLA_CHECKPOINT_DIR=str(root / "cpt"))
+    stages = [(s, ["bash", "scripts/train_hattention.sh", s], s in {"convert", "prepare", "probe"})
+              for s in ("convert", "prepare", "probe", "distill", "cpt")]
+    stages.append(("eval", ["bash", "eval.sh", "configs/qwen8b_hattention_eval.yaml"], False))
+    run_stages(nodes, rank, env, stages)
 
 
 if __name__ == "__main__":
