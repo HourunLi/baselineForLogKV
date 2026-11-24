@@ -6,7 +6,9 @@ import math
 import os
 import shutil
 import subprocess
+import socket
 import tempfile
+import uuid
 import time
 from contextlib import nullcontext
 from functools import partial
@@ -221,6 +223,25 @@ def train(cfg, base, cache, root, device, *, resume=None, stop_after=None, requi
     return out
 
 
+def check_storage_marker(path, *, publish=False, timeout=60):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if publish:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("xb") as marker:
+                    marker.write(b"nfini")
+            elif path.read_bytes() != b"nfini":
+                raise RuntimeError(f"Unexpected shared probe contents at {path}")
+            return
+        except FileNotFoundError as exc:
+            if time.monotonic() >= deadline:
+                action = "publish" if publish else "read"
+                raise RuntimeError(f"{socket.gethostname()} rank={os.getenv('RANK')} could not {action} "
+                                   f"{path} within {timeout}s; verify the shared output mount on both nodes") from exc
+            time.sleep(1)
+
+
 def check_job(base, raw, cache, root, device):
     from litdata import StreamingDataset, StreamingDataLoader, TokensLoader  # verify the training loader imports
     from safetensors import safe_open
@@ -241,16 +262,13 @@ def check_job(base, raw, cache, root, device):
     # Each host must read a file actually created by the leader on shared storage.
     marker = [None]
     if rank == 0:
-        root.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(dir=root, prefix=".check-", delete=False) as f:
-            f.write(b"nfini")
-            marker[0] = Path(f.name).name
+        marker[0] = f"storage-check-{uuid.uuid4().hex}"
+        check_storage_marker(root / marker[0], publish=True)
     if distributed():
         dist.broadcast_object_list(marker, src=0)
     try:
         if device.index == 0:
-            if (root / marker[0]).read_bytes() != b"nfini":
-                raise RuntimeError(f"Output is not shared across nodes: {root}")
+            check_storage_marker(root / marker[0])
         if distributed():
             dist.barrier()  # All hosts have read the marker before the leader can remove it.
         if device.index == 0:
