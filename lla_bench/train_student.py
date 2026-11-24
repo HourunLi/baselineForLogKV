@@ -232,11 +232,14 @@ def main():
     parent = root / ("distill" if stage == "cpt" else "convert")
     name = prolong.cache_name(base if stage == "prepare" else parent, config["context_length"])
     cache = cache_root / name
-    if not override and (stage == "prepare" or not cache.exists()):
+    if not override and not cache.exists():
         cache = private_cache / name
     if stage == "prepare":
         if world != 1:
             parser.error("data preparation is a single process")
+        if (cache / "index.json").is_file():
+            print(f"Using existing ProLong cache: {cache}", flush=True)
+            return
         prolong.prepare(raw, cache, base, config["context_length"], max(1, config["num_workers"]))
         return
     if not torch.cuda.is_available():

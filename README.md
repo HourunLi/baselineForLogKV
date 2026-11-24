@@ -6,7 +6,13 @@
 
 这一入口复用 Qwen3-8B-Base 的 tokenizer、embedding、36 层 RMSNorm 和 SwiGLU、最终 RMSNorm 与 LM head。每层替换一个原生 Mamba-2 HAttention mixer，宽度 4096、32 头、8 组、状态及值维度均为 128。转换后模型有 8,876,197,248 个参数，其中 mixer 有 2,195,420,544 个。新 mixer 独立初始化，输出投影从零开始。32K 有 16 个可训练读出级别，超长时复用当前 token 对最深已训练级别的读出权重。
 
-managed_cluster 默认使用已有的 `/opt/conda/envs/torch218/bin/python`，启动时打印实际解释器。共享环境直接运行仓库代码，无需安装项目或训练 extra。独立管理的训练环境可用 `LLA_TRAIN_PYTHON` 指定。参照栈为 PyTorch 2.11.0+cu128、Transformers 4.51.3 和 LitData 0.2.61。教师走 PyTorch SDPA，学生使用项目内的 PyTorch HAttention，多卡由 torchrun、NCCL 和 FSDP 分片。各阶段独立提交，成功才进入下一阶段。[服务器环境清单](docs/BASELINE_ENVIRONMENT.md)
+managed_cluster 默认使用已有的 `/opt/conda/envs/torch218/bin/python`，启动时打印实际解释器。共享环境直接运行仓库代码，无需安装项目或训练 extra。独立管理的训练环境可用 `LLA_TRAIN_PYTHON` 指定。参照栈为 PyTorch 2.11.0+cu128、Transformers 4.51.3 和 LitData 0.2.61。教师走 PyTorch SDPA，学生使用项目内的 PyTorch HAttention，多卡由 torchrun、NCCL 和 FSDP 分片。[服务器环境清单](docs/BASELINE_ENVIRONMENT.md)
+
+```bash
+bash majob.sh --pipeline
+```
+
+managed_cluster 提交一次作业，每个节点执行上面同一条命令。首节点转换权重、复用或准备 ProLong 缓存并做单卡 32K 试跑。随后所有节点依次参与蒸馏、32K CPT 和学生评测。阶段之间同步，任一节点返回错误，作业失败退出。多节点需要各节点可见的共享学生目录与数据目录，并开放额外的协调端口 `MASTER_PORT + 2`（默认 6002）。评测自动读取本次 `LLA_STUDENT_ROOT/cpt`。整条流水线从新的学生目录开始；已有成功产物时，可用下列单阶段入口从失败处继续。
 
 ```bash
 bash majob.sh --train convert

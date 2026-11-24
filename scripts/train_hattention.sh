@@ -18,6 +18,7 @@ for arg in "$@"; do
     if [[ $arg == --print-config ]]; then exec "$python_bin" -m lla_bench.train_student "$@"; fi
 done
 case "${1:-}" in
+    pipeline) exec "$python_bin" -m lla_bench.pipeline ;;
     convert|prepare|probe)
         if [[ ${VC_TASK_INDEX:-${NODE_RANK:-0}} != 0 ]]; then exit 0; fi
         exec "$python_bin" -m lla_bench.train_student "$@" ;;
