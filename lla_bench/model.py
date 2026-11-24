@@ -103,7 +103,7 @@ class Mixer(nn.Module):
         x, key, query = F.silu(self.conv1d(hist)).transpose(1, 2).split([h*d, g*s, g*s], -1)
         x = x.reshape(b, t, h, d).transpose(1, 2)
         def heads(tensor):
-            return tensor.reshape(b, t, g, s).transpose(1, 2).repeat_interleave(h//g, dim=1)
+            return tensor.reshape(b, t, g, s).transpose(1, 2)
         dt = F.softplus(dt + self.dt_bias).transpose(1, 2)
         log_decay = -self.A_log.float().exp()[None, :, None] * dt.float()
         lam = F.softplus(dl.reshape(b, t, h, c.trained_levels) * self.L).transpose(1, 2)
