@@ -187,6 +187,26 @@ def train(stage, config, parent, out, base, cache, device, world, rank, steps_ov
         export_checkpoint(out, cfg, state, parent, report)
 
 
+def reuse_checkpoint(out, config, expected):
+    if not out.exists():
+        return False
+    print(f"Verifying existing checkpoint: {out}", flush=True)
+    try:
+        report = checkpoint_report(out, verify_all=True)
+        for key, value in expected.items():
+            if report[key] != value:
+                raise ValueError(f"{key} differs from the requested run")
+        cfg = HConfig.read(out / "config.json", None)
+        if not cfg.student or cfg.block_size != config["context_length"]:
+            raise ValueError("student configuration differs from the requested conversion")
+        # Strictly check tensor names and shapes via CPU mmap without copying the weights.
+        HAttentionLM.load(out, cfg, "cpu", dtype=None)
+    except (OSError, KeyError, ValueError, RuntimeError, TypeError) as exc:
+        raise ValueError(f"Cannot reuse {out}: {exc}. Inspect the files or use a fresh LLA_STUDENT_ROOT.") from exc
+    print(f"Verified complete checkpoint, skipping {out.name}: {out}", flush=True)
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("stage", choices=("convert", "prepare", "distill", "probe", "cpt"))
@@ -208,8 +228,6 @@ def main():
         return
     stage = args.stage
     out = root / stage
-    if stage != "probe" and stage != "prepare" and out.exists():
-        raise FileExistsError(out)
     if args.steps is not None and (stage not in {"distill", "cpt"} or args.steps < 1):
         parser.error("--steps requires distill or cpt and a positive value")
     world = int(os.environ.get("WORLD_SIZE", "1"))
@@ -219,6 +237,8 @@ def main():
         if world != 1:
             parser.error("conversion is a single process")
         identity = base_identity(base)
+        if reuse_checkpoint(out, config, dict(stage=stage, seed=config["seed"], teacher_sha256=identity)):
+            return
         teacher = load_teacher(base)
         c = teacher.config
         if (c.num_hidden_layers, c.hidden_size, c.intermediate_size, c.num_attention_heads,
@@ -238,6 +258,7 @@ def main():
         if world != 1:
             parser.error("data preparation is a single process")
         if (cache / "index.json").is_file():
+            prolong.validate_cache(cache)
             print(f"Using existing ProLong cache: {cache}", flush=True)
             return
         prolong.prepare(raw, cache, base, config["context_length"], max(1, config["num_workers"]))
@@ -249,7 +270,16 @@ def main():
     if world > 1:
         dist.init_process_group("nccl")
     try:
-        train(stage, config, parent, out, base, cache, device, world, rank, args.steps)
+        skip = [False]
+        if rank == 0 and stage in {"distill", "cpt"} and out.exists():
+            expected = dict(stage=stage, recipe=config, actual_steps=args.steps or config[stage]["steps"],
+                            parent_manifest_sha256=file_hash(parent / "training.json"),
+                            cache_index_sha256=file_hash(cache / "index.json"))
+            skip[0] = reuse_checkpoint(out, config, expected)
+        if world > 1:
+            dist.broadcast_object_list(skip, src=0)
+        if not skip[0]:
+            train(stage, config, parent, out, base, cache, device, world, rank, args.steps)
     finally:
         if world > 1:
             dist.destroy_process_group()

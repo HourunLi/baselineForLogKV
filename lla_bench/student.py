@@ -67,12 +67,25 @@ def convert(teacher, context):
     return student
 
 
-def checkpoint_report(folder):
+def checkpoint_report(folder, *, verify_all=False):
     report = json.loads((folder / "training.json").read_text())
-    for name, digest in report["files_sha256"].items():
+    files = report["files_sha256"]
+    if verify_all:
+        index = folder / "model.safetensors.index.json"
+        required = {"config.json", "tokenizer.json", "tokenizer_config.json"}
+        if index.exists():
+            required.add(index.name)
+            required.update(json.loads(index.read_text())["weight_map"].values())
+        else:
+            required.add("model.safetensors")
+        if not required.issubset(files) or set(files) != set(report["file_stats"]):
+            raise ValueError(f"incomplete checkpoint manifest: {folder}")
+    for name, digest in files.items():
+        if Path(name).name != name:
+            raise ValueError(f"invalid checkpoint asset name: {name}")
         path = folder / name
         st = path.stat()
-        if [st.st_size, st.st_mtime_ns] != report["file_stats"][name] and file_hash(path) != digest:
+        if (verify_all or [st.st_size, st.st_mtime_ns] != report["file_stats"][name]) and file_hash(path) != digest:
             raise ValueError(f"checkpoint asset changed since export: {path}")
     return report
 

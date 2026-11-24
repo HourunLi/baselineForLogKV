@@ -89,8 +89,7 @@ def prepare(raw, destination, base, length, workers):
         built.rename(destination)
 
 
-def loader(cache, length, seed, workers):
-    from litdata import StreamingDataset, StreamingDataLoader, TokensLoader
+def validate_cache(cache):
 
     index = json.loads((cache / "index.json").read_text())
     if index["config"].get("compression"):
@@ -101,6 +100,12 @@ def loader(cache, length, seed, workers):
         path = cache / chunk["filename"]
         if not path.is_file() or path.stat().st_size != chunk["chunk_bytes"]:
             raise ValueError(f"incomplete ProLong chunk: {path}")
+
+
+def loader(cache, length, seed, workers):
+    from litdata import StreamingDataset, StreamingDataLoader, TokensLoader
+
+    validate_cache(cache)
     dataset = StreamingDataset(input_dir=str(cache), item_loader=TokensLoader(block_size=length + 1),
                                shuffle=True, seed=seed)
     return StreamingDataLoader(dataset, batch_size=1, num_workers=workers, drop_last=True)

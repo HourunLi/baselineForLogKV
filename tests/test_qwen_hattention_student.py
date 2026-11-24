@@ -80,3 +80,31 @@ def test_qwen_transfer_training_export_and_streaming(tmp_path):
         checkpoint_report(final)
     with pytest.raises(FileExistsError):
         export_checkpoint(final, student.config, student.state_dict(), base, {})
+
+
+def test_reuse_requires_complete_matching_checkpoint(tmp_path):
+    import os
+    from lla_bench.train_student import reuse_checkpoint
+
+    cfg = HConfig(16, 2, 1, 32, 1, 8, 8, 1, 4, 1e-6, False, True,
+                  trained_levels=6, block_size=32, student=True, mlp_width=48)
+    model = HAttentionLM(cfg)
+    for name in ("tokenizer.json", "tokenizer_config.json"):
+        (tmp_path / name).write_text("{}")
+    out = tmp_path / "convert"
+    expected = dict(stage="convert", seed=42, teacher_sha256={"teacher": "test"})
+    export_checkpoint(out, cfg, model.state_dict(), tmp_path, expected)
+    config = dict(context_length=32)
+    assert reuse_checkpoint(out, config, expected)
+    with pytest.raises(ValueError, match="seed differs"):
+        reuse_checkpoint(out, config, {**expected, "seed": 123})
+    weight = out / "model.safetensors"
+    st = weight.stat()
+    data = weight.read_bytes()
+    weight.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+    os.utime(weight, ns=(st.st_atime_ns, st.st_mtime_ns))
+    with pytest.raises(ValueError, match="asset changed"):
+        reuse_checkpoint(out, config, expected)
+    weight.unlink()
+    with pytest.raises(ValueError, match="Cannot reuse"):
+        reuse_checkpoint(out, config, expected)
