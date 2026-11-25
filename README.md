@@ -39,6 +39,8 @@ export PROLONG_DATA=/workspace/longcontext/prolong/data
 (cd mamba2 && bash diag.sh data.py --tokenizer_dir "${QWEN_BASE:-/workspace/checkpoints/Qwen/Qwen3-8B-Base}" --data_dir "$PROLONG_DATA" --context_length 32768)
 ```
 
+训练启动器在每个节点启动 torchrun 前试写一条 TensorBoard 标量。启用日志且试写失败时，启动器使用当前 torch218 解释器安装 `tensorboard>=2.14` 并重新试写。离线环境若缺少该依赖，可在 `mamba2/exp/cpt.yaml` 中设置 `enable_tensorboard: false`，训练指标仍会写入 `training_metrics.jsonl`。
+
 ## 评测和对照
 
 ```bash

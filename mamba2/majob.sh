@@ -120,6 +120,42 @@ echo "🔗 Eval rendezvous: ${MASTER_ADDR}:${EVAL_MASTER_PORT}"
 echo "🔗 NIAH rendezvous: ${MASTER_ADDR}:${NIAH_MASTER_PORT}"
 
 set -e
+CONFIG_FILE=${1:-exp/cpt.yaml}
+ENABLE_TENSORBOARD=$("${PYTHON_BIN}" - "${CONFIG_FILE}" <<'PY_CONFIG'
+import sys
+from demo import _load_yaml_config
+from utils import expand_env_vars
+
+config = expand_env_vars(_load_yaml_config(sys.argv[1], ""))
+print("false" if config.get("enable_tensorboard") is False else "true")
+PY_CONFIG
+)
+
+check_tensorboard() {
+    "${PYTHON_BIN}" - <<'PY_TENSORBOARD'
+from tempfile import TemporaryDirectory
+from lightning.fabric.loggers import TensorBoardLogger
+
+# Probe the actual Lightning backend, including writer initialization. Merely
+# importing tensorboard does not validate its package metadata/dependencies.
+with TemporaryDirectory(prefix="logkv-tensorboard-") as root:
+    logger = TensorBoardLogger(root_dir=root, name="preflight")
+    logger.experiment.add_scalar("preflight", 0, 0)
+    logger.experiment.close()
+PY_TENSORBOARD
+}
+
+if [ "${ENABLE_TENSORBOARD}" = "true" ]; then
+    if ! check_tensorboard >/dev/null 2>&1; then
+        echo "Installing the missing TensorBoard backend with ${PYTHON_BIN} and checking the writer again."
+        "${PYTHON_BIN}" -m pip install "tensorboard>=2.14" || {
+            echo "TensorBoard install failed. For an offline job set enable_tensorboard: false in ${CONFIG_FILE}." >&2
+            exit 1
+        }
+        check_tensorboard
+    fi
+fi
+
 exec "${PYTHON_BIN}" -m torch.distributed.run \
     --nnodes="${NUM_NODES}" --nproc_per_node="${GPUS_PER_NODE}" --node_rank="${NODE_RANK}" \
-    --master_addr="${MASTER_ADDR}" --master_port="${TRAIN_MASTER_PORT}" demo.py --config "${1:-exp/cpt.yaml}"
+    --master_addr="${MASTER_ADDR}" --master_port="${TRAIN_MASTER_PORT}" demo.py --config "${CONFIG_FILE}"
