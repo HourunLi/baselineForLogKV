@@ -111,3 +111,5 @@ def export_checkpoint(out, cfg, state, tokenizer_dir, report):
         report["file_stats"] = {p.name: [p.stat().st_size, p.stat().st_mtime_ns] for p in folder.iterdir()}
         (folder / "training.json").write_text(json.dumps(report, indent=2))
         folder.rename(out)
+        print(f"[checkpoint] saved stage={report.get('stage')} steps={report.get('actual_steps', 0)} "
+              f"path={out.resolve()}", flush=True)
