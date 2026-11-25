@@ -23,9 +23,9 @@ def stages(args):
     lists = yaml.safe_load((CONFIGS / "tasks.yaml").read_text())
     native_main, native_niah = lists["main"], lists["niah"]
     selected = args.lengths.lower()
-    ultra_only = set(selected.replace(" ", ",").split(",")) <= {"512k", "1m"}
+    ultra_only = {name for name in selected.replace(",", " ").split()} <= {"512k", "1m"}
     include_main = args.main if args.main is not None else not ultra_only
-    suites = args.suites or ("ruler,babilong,books,longbench2" if ultra_only else "")
+    suites = args.suites or ("ruler,babilong,ppl,books,turns,longbench2" if ultra_only else "")
     rows = []
 
     def add(folder, tasks, overrides, lengths, limit, optional=()):

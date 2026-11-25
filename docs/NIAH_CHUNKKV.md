@@ -29,6 +29,6 @@
 - 完整运行先跑原生 32K 主线的 49 个主入口及 20 个 NIAH 入口。主线 NIAH 按参考使用 1K–32K 六个长度。
 - 长度阶段按 32K、64K、128K、256K、512K、1M 分开，窗口均预留 1024，默认 YaRN 倍数为 1、2、4、8、16、32，32K 关闭缩放。每任务最多 100 条，主线已覆盖的 32K 项按参考计划去重。
 - 各档支持 RULER、BABILong QA1–5、LongBench v2、多轮 NIAH、单点长文 PPL 和书籍 PPL 曲线。RULER 从 256K 起移除 SQuAD，512K/1M 使用参考的扩展生成协议。InfiniteBench 到 256K。书籍曲线各点预测末尾 4096 tokens。LongBench v2 使用各档截断上限，实际输入可短于档位。
-- 单独选 512K/1M 时，默认只跑 RULER、BABILong、books、LongBench v2。可用 `--suites ruler,babilong,ppl,books,turns,longbench2` 显式选全。显式指定的任务遵循上游必跑规则；完整默认清单中缺数据的可选任务会记录跳过原因，比较时核对实际结果中的任务和样本。
+- 单独选 512K/1M 时，默认运行 RULER、BABILong、单点 PPL、书籍 PPL、多轮 NIAH 和 LongBench v2。显式指定的任务遵循上游必跑规则；完整默认清单中缺数据的可选任务会记录跳过原因，比较时核对实际结果中的任务和样本。
 - 使用参考的离线数据与 tokenizer，按任务设置 `HF_HOME`（或 `CHUNKKV_HF_CACHE`）、`BABILONG_DIR`、`LONGBENCH2_DIR`、`INFINITEBENCH_DIR`、`LONG_PPL_DATA`、`LONG_PPL_BOOKS`、`LONG_PPL_DOCS` 和可选的 `RULER_DATASET_CACHE_DIR`。预生成 RULER 缓存沿用参考源文件指纹。参考数据协议
 - 从仓库根执行 `python -m chunkkv.niah --help`。用 `--print-config` 在没有 GPU 和权重时审阅计划。每个阶段的输出目录独立，例如 `long1m/main` 和 `long1m/niah`。结果保留参考的任务分数、逐请求 KV 明细、首 token 延时、吞吐量与 CUDA 峰值。对同一阶段的两个结果可运行 `python -m chunkkv.compare_results A.json B.json` 核对实际输入与协议。
