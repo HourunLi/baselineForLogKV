@@ -1,5 +1,8 @@
 """One managed_cluster process per node coordinates the existing training and evaluation launchers."""
 import os
+import shutil
+import tempfile
+import uuid
 import subprocess
 from datetime import timedelta
 from pathlib import Path
@@ -24,6 +27,51 @@ def remaining_stages(root, cpt_steps=None):
     return ("convert", "prepare", "probe", "distill", "cpt", "eval")
 
 
+def check_shared_root(root, rank, nodes):
+    # Checking an existing directory cannot distinguish identical node-local copies.
+    token = [uuid.uuid4().hex if rank == 0 else None]
+    dist.broadcast_object_list(token, src=0)
+    marker = root / (".visibility-" + token[0])
+    error = None
+    if rank == 0:
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            marker.write_text(token[0])
+        except OSError as exc:
+            error = str(exc)
+    dist.barrier()
+    try:
+        if marker.read_text() != token[0]:
+            error = f"unexpected marker contents in {root}"
+    except OSError as exc:
+        error = error or str(exc)
+    errors = [None] * nodes
+    dist.all_gather_object(errors, error)
+    if rank == 0 and marker.exists():
+        marker.unlink()
+    if any(errors):
+        raise SystemExit(f"Checkpoint directory {root} must be shared; node errors: {errors}")
+
+
+def import_legacy(root, legacy, checkpoint_name):
+    from .student import checkpoint_report
+
+    for name in (checkpoint_name, "distill", "convert"):
+        destination = root / name
+        if destination.exists():
+            return
+        source = legacy / name
+        if source.exists():
+            print(f"[resume] Copying existing checkpoint from {source} to {destination}", flush=True)
+            root.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=root) as tmp:
+                copy = Path(tmp) / name
+                shutil.copytree(source, copy, copy_function=shutil.copyfile)
+                checkpoint_report(copy, verify_all=True)
+                copy.rename(destination)
+            return
+
+
 def main():
     nodes = int(os.environ.get("MA_NUM_HOSTS", os.environ.get("GROUP_WORLD_SIZE", "1")))
     rank = int(os.environ.get("VC_TASK_INDEX", os.environ.get("NODE_RANK", os.environ.get("GROUP_RANK", "0"))))
@@ -33,7 +81,11 @@ def main():
     configured_root = env.get("LLA_STUDENT_ROOT")
     if not configured_root:
         configured_root = yaml.safe_load(Path("configs/qwen8b_hattention_train.yaml").read_text())["output_root"]
-    root = Path(configured_root).resolve()
+    legacy = Path(configured_root).resolve()
+    root = legacy
+    if (not env.get("LLA_STUDENT_ROOT") and (env.get("MA_JOB_DIR") or env.get("MA_VJ_NAME")) and
+            configured_root == "checkpoints/qwen8b-hattention"):
+        root = Path("/workspace/baselineForLogKV") / configured_root
     if rank == 0:
         print(f"[resume] Student checkpoint root: {root}", flush=True)
     steps = int(env["LLA_PIPELINE_CPT_STEPS"]) if "LLA_PIPELINE_CPT_STEPS" in env else None
@@ -54,9 +106,13 @@ def main():
         dist.init_process_group("gloo", init_method=f"tcp://{addr}:{port}", rank=rank,
                                 world_size=nodes, timeout=timedelta(days=7))
     try:
+        if nodes > 1:
+            check_shared_root(root, rank, nodes)
         decision = [None, None]
         if rank == 0:
             try:
+                if root != legacy:
+                    import_legacy(root, legacy, checkpoint.name)
                 decision[0] = ("eval",) if env.get("LLA_PIPELINE_EVAL_ONLY") == "1" else remaining_stages(root, steps)
             except Exception as exc:
                 decision[1] = str(exc)

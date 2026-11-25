@@ -83,3 +83,21 @@ def test_resume_from_latest_checkpoint(tmp_path, monkeypatch, stage, remaining):
     (out / "model.safetensors").unlink()
     with pytest.raises(ValueError, match="Cannot reuse"):
         remaining_stages(tmp_path)
+
+
+def test_import_existing_node_local_checkpoint(tmp_path):
+    from lla_bench.pipeline import import_legacy
+    from lla_bench.student import checkpoint_report, export_checkpoint
+    from lla_bench.model import HConfig, HAttentionLM
+
+    cfg = HConfig(16, 2, 1, 32, 1, 8, 8, 1, 4, 1e-6, False, True,
+                  trained_levels=6, block_size=32, student=True, mlp_width=48)
+    for name in ("tokenizer.json", "tokenizer_config.json"):
+        (tmp_path / name).write_text("{}")
+    src = tmp_path / "local"
+    dst = tmp_path / "shared"
+    name = "cpt-10-steps"
+    export_checkpoint(src / name, cfg, HAttentionLM(cfg).state_dict(), tmp_path,
+                      dict(stage="cpt", actual_steps=10))
+    import_legacy(dst, src, name)
+    assert checkpoint_report(src / name) == checkpoint_report(dst / name, verify_all=True)

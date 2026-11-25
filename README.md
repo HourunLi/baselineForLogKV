@@ -12,6 +12,8 @@ managed_cluster 默认使用已有的 `/opt/conda/envs/torch218/bin/python`，�
 bash majob.sh --pipeline
 ```
 
+managed_cluster 的默认 pipeline 将学生权重保存在共享目录 `/workspace/baselineForLogKV/checkpoints/qwen8b-hattention/`。多节点启动时先检查其他节点能否读取节点 0 新写的文件。旧作业目录中仍可见的相应 CPT、蒸馏或转换产物按阶段优先级迁入共享目录并核对文件摘要，原文件保留。
+
 验证保存与恢复时可运行 `bash majob.sh --pipeline --cpt-steps 10`。试跑复用已有蒸馏产物，权重保存到学生目录的 `cpt-10-steps/`，评测结果写入结果目录的同名子目录。再次提交相同命令会校验试跑产物并从评测继续。
 
 重跑同一条 `bash majob.sh --pipeline` 即可。节点 0 优先校验 CPT 的文件哈希、权重结构、训练配置与完成步数，通过后所有节点直接进入评测。仅有完整蒸馏产物时，检查训练缓存后继续 CPT；已有产物校验失败时保留目录并报错。学生输出目录应在所有节点可见。
