@@ -3,11 +3,12 @@ import json
 import os
 import sys
 
-from lla_bench.eval import _task_manager
+from lla_bench.eval import _task_manager, _trace_hf_cache_resolution
 from lla_bench.unused import check_long_eval_data as checks
 from .long_eval_plan import LENGTHS
 
 
+@_trace_hf_cache_resolution()
 def main(main_tasks, passes):
     problems = []
 
