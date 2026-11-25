@@ -185,7 +185,7 @@ out.mkdir(parents=True, exist_ok=True)
 with tempfile.NamedTemporaryFile(dir=out):
     pass
 print(f"Eval runtime {sys.executable} | torch={torch.__version__} | CUDA={torch.version.cuda} | "
-      + " ".join(f"{p}={version(p)}" for p in ("transformers", "lm-eval", "datasets", "xlsxwriter")))
+      + " ".join(f"{p}={version(p)}" for p in ("transformers", "lm-eval", "datasets")))
 PY_RUNTIME
     print_only=1
 fi

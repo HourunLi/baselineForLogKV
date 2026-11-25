@@ -1832,7 +1832,7 @@ def main(
                             ppl_df.to_excel(writer, sheet_name="loglikelihood", index=False)
                     print(f"📊 推理时延指标已保存至 {inference_xlsx}")
                 except Exception as e:
-                    raise RuntimeError(f"推理时延 xlsx 保存失败: {inference_xlsx}") from e
+                    print(f"⚠️ 推理时延 xlsx 保存失败: {e}")
 
                 # 🌟 第五步：生成 CSV 结果文件
                 extract_results_to_csv(results, benchmark, output_file)
