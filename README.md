@@ -13,7 +13,7 @@ bash majob.sh configs/niah/qwen8b.yaml
 
 `log_kv_*` 参数给出缓存预算的参照。SnapKV 使用原始 Base 权重；`--backend logkv` 和 `--backend dense` 默认使用 `save_path` 中的 gamma CPT 对照权重。如需测量 SnapKV 相对同权重 dense 的质量变化，在同一份 YAML 后加 `--backend dense --model /path/to/Qwen3-X-Base`。各次结果记录实际 checkpoint 的 SHA-256。单卡试跑可加 `--no-main --lengths 32k --suites ruler --limit 1`。结果写到 `outputs/niahlogkv/<规模>/<参考配置>/<后端>/`。共享数据路径沿用 `HF_HOME`、`LONG_PPL_DATA`、`LONG_PPL_BOOKS`、`BABILONG_DIR`、`LONGBENCH2_DIR` 和 `INFINITEBENCH_DIR`。
 
-原生主线含 49 个 main 入口及 20 个 NIAH 入口。长文本各档按参考计划去重，每任务默认最多 100 条，窗口为目标长度加 1024。各档包含 RULER、BABILong、多轮 NIAH、LongBench v2、长文 PPL 和书籍 PPL 曲线。InfiniteBench 到 256K，RULER SQuAD 到 128K。可选数据缺失及显式选择任务的行为继承参考评测器。仅选 512K/1M 时按参考默认跑 RULER、BABILong、书籍 PPL、LongBench v2。源码与许可证见 `pyramidkv/_vendor/niahlogkv/SOURCE.json`。参考配置
+原生主线含 49 个 main 入口及 20 个 NIAH 入口。长文本各档按参考计划去重，每任务默认最多 100 条，窗口为目标长度加 1024。各档包含 RULER、BABILong、多轮 NIAH、LongBench v2、长文 PPL 和书籍 PPL 曲线。InfiniteBench 到 256K，RULER SQuAD 到 128K。可选数据缺失及显式选择任务的行为继承参考评测器。仅选 512K/1M 时默认跑 RULER、BABILong、单点 PPL、书籍 PPL、多轮 NIAH 和 LongBench v2。源码与许可证见 `pyramidkv/_vendor/niahlogkv/SOURCE.json`。参考配置
 
 本入口采用流式 SnapKV。每层、每个 KV 头的容量相同。每个块先用保留下来的历史执行因果注意力；超出容量时，用当前块末尾最多 8 个查询给历史键打分，再保留池化分数最高的历史和最近 8 个位置。单 token 解码使用当前查询。已淘汰的 KV 无法参与后续块的注意力。原始一次性 prefill、decode 追加的 SnapKV 仍可用下方旧入口复现。
 
