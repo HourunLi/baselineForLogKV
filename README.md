@@ -18,17 +18,16 @@
 下列命令从分支根目录执行。managed_cluster 入口沿用 torch218、CUDA 12.8、NCCL 和原离线缓存环境。已备好的 Qwen3-8B-Base 可以是 LitGPT 的 `lit_model.pth` 或 HF safetensors。转换在新目录创建文件并记录随机种子和复制参数数量。
 
 ```bash
-export QWEN_BASE=/workspace/checkpoints/Qwen/Qwen3-8B-Base
-export MAMBA2_INIT=/workspace/checkpoints/Qwen/Mamba2-8B-init
-export MAMBA2_CKPT=/workspace/ckpt-mamba2/qwen8b-32k
-(cd mamba2 && bash diag.sh prepare.py --base "$QWEN_BASE" --out "$MAMBA2_INIT")
-bash majob.sh --train
+# 首次初始化（在准备节点执行一次）
+bash majob.sh --prepare
+# 在 GPU 作业上训练，成功后接完整评测
+bash majob.sh --train && bash eval.sh
 ```
 
 若缺底模，在联网准备节点运行下列命令。下载器固定本次解析到的 revision，按普通文件写入，核对大小及可用的 LFS SHA256。训练和评测本身离线运行。已有本地权重时可跳过下载。
 
 ```bash
-(cd mamba2 && bash diag.sh fetch_qwen.py --revision 49e3418fbbbca6ecbdf9608b4d22e5a407081db4 --out "$QWEN_BASE")
+(cd mamba2 && bash diag.sh fetch_qwen.py --revision 49e3418fbbbca6ecbdf9608b4d22e5a407081db4 --out "${QWEN_BASE:-/workspace/checkpoints/Qwen/Qwen3-8B-Base}")
 ```
 
 CPT 沿用 8B LogKV 的 ProLong 数据路径、32768 上下文、全局 batch 128、micro batch 1、2000 步和初始学习率 5e-6。完整预算为 8,388,608,000 个输入 token，实际完成步数、吞吐和耗时以 checkpoint 元数据和 `training_metrics.jsonl` 为准。训练全模型，使用 Fabric FSDP、activation checkpointing 和分块交叉熵。这是与原实验配平的起始配方，其收敛和长上下文质量有待实测。[训练配置](mamba2/exp/cpt.yaml)
@@ -37,7 +36,7 @@ CPT 沿用 8B LogKV 的 ProLong 数据路径、32768 上下文、全局 batch 12
 
 ```bash
 export PROLONG_DATA=/workspace/longcontext/prolong/data
-(cd mamba2 && bash diag.sh data.py --tokenizer_dir "$QWEN_BASE" --data_dir "$PROLONG_DATA" --context_length 32768)
+(cd mamba2 && bash diag.sh data.py --tokenizer_dir "${QWEN_BASE:-/workspace/checkpoints/Qwen/Qwen3-8B-Base}" --data_dir "$PROLONG_DATA" --context_length 32768)
 ```
 
 ## 评测和对照
@@ -74,9 +73,9 @@ bash majob.sh --plan
 ```bash
 (cd mamba2 && bash diag.sh unused/fetch_long_eval_data.py \
   --lengths 32k,64k,128k,256k,512k,1m --longbench2 --infinitebench --ruler-essays --ruler-cwe \
-  --ppl-data "$LONG_PPL_DATA" --ppl-books-data "$LONG_PPL_BOOKS" --tokenizer "$QWEN_BASE")
+  --ppl-data "$LONG_PPL_DATA" --ppl-books-data "$LONG_PPL_BOOKS" --tokenizer "${QWEN_BASE:-/workspace/checkpoints/Qwen/Qwen3-8B-Base}")
 (cd mamba2 && bash diag.sh unused/check_long_eval_data.py \
-  --lengths 32k,64k,128k,256k,512k,1m --tokenizer "$QWEN_BASE")
+  --lengths 32k,64k,128k,256k,512k,1m --tokenizer "${QWEN_BASE:-/workspace/checkpoints/Qwen/Qwen3-8B-Base}")
 ```
 
 结果写入 `MAMBA2_RESULTS` 或配置中的独立目录，按长度分子目录。JSON 记录样本、精确依赖版本、模型配置、参数量、TTFT、prefill/decode/forward 吞吐和 CUDA allocated/reserved 峰值。SSD 和卷积状态按实际分配计入 `cache_budget.persistent_cache_bytes`。KV 槽位压缩率记为 `null`；内存对照可使用双方的持久字节和 CUDA 峰值。固定 `LOGKV_EVAL_PREFILL_CHUNK` 与 `LOGKV_EVAL_MLP_CHUNK` 并记录实际设置，便于解释速度差异；Mamba-2 的外层 prefill 分块默认 2048。[参考指标口径](mamba2/docs/evaluation-metrics.md)

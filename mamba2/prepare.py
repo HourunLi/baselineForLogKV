@@ -107,8 +107,11 @@ def convert(config, base, out, seed):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--base", type=Path)
-    p.add_argument("--out", type=Path)
+    from utils import expand_env_vars
+    config_path = Path(__file__).resolve().parent / "exp" / "cpt.yaml"
+    paths = expand_env_vars(yaml.safe_load(config_path.read_text()))
+    p.add_argument("--base", type=Path, default=paths["tokenizer_dir"])
+    p.add_argument("--out", type=Path, default=paths["ckpt_dir"])
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--count-only", action="store_true")
     args = p.parse_args()
@@ -116,8 +119,6 @@ def main():
     if args.count_only:
         report = counts(*specifications(cfg))
     else:
-        if not args.base or not args.out:
-            p.error("--base and --out are required for conversion")
         report = convert(cfg, args.base, args.out, args.seed)
     print(json.dumps(report, indent=2))
 
