@@ -56,7 +56,7 @@ if phase == 'train' and not os.environ.get('TEST_NO_ARTIFACT'):
     output = tmp_path / "run"
 
     def launch(*args):
-        result = subprocess.run(["bash", str(pipeline.BASELINE_ROOT / "majob.sh"), "--output", str(output), *args],
+        result = subprocess.run(["bash", str(pipeline.BASELINE_ROOT / "scripts/hybrid_csa_majob.sh"), "--output", str(output), *args],
                                 cwd=tmp_path, capture_output=True, text=True)
         return result, [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
     return launch, output
@@ -321,9 +321,10 @@ def test_more_gpus_than_the_recipe_uses_train_on_fewer_and_evaluate_on_all(launc
 
 
 def test_prepared_data_lives_beside_the_results_and_survives_reruns(clean_env, tmp_path):
-    output = Path("/workspace/ckpt-logKV/hybrid-csa4")
+    output = Path("/workspace/ckpt-logKV/hybrid-csa4").resolve()
     plan = pipeline.build_plan(pipeline.parse_args([]))
-    assert plan["output"] == str(output) and plan["training"]["tokenized_dir"] == str(output / "tokenized")
+    assert Path(plan["output"]).resolve() == output
+    assert Path(plan["training"]["tokenized_dir"]).resolve() == output / "tokenized"
     assert "tokenized" not in pipeline.RESULT_DIRECTORIES
     for inside in ("train/tokens", "eval", "."):
         with pytest.raises(ValueError, match="must not overlap tokenized_dir|must be separate directories"):

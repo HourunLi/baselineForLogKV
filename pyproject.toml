@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "semanticlogkv-hybrid-csa-baseline"
+name = "qwen3-v4flash-baseline"
 version = "0.1.0"
-description = "Learned CSA4 and Full attention on Qwen3-1.7B-Base under the fixed SemanticLogKV protocol"
+description = "DeepSeek V4-Flash attention on Qwen3-8B-Base with the niahLogKV evaluation protocol"
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "PyYAML>=6.0",
@@ -32,9 +32,10 @@ eval = ["lm-eval[ruler,longbench,ifeval]>=0.4.11", "datasets>=4.8.4", "pyarrow>=
 chunkkv-train = ["litdata>=0.2.59", "tensorboard>=2.14", "datasets>=2.18", "pandas>=1.9", "pyarrow>=15.0.2"]
 
 [tool.setuptools.packages.find]
-include = ["chunkkv*", "hybrid_csa*"]
+include = ["deepseek4*", "chunkkv*", "hybrid_csa*"]
 
 [tool.setuptools.package-data]
+"deepseek4._vendor.niahlogkv" = ["LICENSE.md", "SOURCE.json", "eval_tasks/**/*.yaml", "eval_tasks/**/*.md", "eval_tasks/**/*.json"]
 "chunkkv._vendor.semanticlogkv" = ["LICENSE.md", "README.md", "SOURCE.json"]
 "hybrid_csa._vendor.semanticlogkv" = ["LICENSE.md", "README.md", "SOURCE.json"]
 

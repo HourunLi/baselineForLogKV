@@ -1,0 +1,14 @@
+base_checkpoint_dir: /workspace/checkpoints/Qwen/Qwen3-8B-Base
+data_dir: /workspace/longcontext/prolong/data
+tokenized_dir: /workspace/ckpt-logKV/deepseek4/data-4096
+output_dir: /workspace/ckpt-logKV/deepseek4/adapt-001
+context_length: 4096
+micro_batch_size: 1
+num_workers: 2
+prepare_workers: 8
+seed: 3407
+# Pilot recipe. Quality and the required token budget must be measured.
+steps: 160
+learning_rate: 0.0001
+eval_lengths: [32k, 64k, 128k, 256k, 512k, 1m]
+long_limit: 100
