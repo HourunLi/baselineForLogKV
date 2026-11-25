@@ -1,0 +1,13 @@
+arch_name: Qwen/Qwen3-8B-Base
+checkpoint_dir: ${MAMBA2_CKPT:-/workspace/ckpt-mamba2/qwen8b-32k}
+tokenizer_dir: ${QWEN_BASE:-/workspace/checkpoints/Qwen/Qwen3-8B-Base}
+output_path: ${MAMBA2_RESULTS:-/workspace/ckpt-mamba2/eval-full}
+config_overrides:
+  block_size: 32768
+eval_main: true
+eval_lengths: [32k, 64k, 128k, 256k, 512k, 1m]
+limit: null
+long_limit: 100
+long_ppl_data: ${LONG_PPL_DATA:-}
+long_ppl_books: ${LONG_PPL_BOOKS:-}
+infinitebench_dir: ${INFINITEBENCH_DIR:-}

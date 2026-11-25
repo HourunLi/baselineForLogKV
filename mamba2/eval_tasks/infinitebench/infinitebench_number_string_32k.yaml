@@ -1,0 +1,11 @@
+# InfiniteBench Retr.Number (number_string) cut to 32k tokens.
+include: _infinitebench_common
+task: infinitebench_number_string_32k
+dataset_kwargs:
+  infinitebench_task: number_string
+  infinitebench_length: 32k
+generation_kwargs:
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 12
+  until: []

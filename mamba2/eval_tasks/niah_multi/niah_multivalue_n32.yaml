@@ -1,0 +1,10 @@
+task: niah_multivalue_n32
+include: _niah_multi.yaml
+dataset_kwargs:
+  num_needle_v: 32
+  tokens_to_generate: 512
+generation_kwargs:
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 512
+  until: []

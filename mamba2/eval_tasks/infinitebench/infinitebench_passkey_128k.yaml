@@ -1,0 +1,11 @@
+# InfiniteBench Retr.PassKey (passkey) cut to 128k tokens.
+include: _infinitebench_common
+task: infinitebench_passkey_128k
+dataset_kwargs:
+  infinitebench_task: passkey
+  infinitebench_length: 128k
+generation_kwargs:
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 6
+  until: []
