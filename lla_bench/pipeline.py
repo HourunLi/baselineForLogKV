@@ -5,13 +5,15 @@ from datetime import timedelta
 from pathlib import Path
 
 import torch
+import yaml
 import torch.distributed as dist
 
 
 def remaining_stages(root):
     for stage, remaining in (("cpt", ("eval",)), ("distill", ("prepare", "cpt", "eval"))):
-        if (root / stage).exists():
-            import yaml
+        if not (root / stage).exists():
+            print(f"[resume] Missing checkpoint directory: {root / stage}", flush=True)
+        else:
             from .train_student import reuse_checkpoint
 
             config = yaml.safe_load(Path("configs/qwen8b_hattention_train.yaml").read_text())
@@ -27,7 +29,12 @@ def main():
     if not 0 <= rank < nodes:
         raise ValueError(f"Invalid node rank {rank} for {nodes} nodes")
     env = dict(os.environ, MA_NUM_HOSTS=str(nodes), NODE_RANK=str(rank))
-    root = Path(env.get("LLA_STUDENT_ROOT") or "checkpoints/qwen8b-hattention").resolve()
+    configured_root = env.get("LLA_STUDENT_ROOT")
+    if not configured_root:
+        configured_root = yaml.safe_load(Path("configs/qwen8b_hattention_train.yaml").read_text())["output_root"]
+    root = Path(configured_root).resolve()
+    if rank == 0:
+        print(f"[resume] Student checkpoint root: {root}", flush=True)
     env.update(LLA_STUDENT_ROOT=str(root), LLA_CHECKPOINT_DIR=str(root / "cpt"))
     if nodes > 1:
         addr = env.get("MASTER_ADDR")
