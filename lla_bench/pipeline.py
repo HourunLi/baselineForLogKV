@@ -8,6 +8,19 @@ import torch
 import torch.distributed as dist
 
 
+def remaining_stages(root):
+    for stage, remaining in (("cpt", ("eval",)), ("distill", ("prepare", "cpt", "eval"))):
+        if (root / stage).exists():
+            import yaml
+            from .train_student import reuse_checkpoint
+
+            config = yaml.safe_load(Path("configs/qwen8b_hattention_train.yaml").read_text())
+            expected = dict(stage=stage, recipe=config, actual_steps=config[stage]["steps"])
+            if reuse_checkpoint(root / stage, config, expected):
+                return remaining
+    return ("convert", "prepare", "probe", "distill", "cpt", "eval")
+
+
 def main():
     nodes = int(os.environ.get("MA_NUM_HOSTS", os.environ.get("GROUP_WORLD_SIZE", "1")))
     rank = int(os.environ.get("VC_TASK_INDEX", os.environ.get("NODE_RANK", os.environ.get("GROUP_RANK", "0"))))
@@ -27,10 +40,19 @@ def main():
         port = int(env.get("MASTER_PORT", "6000")) + 2
         dist.init_process_group("gloo", init_method=f"tcp://{addr}:{port}", rank=rank,
                                 world_size=nodes, timeout=timedelta(days=7))
-    stages = ("convert", "prepare", "probe", "distill", "cpt", "eval")
-    if env.get("LLA_PIPELINE_EVAL_ONLY") == "1":
-        stages = ("eval",)
     try:
+        decision = [None, None]
+        if rank == 0:
+            try:
+                decision[0] = ("eval",) if env.get("LLA_PIPELINE_EVAL_ONLY") == "1" else remaining_stages(root)
+            except Exception as exc:
+                decision[1] = str(exc)
+        if nodes > 1:
+            dist.broadcast_object_list(decision, src=0)
+        stages, error = decision
+        if error is not None:
+            raise SystemExit(f"Cannot resume pipeline: {error}")
+        print(f"[pipeline node {rank}] remaining stages: {', '.join(stages)}", flush=True)
         for stage in stages:
             failed = False
             if rank == 0 or stage in {"distill", "cpt", "eval"}:

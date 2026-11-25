@@ -48,3 +48,27 @@ def test_two_node_pipeline(tmp_path, failure):
     assert (tmp_path / "stages.0").read_text().splitlines() == leader
     other = tmp_path / "stages.1"
     assert (other.read_text().splitlines() if other.exists() else []) == leader[3:]
+
+
+@pytest.mark.parametrize("stage,remaining", [("cpt", ("eval",)), ("distill", ("prepare", "cpt", "eval"))])
+def test_resume_from_latest_checkpoint(tmp_path, monkeypatch, stage, remaining):
+    import yaml
+    from lla_bench.pipeline import remaining_stages
+    from lla_bench.model import HConfig, HAttentionLM
+    from lla_bench.student import export_checkpoint
+
+    cfg = HConfig(16, 2, 1, 32, 1, 8, 8, 1, 4, 1e-6, False, True,
+                  trained_levels=6, block_size=32, student=True, mlp_width=48)
+    recipe = {"context_length": 32, stage: {"steps": 1200}}
+    monkeypatch.chdir(tmp_path)
+    Path("configs").mkdir()
+    Path("configs/qwen8b_hattention_train.yaml").write_text(yaml.safe_dump(recipe))
+    for name in ("tokenizer.json", "tokenizer_config.json"):
+        (tmp_path / name).write_text("{}")
+    out = tmp_path / stage
+    export_checkpoint(out, cfg, HAttentionLM(cfg).state_dict(), tmp_path,
+                      dict(stage=stage, recipe=recipe, actual_steps=1200))
+    assert remaining_stages(tmp_path) == remaining
+    (out / "model.safetensors").unlink()
+    with pytest.raises(ValueError, match="Cannot reuse"):
+        remaining_stages(tmp_path)
