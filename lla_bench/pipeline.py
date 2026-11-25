@@ -27,13 +27,26 @@ def main():
         port = int(env.get("MASTER_PORT", "6000")) + 2
         dist.init_process_group("gloo", init_method=f"tcp://{addr}:{port}", rank=rank,
                                 world_size=nodes, timeout=timedelta(days=7))
+    stages = ("convert", "prepare", "probe", "distill", "cpt", "eval")
+    if env.get("LLA_PIPELINE_EVAL_ONLY") == "1":
+        stages = ("eval",)
     try:
-        for stage in ("convert", "prepare", "probe", "distill", "cpt", "eval"):
+        for stage in stages:
             failed = False
             if rank == 0 or stage in {"distill", "cpt", "eval"}:
                 print(f"[pipeline node {rank}] {stage}", flush=True)
                 command = (["bash", "eval.sh", "configs/qwen8b_hattention_eval.yaml"] if stage == "eval"
                            else ["bash", "scripts/train_hattention.sh", stage])
+                if stage == "eval" and nodes > 1:
+                    check = subprocess.run([*command[:2], "--preflight", *command[2:]], env=env,
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                    failures = [None] * nodes
+                    dist.all_gather_object(failures, check.stdout[-3000:] if check.returncode else None)
+                    if any(message is not None for message in failures):
+                        for node, message in enumerate(failures):
+                            if rank == 0 and message is not None:
+                                print(f"[eval preflight node {node}] failed\n{message}", flush=True)
+                        raise SystemExit("Evaluation preflight failed")
                 failed = subprocess.run(command, env=env).returncode != 0
             if nodes > 1:
                 status = torch.tensor(int(failed))

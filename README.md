@@ -12,6 +12,9 @@ managed_cluster 默认使用已有的 `/opt/conda/envs/torch218/bin/python`，�
 bash majob.sh --pipeline
 ```
 
+已有完整 CPT 时，在每个节点使用相同的共享学生根目录（其下包含 `cpt/`），运行 `LLA_STUDENT_ROOT=/path/to/student bash majob.sh --eval-student` 直接进入评测。多节点 pipeline 会先汇总各节点的评测启动检查，节点 0 打印失败节点及其输出。
+
+
 managed_cluster 提交一次作业，每个节点执行上面同一条命令。首节点转换权重、复用或准备 ProLong 缓存并做单卡 32K 试跑。随后所有节点依次参与蒸馏、32K CPT 和学生评测。阶段之间同步，任一节点返回错误，作业失败退出。多节点需要各节点可见的共享学生目录与数据目录，并开放额外的协调端口 `MASTER_PORT + 2`（默认 6002）。评测自动读取本次 `LLA_STUDENT_ROOT/cpt`。整条流水线从新的学生目录开始；已有成功产物时，可用下列单阶段入口从失败处继续。
 
 ```bash

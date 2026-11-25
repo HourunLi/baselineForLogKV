@@ -3,6 +3,11 @@
 set -e
 cd "$(dirname "$0")"
 source scripts/hattention_env.sh
+preflight=0
+if [[ ${1:-} == --preflight ]]; then
+    preflight=1
+    shift
+fi
 print_only=0
 if [[ ${1:-} == --print-config ]]; then
     print_only=1
@@ -170,6 +175,21 @@ for file in config.json tokenizer.json tokenizer_config.json; do
         exit 1
     fi
 done
+if [[ -f "${SAVE_DIR}/model.safetensors.index.json" ]]; then
+    "${PYTHON_BIN}" - "${SAVE_DIR}" <<'PY_SHARDS'
+import json, sys
+from pathlib import Path
+folder = Path(sys.argv[1])
+shards = set(json.loads((folder / "model.safetensors.index.json").read_text())["weight_map"].values())
+if not shards:
+    raise SystemExit(f"Empty checkpoint shard index in {folder}")
+for name in sorted(shards):
+    path = folder / name
+    if not path.is_file() or not path.stat().st_size:
+        raise SystemExit(f"Missing checkpoint shard: {path}")
+PY_SHARDS
+fi
+
 mkdir -p "${EVAL_OUTPUT_DIR}"
 # Detect GPUs visible to this job (including CUDA_VISIBLE_DEVICES); managed_cluster
 # allocation is an upper bound. GPUS_PER_NODE may explicitly select fewer GPUs.
@@ -234,6 +254,8 @@ echo "Expected world size: ${LITGPT_EXPECTED_WORLD_SIZE} (= ${NUM_NODES} nodes x
 echo "Main eval rendezvous: ${MASTER_ADDR}:${MAIN_EVAL_MASTER_PORT}"
 echo "NIAH eval rendezvous: ${MASTER_ADDR}:${NIAH_EVAL_MASTER_PORT}"
 
+
+if [[ ${preflight} == 1 ]]; then exit 0; fi
 
 task_metadata() {
     "${PYTHON_BIN}" -c 'import json, sys; print(json.dumps(dict(pretrained=sys.argv[1], max_seq_lengths=json.loads(sys.argv[2]))))' "$1" "${EVAL_MAX_SEQ_LENGTHS}"
