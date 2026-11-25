@@ -153,3 +153,68 @@ def test_litgpt_base_to_trained_checkpoint_and_eval(tmp_path, monkeypatch):
     turns = [r for r in lm.gen_metrics if r["request_type"] == "generate_turns"]
     assert [r["turn_index"] for r in turns] == [1, 2]
     assert lm.compression_metrics[-1]["turns"] == 2
+
+
+def test_strict_full_plan():
+    from deepseek4.evaluate import full_stages
+
+    rows = full_stages({"long_limit": 100})
+    assert len(rows) == 14
+    assert all(row["optional"] == [] for row in rows)
+    assert len(rows[0]["benchmark"].split(",")) == 49
+    assert len(rows[1]["benchmark"].split(",")) == 20
+    assert rows[0]["limit"] is None
+    assert {"long_ppl_1m", "long_ppl_books_1m", "niah_turns_1m", "longbench2_1m", "babilong_1m"} == set(
+        rows[-2]["benchmark"].split(",")
+    )
+    assert "infinitebench_256k" in rows[8]["benchmark"].split(",")
+
+
+def test_platform_rendezvous(monkeypatch):
+    from deepseek4.evaluate import launch_args
+
+    monkeypatch.setenv("MA_NUM_HOSTS", "2")
+    monkeypatch.setenv("MA_VJ_NAME", "job")
+    monkeypatch.setenv("MA_TASK_NAME", "worker")
+    monkeypatch.setenv("VC_TASK_INDEX", "1")
+    monkeypatch.setenv("MASTER_PORT", "6000")
+    monkeypatch.setenv("MASTER_ADDR", "localhost")
+    args = launch_args(8, 3)
+    assert args[args.index("--master_addr") + 1] == "job-worker-0.job"
+    assert args[args.index("--master_port") + 1] == "6003"
+
+
+def test_all_handoff_and_stop(tmp_path, monkeypatch):
+    import pytest
+    from deepseek4 import pipeline
+
+    path = tmp_path / "experiment.yaml"
+    output = tmp_path / "trained"
+    monkeypatch.setattr(pipeline, "config", lambda _: {"output_dir": str(output), "long_limit": 100})
+    monkeypatch.setattr(pipeline, "gpu_count", lambda: 2)
+    for name in ("LONG_PPL_DATA", "LONG_PPL_BOOKS"):
+        monkeypatch.setenv(name, str(tmp_path / name))
+    calls = []
+
+    def run(cmd, check):
+        assert check
+        calls.append(cmd)
+
+    monkeypatch.setattr(pipeline.subprocess, "run", run)
+    pipeline.run("all", path)
+    assert len(calls) == 4
+    assert "deepseek4.preflight" in calls[0]
+    assert "--prepare" in calls[1]
+    assert "deepseek4.train" in calls[2] and "--prepare" not in calls[2]
+    assert calls[3][-3:] == ["--full", "--checkpoint", str(output)]
+
+    def fail(cmd, check):
+        run(cmd, check)
+        if "deepseek4.train" in cmd and "--prepare" not in cmd:
+            raise RuntimeError("train failed")
+
+    calls.clear()
+    monkeypatch.setattr(pipeline.subprocess, "run", fail)
+    with pytest.raises(RuntimeError, match="train failed"):
+        pipeline.run("all", path)
+    assert len(calls) == 3

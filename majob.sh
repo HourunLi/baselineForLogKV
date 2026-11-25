@@ -1,25 +1,28 @@
 #!/usr/bin/env bash
+# managed_cluster launches this script once on each node.
 set -euo pipefail
 cd "$(dirname "$0")"
+python_bin=${DEEPSEEK4_PYTHON:-/opt/conda/envs/torch218/bin/python}
+export PATH="/usr/local/cuda-12.8/bin:$PATH"
+export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:/usr/local/cuda-12.8/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export NCCL_IB_TIMEOUT=${NCCL_IB_TIMEOUT:-22} NCCL_NVLS_ENABLE=${NCCL_NVLS_ENABLE:-0}
+export NCCL_NET_PLUGIN=${NCCL_NET_PLUGIN:-none} NCCL_NET_GDR_LEVEL=${NCCL_NET_GDR_LEVEL:-2}
+export NCCL_MIN_NCHANNELS=${NCCL_MIN_NCHANNELS:-4} CUDA_DEVICE_MAX_CONNECTIONS=${CUDA_DEVICE_MAX_CONNECTIONS:-32}
+export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+
+# Set these before importing any HF library in the parent or torchrun workers.
+export HF_HOME=${DEEPSEEK4_HF_CACHE:-${HF_HOME:-/workspace/data/hf_cache}}
+export HF_DATASETS_CACHE="$HF_HOME/hf_cache" HF_EVALUATE_CACHE="$HF_HOME/evaluate"
+export HF_MODULES_CACHE="$HF_HOME/modules" HF_HUB_CACHE="$HF_HOME/hub" HUGGINGFACE_HUB_CACHE="$HF_HOME/hub"
+export RULER_CACHE_DIR="$HF_HOME/ruler_cache" NLTK_DATA="$HF_HOME/nltk_data"
+export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 HF_DATASETS_IN_MEMORY_MAX_SIZE=0 HF_DATASETS_TRUST_REMOTE_CODE=1
+export TOKENIZERS_PARALLELISM=false HF_ALLOW_CODE_EVAL=1
+export BABILONG_DIR=${BABILONG_DIR:-$HF_HOME/babilong} LONGBENCH2_DIR=${LONGBENCH2_DIR:-$HF_HOME/longbench2}
+
 mode=${1:-eval}
 if (( $# )); then shift; fi
-python_bin=${DEEPSEEK4_PYTHON:-/opt/conda/envs/torch218/bin/python}
 case "$mode" in
   eval) exec "$python_bin" -m deepseek4.evaluate "$@" ;;
-  prepare|train)
-    if [[ "$mode" == prepare ]]; then
-      nproc=1
-      set -- --prepare "$@"
-    else
-      nproc=${NPROC_PER_NODE:-${MA_NUM_GPUS:-$("$python_bin" -c 'import torch; print(torch.cuda.device_count())')}}
-      (( nproc > 0 )) || { echo "Training requires visible CUDA devices" >&2; exit 1; }
-    fi
-    nodes=${MA_NUM_HOSTS:-${NNODES:-1}}
-    rendezvous=(--standalone)
-    if (( nodes > 1 )); then
-      rendezvous=(--nnodes "$nodes" --node_rank "${VC_TASK_INDEX:-${NODE_RANK:?}}" --master_addr "${MASTER_ADDR:?}" --master_port "${MASTER_PORT:-6001}")
-    fi
-    exec "$python_bin" -m torch.distributed.run "${rendezvous[@]}" --nproc_per_node "$nproc" -m deepseek4.train "$@"
-    ;;
-  *) echo 'Usage: bash majob.sh {prepare|train|eval} [options]' >&2; exit 2 ;;
+  all|check|prepare|train) exec "$python_bin" -m deepseek4.pipeline "$mode" "$@" ;;
+  *) echo 'Usage: bash majob.sh {all|check|prepare|train|eval} [options]' >&2; exit 2 ;;
 esac

@@ -12,16 +12,26 @@
 
 共享路径的默认值见 [8B 配置](../configs/deepseek4/qwen8b.yaml)。在仓库根运行。覆盖路径可设置 `DEEPSEEK4_BASE_CHECKPOINT_DIR`、`DEEPSEEK4_DATA_DIR`、`DEEPSEEK4_TOKENIZED_DIR` 和 `DEEPSEEK4_OUTPUT_DIR`。训练/评测作业可分别用 `DEEPSEEK4_PYTHON` 选择解释器。底模目录应含原始 `lit_model.pth`、`model_config.yaml` 和 tokenizer。小规模本地检查使用 `python -m deepseek4.evaluate --print-config`。
 
+完整作业从每个节点运行同一条命令：
+
+```bash
+bash majob.sh all
+```
+
+`all` 先在每节点用 torch218 检查 CUDA BF16、NCCL、依赖、Base/tokenizer、训练语料和离线评测资产。它通过 lm-eval 加载原生主线任务，检查 RULER 的背景与问答文件、BABILong 的各长度/分组、LongBench v2 的各子集和 InfiniteBench 的文件与首条样本。主节点按 Qwen tokenizer 验证 PPL 文档可达到对应长度，复用参考评测器的文档选择缓存。检查成功后准备数据并训练。所有训练进程等待 rank 0 写完权重及指纹，评测进程验证指纹后进入主线和六档评测。任何阶段失败都会以非零状态退出。单独运行 `bash majob.sh check` 可在目标环境执行相同的训练前检查。
+
+8B 参考 YAML 直接读取 `LONG_PPL_DATA` 和 `LONG_PPL_BOOKS`。请保留对照作业导出的两项实际路径，并沿用同一份 `LONG_PPL_DOCS` 和 `LONG_PPL_CONCAT` 设置。单点 PPL 和书籍 PPL 在 512K/1M 档都需要能提供 1,048,576 tokens 的来源。完整模式若缺少这些变量或读不到足够长的文档，会在训练前报错。InfiniteBench 沿用显式目录、普通文件和 Hub 缓存的参考查找顺序。8B 长档参考配置
+
 1. `bash majob.sh prepare` 在共享目录准备 ProLong 语料。复用时验证 tokenizer、训练长度、原始文件清单与缓存索引。多节点只由全局 rank 0 执行准备。
 2. `bash majob.sh train` 在独立的新输出目录创建训练结果。多卡采用逐块 FSDP、FP32 主权重、BF16 混合精度和激活重计算。加载冻结的原始 Qwen 教师，学生采用 next-token CE、教师 logits KL 与 indexer 辅助交叉熵。Indexer 用所选压缩条目的注意力质量构造监督，在全部可见候选上归一化。每步用一个各 rank 独立分片的 microbatch，实际消耗记录于 `steps.jsonl`。
 3. 默认 4096 长度、160 步、每卡每步 1 条，8 卡共 5,242,880 个 token，是首次检查适配是否有效的试训预算。不能据此预判 4.25B 新参数能恢复多少质量。可在独立配置里更改训练长度、步数、语料和输出路径。改变训练长度时使用独立的预处理目录。
 4. 完成后写入 `lit_model.pth`、`model_config.yaml` 和 `training.json`。清单记录 Base 文件指纹、语料、版本、模型布局、训练步数、token 和训练 GPU 小时。训练中断可能留下部分文件；正式评测要求有完成清单和匹配的模型 SHA-256。
 
-多节点需要共享资产和输出目录，使用 `MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MASTER_ADDR`、`MASTER_PORT` 与 `MA_NUM_GPUS`。也支持 `NNODES`、`NODE_RANK` 与 `NPROC_PER_NODE`。训练与评测分开启动。评测使用现有 torch218 环境，检查 lm-eval 0.4.11 和 datasets 4.8.4。
+多节点需要共享资产和输出目录，使用 `MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MASTER_ADDR`、`MASTER_PORT` 与 `MA_NUM_GPUS`。也支持 `NNODES`、`NODE_RANK` 与 `NPROC_PER_NODE`。一体化入口使用独立的 torchrun 进程依次启动各阶段，managed_cluster 环境可由作业名、任务名及主节点索引推导主机地址。单节点使用 standalone，多节点各阶段使用不同 rendezvous 端口。评测使用现有 torch218 环境，检查 lm-eval 0.4.11 和 datasets 4.8.4。
 
 ## 评测
 
-`bash majob.sh eval` 加载训练清单指定的模型，按顺序运行 49 个 main 入口、20 个 NIAH 入口及六个长度的去重任务。源协议为 niahLogKV@0f4396b。支持 RULER、BABILong、LongBench v2、多轮 NIAH、单点 PPL、书籍 PPL 曲线以及至 256K 的 InfiniteBench。RULER SQuAD 至 128K。多轮 NIAH 在同一次会话共享缓存。各长档窗口为目标长度 + 1024，默认逐档 YaRN 和每任务最多 100 条。完整运行和单选超长档的默认套件与参考入口一致。默认可选数据缺失时参考评测器输出原因；显式指定相应套件时应准备其数据。
+`bash majob.sh eval` 加载训练清单指定的模型，按顺序运行 49 个 main 入口、20 个 NIAH 入口及六个长度的去重任务。源协议为 niahLogKV@0f4396b。支持 RULER、BABILong、LongBench v2、多轮 NIAH、单点 PPL、书籍 PPL 曲线以及至 256K 的 InfiniteBench。RULER SQuAD 至 128K。多轮 NIAH 在同一次会话共享缓存。各长档窗口为目标长度 + 1024，默认逐档 YaRN 和每任务最多 100 条。完整运行和单选超长档的默认套件与参考入口一致。单独使用 `eval` 时保留参考入口的可选任务规则。一体化入口调用 `eval --full`，此时所有受支持的套件均必跑。
 
 ```bash
 bash majob.sh eval --print-config
@@ -48,6 +58,6 @@ bash majob.sh eval --no-main --lengths 512k,1m --suites ruler,turns,ppl,books,ba
 
 `python -m deepseek4.budget` 可复算。默认 prefill 每次 256 tokens，可用 `DEEPSEEK4_PREFILL_CHUNK` 调整。Indexer 按 query 和历史块分块计算，保持全历史检索。长上下文仍需大量计算，本实现使用 PyTorch 参考算子，尚无目标 GPU 吞吐结果。
 
-本地验证覆盖 36 层 meta 模型精确参数量、小模型因果性、整段/分块/单 token 等价、重置、indexer 和压缩器梯度、真实 LitGPT 加载与教师蒸馏、训练权重回读和参考评测器请求路径，以及六档任务计划。未在目标 CUDA 平台训练 8B 主体或执行 32K–1M 真实任务。
+本地验证覆盖 36 层 meta 模型精确参数量、小模型因果性、整段/分块/单 token 等价、重置、indexer 和压缩器梯度、真实 LitGPT 加载与教师蒸馏、训练权重回读和参考评测器请求路径，以及六档任务计划。另在 torch 2.11.0 的 CPU/Gloo 双进程小模型上完成一次 FSDP 更新、逐层 BF16 权重导出及严格回读。开发机运行 Python 3.11；平台记录为 Python 3.10.20、torch 2.11.0+cu128，两侧的 pyarrow 与 jsonargparse 小环境版本也不同。开发机测试环境缺少 LongBench v1 的 fuzzywuzzy 与 rouge，目标环境将使用自己的包在训练前检查。未在目标 CUDA 平台训练 8B 主体或执行 32K–1M 真实任务。
 
 评测快照的来源、许可证、包名和模型接入修改记录见 [SOURCE.json](../deepseek4/_vendor/niahlogkv/SOURCE.json)。数据准备与文件指纹代码复用本仓库 `9af3958` 的 Hybrid CSA，遵循根目录 Apache-2.0 许可证，迁入私有命名空间，并对不完整的预处理目录报错。

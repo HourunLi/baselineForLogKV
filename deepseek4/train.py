@@ -2,6 +2,7 @@
 
 import argparse
 from dataclasses import asdict, fields
+from datetime import timedelta
 import importlib.metadata
 import json
 import os
@@ -82,22 +83,23 @@ def load_models(cfg, device, distributed):
 
 
 def save_model(model, directory, rank, distributed):
-    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, FullStateDictConfig, StateDictType
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
     from contextlib import nullcontext
 
     state = {}
     for i, block in enumerate(model.transformer.h):
+        # Copy while the gathered storage is live. This avoids FSDP's full
+        # state-dict offload hook and bounds gathering to one block at a time.
         context = (
-            FSDP.state_dict_type(
-                block, StateDictType.FULL_STATE_DICT, FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-            )
+            FSDP.summon_full_params(block, recurse=False, writeback=False, rank0_only=True)
             if distributed
             else nullcontext()
         )
         with context:
-            part = block.state_dict()
-        if rank == 0:
-            state.update({f"transformer.h.{i}.{k}": t.to("cpu", torch.bfloat16) for k, t in part.items()})
+            if rank == 0:
+                module = block.module if distributed else block
+                for key, tensor in module.state_dict().items():
+                    state[f"transformer.h.{i}.{key}"] = tensor.to(device="cpu", dtype=torch.bfloat16, copy=True)
     if rank == 0:
         for name in ("transformer.wte", "transformer.ln_f", "lm_head"):
             state[name + ".weight"] = model.get_submodule(name).weight.detach().cpu()
@@ -113,7 +115,7 @@ def train(cfg):
     torch.cuda.set_device(device)
     multi = world > 1
     if multi:
-        dist.init_process_group("nccl")
+        dist.init_process_group("nccl", timeout=timedelta(hours=2))
     try:
         torch.manual_seed(cfg["seed"])
         output = Path(cfg["output_dir"])
@@ -191,6 +193,8 @@ def train(cfg):
                 with (output / "steps.jsonl").open("a") as f:
                     f.write(json.dumps(metrics) + "\n")
         elapsed = time.monotonic() - started
+        opt.zero_grad(set_to_none=True)
+        del opt, teacher
         save_model(model, output, rank, multi)
         if not rank:
             (output / "model_config.yaml").write_bytes((base / "model_config.yaml").read_bytes())
@@ -201,6 +205,10 @@ def train(cfg):
                 weight_sha256=sha256(output / "lit_model.pth"),
             )
             (output / "training.json").write_text(json.dumps(manifest, indent=2))
+        # Other nodes may otherwise start verifying the checkpoint while rank 0
+        # is still writing and fingerprinting the full BF16 state on shared storage.
+        if multi:
+            dist.barrier()
     finally:
         if multi:
             dist.destroy_process_group()

@@ -4,16 +4,19 @@
 
 训练、权重、任务、预算统计和验证范围见[实现与运行说明](docs/DEEPSEEK4.md)。原 Hybrid-CSA4 项目的平台入口已移至 `scripts/hybrid_csa_majob.sh`，其运行说明见 [Hybrid CSA4](docs/HYBRID_CSA.md)。
 
+在已有的 8B `niahLogKV` 平台作业环境中，切到 `deepseek4` 分支，每节点运行一次：
+
 ```bash
-# 无模型、无 GPU，查看完整任务计划及静态缓存预算
-python -m deepseek4.evaluate --print-config
+bash majob.sh all
+```
+
+入口继承参照作业的 `LONG_PPL_DATA`、`LONG_PPL_BOOKS` 和其余离线数据设置，按顺序执行环境与数据检查、ProLong 准备、训练、32K 主线和 32K–1M 六档评测。完整模式要求全部受支持的套件，任一阶段失败即停止。默认训练目录为配置中的 `adapt-001`，再次训练时用 `DEEPSEEK4_OUTPUT_DIR` 指向新的共享目录。
+
+```bash
+# 仅查看完整任务计划，无需 GPU 或权重
+python -m deepseek4.evaluate --full --print-config
 python -m deepseek4.budget
 
-# 平台作业每节点执行一次，先准备语料，再运行适配
-bash majob.sh prepare
-bash majob.sh train
-
-# 先用一个小任务组冒烟，再执行原生主线与 32K–1M 六档
-bash majob.sh eval --no-main --lengths 32k --suites ruler --limit 1 --output /path/to/new-smoke
-bash majob.sh eval
+# 在平台上只检查环境与数据
+bash majob.sh check
 ```

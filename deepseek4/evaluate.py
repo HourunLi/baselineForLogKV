@@ -61,20 +61,70 @@ def stages(lengths, suites, main, limit, long_limit, yarn, niah_only=False):
     return rows
 
 
-def launch_args(nproc):
-    nodes = int(os.environ.get("MA_NUM_HOSTS", os.environ.get("NNODES", 1)))
+def full_stages(cfg):
+    rows = stages(
+        ",".join(reference.LENGTHS), ",".join(reference.SUITES), True, None, cfg["long_limit"], "per_length"
+    )
+    for row in rows:
+        row["optional"] = []
+    return rows
+
+
+def eval_versions():
+    versions = {
+        name: importlib.metadata.version(name)
+        for name in ("torch", "lm-eval", "datasets", "transformers", "tokenizers", "pyarrow")
+    }
+    if (versions["lm-eval"], versions["datasets"]) != ("0.4.11", "4.8.4"):
+        raise RuntimeError(f"Use the reference torch218 evaluation environment: {versions}")
+    return versions
+
+
+def gpu_count():
+    import torch
+
+    torch.cuda.init()
+    visible = torch.cuda.device_count()
+    available = min(visible, int(os.getenv("MA_NUM_GPUS") or visible))
+    selected = int(os.getenv("NPROC_PER_NODE") or os.getenv("GPUS_PER_NODE") or available)
+    if not 1 <= selected <= available:
+        raise ValueError(f"Requested {selected} GPUs, available {available} (visible {visible})")
+    return selected
+
+
+def node_count():
+    return int(os.getenv("MA_NUM_HOSTS") or os.getenv("NNODES") or os.getenv("GROUP_WORLD_SIZE") or 1)
+
+
+def launch_args(nproc, port_offset=0):
+    nodes = node_count()
     if nodes == 1:
         return ["--standalone", "--nproc_per_node", str(nproc)]
-    rank = os.environ.get("VC_TASK_INDEX") or os.environ["NODE_RANK"]
+    rank = int(os.getenv("VC_TASK_INDEX") or os.getenv("NODE_RANK") or os.environ["GROUP_RANK"])
+    addr = os.getenv("MASTER_ADDR")
+    if os.getenv("MA_VJ_NAME") and os.getenv("MA_TASK_NAME"):
+        job = os.environ["MA_VJ_NAME"]
+        addr = f"{job}-{os.environ['MA_TASK_NAME']}-{os.getenv('MA_MASTER_INDEX') or '0'}.{job}"
+    port = int(os.getenv("MASTER_PORT") or 6001) + port_offset
+    if (
+        not 0 <= rank < nodes
+        or not 1 <= port <= 65535
+        or not addr
+        or addr in ("localhost", "::1")
+        or addr.startswith("127.")
+    ):
+        raise ValueError(
+            f"Invalid multi-node rendezvous: nodes={nodes}, rank={rank}, address={addr}, port={port}"
+        )
     return [
         "--nnodes",
         str(nodes),
         "--node_rank",
-        rank,
+        str(rank),
         "--master_addr",
-        os.environ["MASTER_ADDR"],
+        addr,
         "--master_port",
-        os.environ.get("MASTER_PORT", "6001"),
+        str(port),
         "--nproc_per_node",
         str(nproc),
     ]
@@ -83,6 +133,11 @@ def launch_args(nproc):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", default=DEFAULT)
+    p.add_argument(
+        "--full",
+        action="store_true",
+        help="Require the native main line and every supported suite across all six lengths",
+    )
     p.add_argument("--checkpoint", type=Path)
     p.add_argument("--output", type=Path)
     p.add_argument("--lengths", default=os.getenv("EVAL_LENGTHS"))
@@ -105,7 +160,11 @@ def main():
     long_limit = cfg["long_limit"] if args.long_limit is None else args.long_limit
     if long_limit < 1:
         p.error("--long-limit must be positive")
-    rows = stages(lengths, suites, main_stage, args.limit, long_limit, args.yarn_mode, args.niah_only)
+    rows = (
+        full_stages(cfg)
+        if args.full
+        else stages(lengths, suites, main_stage, args.limit, long_limit, args.yarn_mode, args.niah_only)
+    )
     model = (args.checkpoint or Path(cfg["output_dir"])).resolve()
     tokenizer = Path(cfg["base_checkpoint_dir"])
     output = (args.output or model / "evaluation").resolve()
@@ -128,33 +187,26 @@ def main():
                 raise ValueError(f"Incompatible Base/tokenizer file: {name}")
         if sha256(model / "model_config.yaml") != record["base"]["model_config.yaml"]:
             raise ValueError("Checkpoint architecture file changed")
-        import torch
-
-        nproc = int(os.getenv("NPROC_PER_NODE") or os.getenv("MA_NUM_GPUS") or torch.cuda.device_count())
-        if nproc < 1:
-            raise RuntimeError("CUDA evaluation requires at least one device")
+        nproc = gpu_count()
+        worker_env = dict(os.environ, LITGPT_EXPECTED_WORLD_SIZE=str(nproc * node_count()))
         for i in range(len(rows)):
             subprocess.run(
                 [
                     sys.executable,
                     "-m",
                     "torch.distributed.run",
-                    *launch_args(nproc),
+                    *launch_args(nproc, port_offset=3 + i),
                     "-m",
                     "deepseek4.evaluate",
                     *sys.argv[1:],
                     "--stage",
                     str(i),
                 ],
+                env=worker_env,
                 check=True,
             )
         return
-    versions = {
-        p: importlib.metadata.version(p)
-        for p in ("torch", "lm-eval", "datasets", "transformers", "tokenizers", "pyarrow")
-    }
-    if (versions["lm-eval"], versions["datasets"]) != ("0.4.11", "4.8.4"):
-        raise RuntimeError(f"Use the reference torch218 evaluation environment: {versions}")
+    versions = eval_versions()
     row = rows[args.stage]
     folder = output / row["folder"]
     os.environ["EVAL_OPTIONAL_TASKS"] = ",".join(row["optional"])
