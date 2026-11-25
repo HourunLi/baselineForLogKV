@@ -22,7 +22,7 @@ def check(cfg, rank):
     from ._vendor.niahlogkv.eval_tasks.long_ppl import long_ppl_utils as ppl
     from ._vendor.niahlogkv.eval_tasks.babilong_long import babilong_long_utils as babi
     from ._vendor.niahlogkv.litgpt import Tokenizer, ruler_patch
-    from .data import DATA_MANIFEST, validate_prepared_data, corpus_files
+    from .data import DATA_MANIFEST, validate_prepared_data, corpus_files, reference_data
     import nltk
 
     versions = eval_versions()
@@ -62,7 +62,9 @@ def check(cfg, rank):
         if not (base / name).is_file():
             raise FileNotFoundError(base / name)
     Tokenizer(base)
-    if (Path(cfg["tokenized_dir"]) / DATA_MANIFEST).is_file():
+    if cfg.get("training_data") == "niahlogkv_chunks":
+        print(f"Reference ProLong: {reference_data(cfg)}", flush=True)
+    elif (Path(cfg["tokenized_dir"]) / DATA_MANIFEST).is_file():
         validate_prepared_data(cfg, verify_source=True)
     elif not corpus_files(Path(cfg["data_dir"]))[0]:
         raise FileNotFoundError(f"No ProLong training documents in {cfg['data_dir']}")

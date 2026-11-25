@@ -71,8 +71,8 @@ def test_training_signal():
     torch.manual_seed(4)
     model = tiny()
     ids = torch.randint(79, (2, 132))
-    lm, kd, idx = model.training_loss(ids[:, :-1], ids[:, 1:], torch.randn(2, 131, 24))
-    (lm + kd + idx).backward()
+    lm, idx = model(ids[:, :-1], targets=ids[:, 1:], loss_chunk_size=64)
+    (lm + idx).backward()
     for name, p in model.named_parameters():
         assert p.grad is not None and torch.isfinite(p.grad).all(), name
     assert model.transformer.h[1].attn.iq.weight.grad.norm() > 0
@@ -90,7 +90,7 @@ def test_protocol():
 
 
 def test_litgpt_base_to_trained_checkpoint_and_eval(tmp_path, monkeypatch):
-    """Exercise the same LitGPT weight names, distillation, save and scoring path on CPU."""
+    """Exercise the same LitGPT weight names, full-model CPT, save and scoring path on CPU."""
     import json
     from dataclasses import asdict
     import pytest
@@ -130,16 +130,13 @@ def test_litgpt_base_to_trained_checkpoint_and_eval(tmp_path, monkeypatch):
     g, layout = tiny().g, (0, 4, 128)
     monkeypatch.setattr(train, "Model", lambda config: Model(config, g, layout))
     monkeypatch.setattr(train, "LAYOUT", layout)
-    model, teacher = train.load_models({"base_checkpoint_dir": base, "context_length": 256}, "cpu", False)
+    model = train.load_model({"base_checkpoint_dir": base, "context_length": 256}, "cpu", False)
     ids = torch.randint(79, (1, 135))
-    with torch.autocast("cpu", dtype=torch.bfloat16):
-        with torch.no_grad():
-            target = teacher(ids[:, :-1])
-        losses = model.training_loss(ids[:, :-1], ids[:, 1:], target)
+    losses = model(ids[:, :-1], targets=ids[:, 1:], loss_chunk_size=64)
     sum(losses).backward()
-    opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad])
+    opt = train.optimizer(model, {"learning_rate": 5e-6, "weight_decay": 0.1})
     opt.step()
-    assert all(".attn." in n for n, p in model.named_parameters() if p.requires_grad)
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters())
     train.save_model(model, trained, 0, False)
     monkeypatch.setattr(evaluator, "Model", lambda config: Model(config, g, layout))
     lm = evaluator.LogKVLM(str(trained), device="cpu", tokenizer_dir=str(base))
@@ -218,3 +215,60 @@ def test_all_handoff_and_stop(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="train failed"):
         pipeline.run("all", path)
     assert len(calls) == 3
+
+
+def test_reference_training_budget():
+    import pytest
+    from deepseek4 import train
+
+    cfg = train.config(train.DEFAULT)
+    assert train.accumulation_steps(cfg, 8) == 16
+    assert cfg["steps"] * cfg["global_batch_size"] * cfg["context_length"] == 8_388_608_000
+    assert train.learning_rate(cfg, 0) == pytest.approx(5e-8)
+    assert train.learning_rate(cfg, 99) == train.learning_rate(cfg, 100) == 5e-6
+    assert train.learning_rate(cfg, 1999) == pytest.approx(3.000001367e-6, abs=1e-15)
+    with pytest.raises(ValueError):
+        train.accumulation_steps(cfg, 3)
+
+
+def test_reference_chunks_and_resume(tmp_path):
+    import pytest
+
+    litdata = pytest.importorskip("litdata")
+    from litdata.streaming.cache import Cache
+    from deepseek4.data import make_loader, reference_chunks
+
+    (tmp_path / "tokenizer.json").write_bytes(b"test tokenizer")
+    cfg = dict(
+        base_checkpoint_dir=tmp_path,
+        data_dir=tmp_path,
+        tokenized_dir=None,
+        training_data="niahlogkv_chunks",
+        seed=42,
+        context_length=8,
+        micro_batch_size=1,
+        num_workers=0,
+    )
+    directory = reference_chunks(cfg)
+    directory.mkdir()
+    writer = Cache(str(directory), chunk_size=36, item_loader=litdata.TokensLoader(block_size=9))
+    for i in range(32):
+        writer[i] = torch.arange(i * 9, i * 9 + 9)
+    writer.done()
+    writer.merge()
+    loader, record = make_loader(cfg)
+    assert record["path"] == str(directory)
+    batches = iter(loader)
+    first = next(batches)
+    next(batches)
+    resumed, _ = make_loader(cfg)
+    resumed.load_state_dict(loader.state_dict())
+    torch.testing.assert_close(next(iter(resumed)), next(batches))
+
+    reference = litdata.StreamingDataset(
+        str(directory), item_loader=litdata.TokensLoader(block_size=9), shuffle=True, seed=42
+    )
+    reference_loader = litdata.StreamingDataLoader(
+        reference, batch_size=1, num_workers=0, pin_memory=True, drop_last=True
+    )
+    torch.testing.assert_close(next(iter(reference_loader)), first)

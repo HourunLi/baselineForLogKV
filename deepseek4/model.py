@@ -80,7 +80,11 @@ class Model(nn.Module):
             aux = aux + loss
         return self.transformer.ln_f(x), aux / max(1, self.layout.count(4))
 
-    def forward(self, idx, input_pos=None, input_pos_maxp1=None, lm_head_start=0):
+    def forward(
+        self, idx, input_pos=None, input_pos_maxp1=None, lm_head_start=0, *, targets=None, loss_chunk_size=1024
+    ):
+        if targets is not None:
+            return self.training_loss(idx, targets, loss_chunk_size)
         start = 0
         if input_pos is not None:
             start = self.transformer.h[0].attn.kv_cache.pos
@@ -93,20 +97,8 @@ class Model(nn.Module):
         h, _ = self.hidden(idx, start, input_pos is not None)
         return self.lm_head(h[:, lm_head_start:])
 
-    def training_loss(self, ids, targets, teacher_hidden):
+    def training_loss(self, ids, targets, chunk_size):
+        from ._vendor.niahlogkv.litgpt.chunked_loss import chunked_linear_cross_entropy
+
         h, aux = self.hidden(ids, 0, False)
-
-        def loss(part, expected, teacher):
-            logits = self.lm_head(part).float()
-            with torch.no_grad():
-                target_probs = self.lm_head(teacher).float().softmax(-1)
-            ce = F.cross_entropy(logits.flatten(0, 1), expected.reshape(-1), reduction="sum")
-            kd = F.kl_div(logits.log_softmax(-1), target_probs, reduction="sum")
-            return ce, kd
-
-        ce = kd = 0
-        for off in range(0, ids.size(1), 64):
-            sl = slice(off, off + 64)
-            c, k = checkpoint(loss, h[:, sl], targets[:, sl], teacher_hidden[:, sl], use_reentrant=False)
-            ce, kd = ce + c, kd + k
-        return ce / ids.numel(), kd / ids.numel(), aux
+        return chunked_linear_cross_entropy(h, self.lm_head.weight, targets, chunk_size=chunk_size), aux

@@ -6,6 +6,7 @@ import math
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 @dataclass(frozen=True)
@@ -228,7 +229,7 @@ class Attention(nn.Module):
             part = x[:, off : off + 16]
             end = start + off + part.size(1)
             count = end // self.ratio if self.ratio else 0
-            out, loss = self.attend(
+            args = (
                 part,
                 self.q_norm(self.qa(part)),
                 pos[off : off + 16],
@@ -237,6 +238,12 @@ class Attention(nn.Module):
                 pool[:, :count] if count else None,
                 keys[:, :count] if keys is not None else None,
             )
+            # Bound the layer backward replay at 32K: discard each tile's
+            # index scores and gathered history as soon as it has run.
+            if self.training:
+                out, loss = checkpoint(self.attend, *args, use_reentrant=False, preserve_rng_state=False)
+            else:
+                out, loss = self.attend(*args)
             parts.append(out)
             losses.append(loss)
         if cache is not None:

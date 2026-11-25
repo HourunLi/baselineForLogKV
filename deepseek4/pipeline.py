@@ -38,10 +38,6 @@ def run(mode, path):
             check=True,
         )
 
-    if mode == "all" and Path(cfg["output_dir"]).exists():
-        raise FileExistsError(
-            f"Training output exists; select a fresh DEEPSEEK4_OUTPUT_DIR: {cfg['output_dir']}"
-        )
     if mode in ("all", "check"):
         workers("deepseek4.preflight", 1, 0)
     if mode in ("all", "prepare"):

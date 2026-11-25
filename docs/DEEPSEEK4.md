@@ -2,7 +2,7 @@
 
 ## 模型
 
-以原始 Qwen3-8B-Base 的 LitGPT 格式权重和 tokenizer 为起点。保留 4096 维残差接口、独立 embedding 与 LM head、36 层的 dense SwiGLU 和块级 RMSNorm。36 个注意力模块重新初始化。在 10,929,049,984 个参数中，6,680,776,704 个继承并冻结，4,248,273,280 个参与适配。训练后保存完整 BF16 模型。
+以原始 Qwen3-8B-Base 的 LitGPT 格式权重和 tokenizer 为起点。保留 4096 维残差接口、独立 embedding 与 LM head、36 层的 dense SwiGLU 和块级 RMSNorm。36 个注意力模块重新初始化。在 10,929,049,984 个参数中，6,680,776,704 个继承自 Qwen，4,248,273,280 个重新初始化，全体参数参加 CPT。训练后保存完整 BF16 模型。
 
 层布局取 V4-Flash 主干压缩率列表的前 36 项，即 `[0,0]+[4,128]*17`。每个注意力层使用 64 个 512 维查询头、一个 512 维共享 K=V、64 维部分 RoPE、1024 维查询低秩投影、8 组输出投影及可学习的 attention sink。局部窗口 128。CSA 的逐通道门控压缩重叠两个 4-token 块，独立的 64 头 × 128 维 indexer 读取历史并选择最多 512 项。HCA 压缩非重叠的 128-token 块并访问所有已完成的块。局部条目与压缩条目共享 softmax。压缩项的位置取块首，只有看到块末才可访问。[官方配置](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/blob/2b2bebc1776b2cf88ca36f0b5b6f816ae0f5892f/config.json) · [官方注意力实现](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/blob/2b2bebc1776b2cf88ca36f0b5b6f816ae0f5892f/inference/model.py)
 
@@ -18,14 +18,15 @@
 bash majob.sh all
 ```
 
-`all` 先在每节点用 torch218 检查 CUDA BF16、NCCL、依赖、Base/tokenizer、训练语料和离线评测资产。它通过 lm-eval 加载原生主线任务，检查 RULER 的背景与问答文件、BABILong 的各长度/分组、LongBench v2 的各子集和 InfiniteBench 的文件与首条样本。主节点按 Qwen tokenizer 验证 PPL 文档可达到对应长度，复用参考评测器的文档选择缓存。检查成功后准备数据并训练。所有训练进程等待 rank 0 写完权重及指纹，评测进程验证指纹后进入主线和六档评测。任何阶段失败都会以非零状态退出。单独运行 `bash majob.sh check` 可在目标环境执行相同的训练前检查。
+`all` 先在每节点用 torch218 检查 CUDA BF16、NCCL、依赖、Base/tokenizer、训练语料和离线评测资产。它通过 lm-eval 加载原生主线任务，检查 RULER 的背景与问答文件、BABILong 的各长度/分组、LongBench v2 的各子集和 InfiniteBench 的文件与首条样本。主节点按 Qwen tokenizer 验证 PPL 文档可达到对应长度，复用参考评测器的文档选择缓存。检查成功后读取对照作业的分片并训练。所有训练进程等待 rank 0 写完权重及指纹，评测进程验证指纹后进入主线和六档评测。任何阶段失败都会以非零状态退出。单独运行 `bash majob.sh check` 可在目标环境执行相同的训练前检查。
 
 8B 参考 YAML 直接读取 `LONG_PPL_DATA` 和 `LONG_PPL_BOOKS`。请保留对照作业导出的两项实际路径，并沿用同一份 `LONG_PPL_DOCS` 和 `LONG_PPL_CONCAT` 设置。单点 PPL 和书籍 PPL 在 512K/1M 档都需要能提供 1,048,576 tokens 的来源。完整模式若缺少这些变量或读不到足够长的文档，会在训练前报错。InfiniteBench 沿用显式目录、普通文件和 Hub 缓存的参考查找顺序。8B 长档参考配置
 
-1. `bash majob.sh prepare` 在共享目录准备 ProLong 语料。复用时验证 tokenizer、训练长度、原始文件清单与缓存索引。多节点只由全局 rank 0 执行准备。
-2. `bash majob.sh train` 在独立的新输出目录创建训练结果。多卡采用逐块 FSDP、FP32 主权重、BF16 混合精度和激活重计算。加载冻结的原始 Qwen 教师，学生采用 next-token CE、教师 logits KL 与 indexer 辅助交叉熵。Indexer 用所选压缩条目的注意力质量构造监督，在全部可见候选上归一化。每步用一个各 rank 独立分片的 microbatch，实际消耗记录于 `steps.jsonl`。
-3. 默认 4096 长度、160 步、每卡每步 1 条，8 卡共 5,242,880 个 token，是首次检查适配是否有效的试训预算。不能据此预判 4.25B 新参数能恢复多少质量。可在独立配置里更改训练长度、步数、语料和输出路径。改变训练长度时使用独立的预处理目录。
-4. 完成后写入 `lit_model.pth`、`model_config.yaml` 和 `training.json`。清单记录 Base 文件指纹、语料、版本、模型布局、训练步数、token 和训练 GPU 小时。训练中断可能留下部分文件；正式评测要求有完成清单和匹配的模型 SHA-256。
+1. 正式作业直接读取 8B LogKV 的 ProLong LitData 资产。按参照实现对 Qwen tokenizer 文件计算哈希，在 `DEEPSEEK4_DATA_DIR` 下定位 `litdata_<hash>_ctx32768`。`prepare` 核验索引和分片大小。两边使用同一底模、分片、LitData 版本、进程与 worker 数才能复现相同的输入顺序。每卡 16 个 worker，shuffle seed 42，块长 32,769，训练输入与目标相差一个 token。没有合成检索样本。
+2. 全模型 CPT 使用 next-token CE，加 CSA 索引器从本层注意力质量计算的辅助交叉熵。没有外部 teacher。模型采用 BF16、FULL_SHARD、激活重计算，每个 micro-batch 同步分片梯度。词表交叉熵复用参考实现，按 1,024 个 token 分块。AdamW 的 betas 为 (0.9, 0.95)，eps 为 1e-8，weight decay 为 0.1，名称含 bias、norm 或 ln_ 的参数免衰减。前 100 次更新线性预热至 5e-6，之后按参考代码用已完成更新数计算余弦衰减，目标下限为 3e-6。沿用对照的无梯度裁剪设置。
+3. 32,768 上下文 × 全局 batch 128 × 2,000 次优化器更新，共 8,388,608,000 个目标 token。8 卡、每卡 micro-batch 1 时累积 16 次。数据按相同配置最多遍历 10 个 epoch；如无法完成预算，作业报错。采用第 2,000 步权重作为正式评测点。8B 对照配置 · 优化器与更新循环
+4. 每 400 步原子发布一个断点，包含各 rank 的权重分片、AdamW 状态和 LitData 读取位置。中断后用同一命令、代码、环境、卡数和输出目录续训。默认输出为 `deepseek4/cpt-32k-b128-2k`。五个断点加最终 BF16 模型合计约 350 GB，使用独立共享存储。每次尝试保存独立的 `steps-from-*.jsonl`。最终 `training.json` 记录底模、分片索引指纹、依赖、实际步数、token 和 GPU 小时；GPU 小时包含之前尝试已记入日志的训练时间。评测前验证最终权重指纹。
+5. 两种方法的输入和更新预算相同。CSA/HCA 模型的参数量、初始化、索引辅助损失和实际算力成本属于方法差异。历史 LogKV 作业实际完成的 token 和 GPU 小时需从该次作业日志核对。64K–1M 的五个档位属于训练长度外推。
 
 多节点需要共享资产和输出目录，使用 `MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MASTER_ADDR`、`MASTER_PORT` 与 `MA_NUM_GPUS`。也支持 `NNODES`、`NODE_RANK` 与 `NPROC_PER_NODE`。一体化入口使用独立的 torchrun 进程依次启动各阶段，managed_cluster 环境可由作业名、任务名及主节点索引推导主机地址。单节点使用 standalone，多节点各阶段使用不同 rendezvous 端口。评测使用现有 torch218 环境，检查 lm-eval 0.4.11 和 datasets 4.8.4。
 
@@ -58,6 +59,6 @@ bash majob.sh eval --no-main --lengths 512k,1m --suites ruler,turns,ppl,books,ba
 
 `python -m deepseek4.budget` 可复算。默认 prefill 每次 256 tokens，可用 `DEEPSEEK4_PREFILL_CHUNK` 调整。Indexer 按 query 和历史块分块计算，保持全历史检索。长上下文仍需大量计算，本实现使用 PyTorch 参考算子，尚无目标 GPU 吞吐结果。
 
-本地验证覆盖 36 层 meta 模型精确参数量、小模型因果性、整段/分块/单 token 等价、重置、indexer 和压缩器梯度、真实 LitGPT 加载与教师蒸馏、训练权重回读和参考评测器请求路径，以及六档任务计划。另在 torch 2.11.0 的 CPU/Gloo 双进程小模型上完成一次 FSDP 更新、逐层 BF16 权重导出及严格回读。开发机运行 Python 3.11；平台记录为 Python 3.10.20、torch 2.11.0+cu128，两侧的 pyarrow 与 jsonargparse 小环境版本也不同。开发机测试环境缺少 LongBench v1 的 fuzzywuzzy 与 rouge，目标环境将使用自己的包在训练前检查。未在目标 CUDA 平台训练 8B 主体或执行 32K–1M 真实任务。
+本地验证覆盖 36 层 meta 模型精确参数量、小模型因果性、整段/分块/单 token 等价、重置、indexer 和压缩器梯度、真实 LitGPT 加载与无教师全模型 CPT、训练权重回读和参考评测器请求路径，以及六档任务计划。另在 torch 2.11.0 的 CPU/Gloo 双进程小模型上完成FSDP 梯度累积、断点恢复后与连续训练逐参数一致、逐层 BF16 权重导出及严格回读。开发机运行 Python 3.11；平台记录为 Python 3.10.20、torch 2.11.0+cu128，两侧的 pyarrow 与 jsonargparse 小环境版本也不同。开发机测试环境缺少 LongBench v1 的 fuzzywuzzy 与 rouge，目标环境将使用自己的包在训练前检查。未在目标 CUDA 平台训练 8B 主体或执行 32K–1M 真实任务。
 
 评测快照的来源、许可证、包名和模型接入修改记录见 [SOURCE.json](../deepseek4/_vendor/niahlogkv/SOURCE.json)。数据准备与文件指纹代码复用本仓库 `9af3958` 的 Hybrid CSA，遵循根目录 Apache-2.0 许可证，迁入私有命名空间，并对不完整的预处理目录报错。

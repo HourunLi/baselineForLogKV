@@ -220,6 +220,22 @@ def main():
             method=record["method"],
             weight_sha256=record["weight_sha256"],
             base=record["base"],
+            training={
+                k: record[k]
+                for k in (
+                    "steps",
+                    "tokens",
+                    "gpu_hours",
+                    "objective",
+                    "trainable",
+                    "precision",
+                    "world_size",
+                    "accumulation_steps",
+                    "data",
+                    "config",
+                )
+                if k in record
+            },
             tokenizer=str(tokenizer),
             model=str(model),
             stage=row,

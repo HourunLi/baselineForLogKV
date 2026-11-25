@@ -237,6 +237,37 @@ def prepare_data(cfg):
     print(f"Prepared offline token data: {destination}")
 
 
+def reference_chunks(cfg):
+    # Same cache key as niahLogKV@0f4396b data.py, independent of checkout paths.
+    base = Path(cfg["base_checkpoint_dir"])
+    if not any((base / name).is_file() for name in ("tokenizer.json", "tokenizer.model")):
+        raise FileNotFoundError(f"No Qwen tokenizer in {base}")
+    digest = hashlib.sha256()
+    for name in ("tokenizer.json", "tokenizer.model", "tokenizer_config.json"):
+        path = base / name
+        if path.is_file():
+            digest.update(name.encode())
+            digest.update(path.read_bytes())
+    leaf = f"litdata_{digest.hexdigest()[:16]}_ctx{cfg['context_length']}"
+    directory = Path(cfg["tokenized_dir"] or Path(cfg["data_dir"]) / leaf)
+    if directory.name != leaf:
+        raise ValueError(f"Expected the reference tokenizer/length cache {leaf}, got {directory}")
+    return directory
+
+
+def reference_data(cfg):
+    directory = reference_chunks(cfg)
+    index = directory / "index.json"
+    chunks = json.loads(index.read_text())["chunks"]
+    if not chunks:
+        raise ValueError(f"Empty ProLong index: {index}")
+    for chunk in chunks:
+        path = directory / chunk["filename"]
+        if path.stat().st_size != chunk["chunk_bytes"]:
+            raise ValueError(f"ProLong chunk size differs from index: {path}")
+    return {"path": str(directory), "index_sha256": sha256(index), "chunks": len(chunks)}
+
+
 def validate_prepared_data(cfg, verify_source=False):
     directory = Path(cfg["tokenized_dir"])
     manifest = directory / DATA_MANIFEST
@@ -266,6 +297,10 @@ def prepare_distributed(cfg):
     """One process per node; rank zero prepares, all nodes receive success or failure."""
     from datetime import timedelta
     import torch.distributed as dist
+
+    if cfg.get("training_data") == "niahlogkv_chunks":
+        print(f"Using reference ProLong data: {reference_data(cfg)}", flush=True)
+        return
 
     world = int(os.environ.get("WORLD_SIZE", "1"))
     if world > 1:
@@ -313,8 +348,12 @@ def prepare_distributed(cfg):
 def make_loader(cfg):
     from litdata import StreamingDataLoader, StreamingDataset, TokensLoader
 
-    record = validate_prepared_data(cfg)
-    directory = Path(cfg["tokenized_dir"])
+    if cfg.get("training_data") == "niahlogkv_chunks":
+        record = reference_data(cfg)
+        directory = Path(record["path"])
+    else:
+        record = validate_prepared_data(cfg)
+        directory = Path(cfg["tokenized_dir"])
     # LitData detects the initialized torch distributed world and shards across ranks
     # and loader workers. A second DistributedSampler would incorrectly shard twice.
     dataset = StreamingDataset(
@@ -322,7 +361,6 @@ def make_loader(cfg):
         item_loader=TokensLoader(block_size=cfg["context_length"] + 1),
         shuffle=True,
         seed=cfg["seed"],
-        drop_last=True,
     )
     loader = StreamingDataLoader(
         dataset,
