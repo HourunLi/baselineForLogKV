@@ -69,6 +69,17 @@ def test_resume_from_latest_checkpoint(tmp_path, monkeypatch, stage, remaining):
     export_checkpoint(out, cfg, HAttentionLM(cfg).state_dict(), tmp_path,
                       dict(stage=stage, recipe=recipe, actual_steps=1200))
     assert remaining_stages(tmp_path) == remaining
+    if stage == "cpt":
+        assert "cpt" in remaining_stages(tmp_path, 10)
+        import json
+        trial = out.rename(tmp_path / "cpt-10-steps")
+        manifest = trial / "training.json"
+        report = json.loads(manifest.read_text())
+        report["actual_steps"] = 10
+        manifest.write_text(json.dumps(report))
+        assert remaining_stages(tmp_path, 10) == ("eval",)
+        assert "cpt" in remaining_stages(tmp_path)
+        trial.rename(out)
     (out / "model.safetensors").unlink()
     with pytest.raises(ValueError, match="Cannot reuse"):
         remaining_stages(tmp_path)

@@ -12,6 +12,8 @@ managed_cluster 默认使用已有的 `/opt/conda/envs/torch218/bin/python`，�
 bash majob.sh --pipeline
 ```
 
+验证保存与恢复时可运行 `bash majob.sh --pipeline --cpt-steps 10`。试跑复用已有蒸馏产物，权重保存到学生目录的 `cpt-10-steps/`，评测结果写入结果目录的同名子目录。再次提交相同命令会校验试跑产物并从评测继续。
+
 重跑同一条 `bash majob.sh --pipeline` 即可。节点 0 优先校验 CPT 的文件哈希、权重结构、训练配置与完成步数，通过后所有节点直接进入评测。仅有完整蒸馏产物时，检查训练缓存后继续 CPT；已有产物校验失败时保留目录并报错。学生输出目录应在所有节点可见。
 
 

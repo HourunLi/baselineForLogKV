@@ -212,6 +212,7 @@ def main():
     parser.add_argument("stage", choices=("convert", "prepare", "distill", "probe", "cpt"))
     parser.add_argument("--config", type=Path, default=Path("configs/qwen8b_hattention_train.yaml"))
     parser.add_argument("--steps", type=int, help="shorten this distill/CPT run; use a separate output root")
+    parser.add_argument("--checkpoint-output", type=Path, help="output for a separate CPT trial")
     parser.add_argument("--print-config", action="store_true")
     args = parser.parse_args()
     config = yaml.safe_load(args.config.read_text())
@@ -227,7 +228,9 @@ def main():
                           "steps_override": args.steps}, indent=2))
         return
     stage = args.stage
-    out = root / stage
+    if args.checkpoint_output and (stage != "cpt" or not args.steps):
+        parser.error("--checkpoint-output requires cpt --steps")
+    out = args.checkpoint_output or root / stage
     if args.steps is not None and (stage not in {"distill", "cpt"} or args.steps < 1):
         parser.error("--steps requires distill or cpt and a positive value")
     world = int(os.environ.get("WORLD_SIZE", "1"))

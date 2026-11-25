@@ -9,16 +9,17 @@ import yaml
 import torch.distributed as dist
 
 
-def remaining_stages(root):
+def remaining_stages(root, cpt_steps=None):
     for stage, remaining in (("cpt", ("eval",)), ("distill", ("prepare", "cpt", "eval"))):
-        if not (root / stage).exists():
-            print(f"[resume] Missing checkpoint directory: {root / stage}", flush=True)
+        folder = root / (f"cpt-{cpt_steps}-steps" if stage == "cpt" and cpt_steps else stage)
+        if not folder.exists():
+            print(f"[resume] Missing checkpoint directory: {folder}", flush=True)
         else:
             from .train_student import reuse_checkpoint
 
             config = yaml.safe_load(Path("configs/qwen8b_hattention_train.yaml").read_text())
-            expected = dict(stage=stage, recipe=config, actual_steps=config[stage]["steps"])
-            if reuse_checkpoint(root / stage, config, expected):
+            expected = dict(stage=stage, recipe=config, actual_steps=(cpt_steps if stage == "cpt" and cpt_steps else config[stage]["steps"]))
+            if reuse_checkpoint(folder, config, expected):
                 return remaining
     return ("convert", "prepare", "probe", "distill", "cpt", "eval")
 
@@ -35,7 +36,12 @@ def main():
     root = Path(configured_root).resolve()
     if rank == 0:
         print(f"[resume] Student checkpoint root: {root}", flush=True)
-    env.update(LLA_STUDENT_ROOT=str(root), LLA_CHECKPOINT_DIR=str(root / "cpt"))
+    steps = int(env["LLA_PIPELINE_CPT_STEPS"]) if "LLA_PIPELINE_CPT_STEPS" in env else None
+    checkpoint = root / (f"cpt-{steps}-steps" if steps else "cpt")
+    env.update(LLA_STUDENT_ROOT=str(root), LLA_CHECKPOINT_DIR=str(checkpoint))
+    if steps:
+        result_root = env.get("LLA_OUTPUT_DIR") or "results/qwen8b-hattention"
+        env["LLA_OUTPUT_DIR"] = str(Path(result_root) / checkpoint.name)
     if nodes > 1:
         addr = env.get("MASTER_ADDR")
         if env.get("MA_VJ_NAME"):
@@ -51,7 +57,7 @@ def main():
         decision = [None, None]
         if rank == 0:
             try:
-                decision[0] = ("eval",) if env.get("LLA_PIPELINE_EVAL_ONLY") == "1" else remaining_stages(root)
+                decision[0] = ("eval",) if env.get("LLA_PIPELINE_EVAL_ONLY") == "1" else remaining_stages(root, steps)
             except Exception as exc:
                 decision[1] = str(exc)
         if nodes > 1:
@@ -66,6 +72,8 @@ def main():
                 print(f"[pipeline node {rank}] {stage}", flush=True)
                 command = (["bash", "eval.sh", "configs/qwen8b_hattention_eval.yaml"] if stage == "eval"
                            else ["bash", "scripts/train_hattention.sh", stage])
+                if stage == "cpt" and steps:
+                    command.extend(["--steps", str(steps), "--checkpoint-output", str(checkpoint)])
                 if stage == "eval" and nodes > 1:
                     check = subprocess.run([*command[:2], "--preflight", *command[2:]], env=env,
                                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

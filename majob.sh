@@ -7,7 +7,12 @@ case ${1:-} in
         export LLA_PIPELINE_EVAL_ONLY=1
         exec bash scripts/train_hattention.sh pipeline ;;
     --pipeline)
-        [[ $# == 1 ]] || { echo "Usage: bash majob.sh --pipeline" >&2; exit 2; }
+        if [[ $# == 3 && $2 == --cpt-steps && $3 =~ ^[1-9][0-9]*$ ]]; then
+            export LLA_PIPELINE_CPT_STEPS=$3
+        elif [[ $# != 1 ]]; then
+            echo "Usage: bash majob.sh --pipeline [--cpt-steps N]" >&2
+            exit 2
+        fi
         exec bash scripts/train_hattention.sh pipeline ;;
     --train)
         shift
