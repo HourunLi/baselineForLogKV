@@ -10,6 +10,7 @@ import socket
 import tempfile
 import uuid
 import time
+from datetime import timedelta
 from contextlib import nullcontext
 from functools import partial
 from importlib.metadata import version
@@ -174,6 +175,13 @@ def train(cfg, base, cache, root, device, *, resume=None, stop_after=None, requi
     previous_hours = progress["gpu_hours"]
     stream = iter(loader)
     digest = hashlib.sha256()
+    tokens_per_step = batch * length
+    if rank == 0:
+        print(f"[Infini-Attention CPT] ProLong | context={length:,} global_batch={batch} "
+              f"world_size={world} grad_accum={batch // world} | starting_step={begin} "
+              f"target_step={target} recipe_steps={cfg['steps']} | tokens/step={tokens_per_step:,}",
+              flush=True)
+    loop_start = time.monotonic()
     for step in range(begin, target):
         for group in optimizer.param_groups:
             group["lr"] = learning_rate(step, cfg)
@@ -207,7 +215,13 @@ def train(cfg, base, cache, root, device, *, resume=None, stop_after=None, requi
                         last_loss=loss_sum.item() / batch,
                         gpu_hours=previous_hours + (time.monotonic() - started) * world / 3600 if gpu else 0.0)
         if rank == 0:
-            print(f"step={step+1} input_tokens={progress['input_tokens']} loss={progress['last_loss']:.6f}", flush=True)
+            completed = step + 1
+            seconds_per_step = (time.monotonic() - loop_start) / (completed - begin)
+            eta = timedelta(seconds=round(seconds_per_step * (target - completed)))
+            print(f"[Infini-Attention CPT] step={completed}/{target} ({completed / target:.2%}) "
+                  f"input_tokens={progress['input_tokens']:,}/{target * tokens_per_step:,} "
+                  f"loss={progress['last_loss']:.6f} lr={optimizer.param_groups[0]['lr']:.3e} "
+                  f"avg_tokens/s={tokens_per_step / seconds_per_step:,.0f} ETA={eta}", flush=True)
         if (step + 1) % cfg["save_interval"] == 0 and step + 1 < cfg["steps"]:
             save_progress(root / f"step-{step+1}", model, optimizer, loader, progress, rank)
     ranks = gather(dict(rank=rank, input_sha256_since_resume=digest.hexdigest(),
