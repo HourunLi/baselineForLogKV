@@ -13,7 +13,7 @@ bash majob.sh configs/niah/qwen8b.yaml
 
 `log_kv_*` 参数给出缓存预算的参照。PyramidKV 使用原始 Base 权重；`--backend logkv` 和 `--backend dense` 默认使用 `save_path` 中的 gamma CPT 对照权重。如需测量 PyramidKV 相对同权重 dense 的质量变化，在同一份 YAML 后加 `--backend dense --model /path/to/Qwen3-X-Base`。各次结果记录实际 checkpoint 的 SHA-256。单卡试跑可加 `--no-main --lengths 32k --suites ruler --limit 1`。结果写到 `outputs/niahlogkv/<规模>/<参考配置>/<后端>/`。共享数据路径沿用 `HF_HOME`、`LONG_PPL_DATA`、`LONG_PPL_BOOKS`、`BABILONG_DIR`、`LONGBENCH2_DIR` 和 `INFINITEBENCH_DIR`。
 
-原生主线含 49 个 main 入口及 20 个 NIAH 入口。长文本各档按参考计划去重，每任务默认最多 100 条，窗口为目标长度加 1024。各档包含 RULER、BABILong、多轮 NIAH、LongBench v2、长文 PPL 和书籍 PPL 曲线。InfiniteBench 到 256K，RULER SQuAD 到 128K。可选数据缺失及显式选择任务的行为继承参考评测器。仅选 512K/1M 时按参考默认跑 RULER、BABILong、书籍 PPL、LongBench v2。源码与许可证见 `pyramidkv/_vendor/niahlogkv/SOURCE.json`。参考配置
+原生主线含 49 个 main 入口及 20 个 NIAH 入口。长文本各档按参考计划去重，每任务默认最多 100 条，窗口为目标长度加 1024。各档包含 RULER、BABILong、多轮 NIAH、LongBench v2、长文 PPL 和书籍 PPL 曲线。InfiniteBench 到 256K，RULER SQuAD 到 128K。可选数据缺失及显式选择任务的行为继承参考评测器。仅选 512K/1M 时默认跑 RULER、BABILong、单点 PPL、书籍 PPL、多轮 NIAH 和 LongBench v2。源码与许可证见 `pyramidkv/_vendor/niahlogkv/SOURCE.json`。参考配置
 
 流式 PyramidKV 按 2048 tokens 分块 prefill，每块及每次 decode 后按 KV 头选取历史，保留最近 64 个位置。淘汰会影响后续块能访问的历史，与完整 prefill 后一次压缩的论文设置有区别。分配时先测同档 LogKV 的常驻张量存储（包含缓存元数据，排除共享 RoPE），再将总字节数分给各层，底层多、顶层少，每层最多一个完整窗口。每个槽包含一层全部 GQA 头的一对 K/V。槽数取整使两者常驻字节之差小于一个槽，两个 Qwen3 BF16 模型均为 4096 字节。超出某层容量的新块只在处理该层时临时拼接。
 
