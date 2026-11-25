@@ -1,7 +1,7 @@
 """One managed_cluster process per node coordinates the existing training and evaluation launchers."""
 import os
 import shutil
-import tempfile
+import json
 import uuid
 import subprocess
 from datetime import timedelta
@@ -54,7 +54,7 @@ def check_shared_root(root, rank, nodes):
 
 
 def import_legacy(root, legacy, checkpoint_name):
-    from .student import checkpoint_report
+    from .student import checkpoint_report, file_hash
 
     for name in (checkpoint_name, "distill", "convert"):
         destination = root / name
@@ -64,11 +64,14 @@ def import_legacy(root, legacy, checkpoint_name):
         if source.exists():
             print(f"[resume] Copying existing checkpoint from {source} to {destination}", flush=True)
             root.mkdir(parents=True, exist_ok=True)
-            with tempfile.TemporaryDirectory(dir=root) as tmp:
-                copy = Path(tmp) / name
-                shutil.copytree(source, copy, copy_function=shutil.copyfile)
-                checkpoint_report(copy, verify_all=True)
-                copy.rename(destination)
+            report = checkpoint_report(source, verify_all=True)
+            destination.mkdir()
+            for filename, digest in report["files_sha256"].items():
+                target = destination / filename
+                shutil.copyfile(source / filename, target)
+                if file_hash(target) != digest:
+                    raise ValueError(f"Checkpoint copy failed checksum validation: {target}")
+            (destination / "training.json").write_text(json.dumps(report, indent=2))
             return
 
 

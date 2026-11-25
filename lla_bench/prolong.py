@@ -3,6 +3,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import tempfile
 from functools import partial
 from pathlib import Path
@@ -67,7 +68,7 @@ def prepare(raw, destination, base, length, workers):
     if destination.exists() or destination.is_relative_to(raw):
         raise ValueError(f"choose a fresh private cache outside the raw data: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=destination.parent) as tmp, tempfile.TemporaryDirectory() as scratch:
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as scratch:
         built = Path(tmp) / "chunks"
         # LitData removes its scratch directories at startup. Give each preparation its own pair.
         scratch_dirs = {"DATA_OPTIMIZER_CACHE_FOLDER": f"{scratch}/chunks",
@@ -86,7 +87,12 @@ def prepare(raw, destination, base, length, workers):
                     os.environ[key] = value
         if not (built / "index.json").is_file():
             raise RuntimeError("LitData did not produce a complete index")
-        built.rename(destination)
+        destination.mkdir()
+        for chunk in built.iterdir():
+            if chunk.name != "index.json":
+                shutil.copyfile(chunk, destination / chunk.name)
+        shutil.copyfile(built / "index.json", destination / "index.json")
+        validate_cache(destination)
 
 
 def validate_cache(cache):

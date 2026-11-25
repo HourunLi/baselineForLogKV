@@ -2,7 +2,6 @@
 import hashlib
 import json
 import shutil
-import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
@@ -94,22 +93,20 @@ def export_checkpoint(out, cfg, state, tokenizer_dir, report):
     if out.exists():
         raise FileExistsError(out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=out.parent) as tmp:
-        folder = Path(tmp) / "checkpoint"
-        folder.mkdir()
-        save_torch_state_dict({k: v.detach().to(device="cpu", dtype=torch.bfloat16) for k, v in state.items()},
-                              folder, max_shard_size="2GB")
-        (folder / "config.json").write_text(json.dumps(dict(model_type="qwen3_hattention", **asdict(cfg)), indent=2))
-        for name in ("tokenizer.json", "tokenizer_config.json", "generation_config.json", "special_tokens_map.json",
-                     "vocab.json", "merges.txt", "added_tokens.json", "tokenizer.model"):
-            source = tokenizer_dir / name
-            if source.exists():
-                shutil.copy2(source, folder / name)
-        if not all((folder / f).is_file() for f in ("tokenizer.json", "tokenizer_config.json")):
-            raise FileNotFoundError(f"incomplete Qwen tokenizer in {tokenizer_dir}")
-        report = {**report, "files_sha256": {p.name: file_hash(p) for p in sorted(folder.iterdir())}}
-        report["file_stats"] = {p.name: [p.stat().st_size, p.stat().st_mtime_ns] for p in folder.iterdir()}
-        (folder / "training.json").write_text(json.dumps(report, indent=2))
-        folder.rename(out)
-        print(f"[checkpoint] saved stage={report.get('stage')} steps={report.get('actual_steps', 0)} "
-              f"path={out.resolve()}", flush=True)
+    out.mkdir()
+    folder = out
+    save_torch_state_dict({k: v.detach().to(device="cpu", dtype=torch.bfloat16) for k, v in state.items()},
+                          folder, max_shard_size="2GB")
+    (folder / "config.json").write_text(json.dumps(dict(model_type="qwen3_hattention", **asdict(cfg)), indent=2))
+    for name in ("tokenizer.json", "tokenizer_config.json", "generation_config.json", "special_tokens_map.json",
+                 "vocab.json", "merges.txt", "added_tokens.json", "tokenizer.model"):
+        source = tokenizer_dir / name
+        if source.exists():
+            shutil.copyfile(source, folder / name)
+    if not all((folder / f).is_file() for f in ("tokenizer.json", "tokenizer_config.json")):
+        raise FileNotFoundError(f"incomplete Qwen tokenizer in {tokenizer_dir}")
+    report = {**report, "files_sha256": {p.name: file_hash(p) for p in sorted(folder.iterdir())}}
+    report["file_stats"] = {p.name: [p.stat().st_size, p.stat().st_mtime_ns] for p in folder.iterdir()}
+    (folder / "training.json").write_text(json.dumps(report, indent=2))
+    print(f"[checkpoint] saved stage={report.get('stage')} steps={report.get('actual_steps', 0)} "
+          f"path={out.resolve()}", flush=True)
