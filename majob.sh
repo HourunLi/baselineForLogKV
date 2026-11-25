@@ -12,6 +12,7 @@ if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
     echo "Default environment: conda torch218; set SNAPKV_PYTHON to use an existing interpreter."
     exit 0
 fi
+homer_calibration=0
 niah_protocol=0
 if [[ "${1:-}" == niahlogkv ]]; then
     niah_protocol=1
@@ -24,12 +25,14 @@ if (( ! niah_protocol )); then
         shift
     fi
     [[ -f "$CONFIG_FILE" ]] || { echo "Missing evaluation YAML: $CONFIG_FILE" >&2; exit 2; }
-    if grep -Eq '^protocol[[:space:]]*:' "$CONFIG_FILE"; then
+    if grep -Eq '^protocol:[[:space:]]*homer_calibration[[:space:]]*$' "$CONFIG_FILE"; then
+        homer_calibration=1
+    elif grep -Eq '^protocol[[:space:]]*:' "$CONFIG_FILE"; then
         niah_protocol=1
         set -- --config "$CONFIG_FILE" "$@"
     fi
 fi
-if (( ! niah_protocol )); then
+if (( ! niah_protocol && ! homer_calibration )); then
     # The formal protocol fixes tasks, NIAH lengths, window and offline data; only the
     # method, budget, output and a debugging --limit may be chosen here.
     for arg in "$@"; do
@@ -46,6 +49,7 @@ if (( ! niah_protocol )); then
 fi
 
 # Conda activation scripts may read unset variables; enable nounset afterwards.
+if (( homer_calibration )); then SNAPKV_PYTHON=${HOMER_PYTHON:-${SNAPKV_PYTHON:-}}; fi
 if [[ -z "${SNAPKV_PYTHON:-}" ]]; then
     source /opt/conda/bin/activate "${SNAPKV_CONDA_ENV:-torch218}"
     SNAPKV_PYTHON=$(python -c 'import sys; print(sys.executable)')
@@ -67,6 +71,12 @@ export CUDA_DEVICE_MAX_CONNECTIONS=${CUDA_DEVICE_MAX_CONNECTIONS:-32}
 export CUDNN_LOGERR_DBG=${CUDNN_LOGERR_DBG:-1} CUDNN_LOGDEST_DBG=${CUDNN_LOGDEST_DBG:-stderr}
 export NCCL_NVLS_ENABLE=${NCCL_NVLS_ENABLE:-0} NCCL_NET_PLUGIN=${NCCL_NET_PLUGIN:-none}
 export NCCL_NET_GDR_LEVEL=${NCCL_NET_GDR_LEVEL:-2} NCCL_MIN_NCHANNELS=${NCCL_MIN_NCHANNELS:-4}
+if (( homer_calibration )); then
+    # Calibration is a single-device job. Node zero publishes the shared result.
+    if (( ${VC_TASK_INDEX:-${NODE_RANK:-0}} != 0 )); then exit 0; fi
+    export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1
+    exec "$SNAPKV_PYTHON" -m homer.calibrate "$CONFIG_FILE" "$@"
+fi
 # Initialise CUDA once here (not just count devices through NVML), so a driver/library mismatch stops the job
 # before torchrun starts, naming the libcuda that was loaded. Prints the devices this node can use.
 CUDA_PROBE='

@@ -1,3 +1,23 @@
+# HOMER 校准
+
+本分支先实现 HOMER 的位置偏置校准。使用冻结的 Hugging Face Llama-2 或 Qwen3 Base 权重，校准阶段无需训练。以下命令从仓库根运行，每次作业使用一张卡。
+
+```bash
+# 先编辑 YAML 中的 model、data 和 output。Llama 核验另需设置 reference_bias。
+bash majob.sh configs/homer/llama2.yaml
+bash majob.sh configs/homer/qwen1.7b.yaml
+bash majob.sh configs/homer/qwen8b.yaml
+```
+
+- 目标环境为 Transformers 4.51.3、PyTorch、datasets 和 PyYAML。在已有环境中可设置 `HOMER_PYTHON` 为解释器路径。加 `--print-config` 只预览设置。
+- `model` 使用 HF 格式的原始模型目录，包含 config、tokenizer、权重文件或分片及其索引。`data` 可使用离线缓存的 `Salesforce/wikitext`，或 `DatasetDict.save_to_disk` 目录，要求有 `validation` 和 `test` 两个 split 及 `text` 列。启动器开启 HF 离线模式。
+- 缺省取 100 段，validation/test 各 50 段。从两个 split 各自的前 75% 行抽取不同段首，从连续非空行拼出等长 token 窗口，允许校准窗口重叠。每行加换行、独立分词、不插入特殊 token。后 25% 行专供对照检验。种子、段首、token 摘要、数据指纹及模型权重哈希保存在 manifest。采样细节是本实现的可复现选择。
+- `length: 2048` 是初始验证配置，只覆盖相对距离 0–2047。正式任务先推导实际 HOMER 合并计划的最大 `last_position_id - position_id`，将 length 配为该值加一。模型与有效 RoPE 配置相同且表覆盖完整距离的任务可共用一张表。YaRN 档使用新的输出目录并设置对应的 `yarn_factor` 和 `original_context`。原生档使用模型自带的位置配置。长校准窗口会增加 dense 前向计算量。
+- `bias.pt` 为 FP32 张量，形状为层数 × 相对距离数，直接适配原 HOMER 的 `bias[layer_idx][relative_position]`。校准器读取 SDPA 接收的 post-RoPE Q/K，保留 Qwen3 原生 Q/K normalization 和 GQA 映射；每层计算最后一个 query 的 scaled QK logits，跨 query heads 取最大，再跨片段做 FP32 平均。常规前向仍使用原 SDPA。
+- 将同模型、同有效 RoPE 的官方表填入 `reference_bias` 后，manifest 的 `comparison` 给出各层曲线 RMSE 及保留集合重合率。后者在独立的留出片段上计算，两表使用相同的原始 logits，排除受保护首尾后比较得分最高的一半候选位置，1 表示集合相同。可通过 `protected_prefix`、`protected_suffix` 和 `holdout_samples` 调整。WikiText-103 的来源、100 段和位置平均来自论文，作者的精确采样清单及生成脚本未公开。先用 Llama 对照核验这一估计器，再产出正式 Qwen 表。[论文](https://proceedings.iclr.cc/paper_files/paper/2024/file/06694da057cb15fef11542270a592627-Paper-Conference.pdf) · [官方裁剪器](https://github.com/alinlab/HOMER/blob/822ef84ad77999657ee14ba4aa03c5c9fcc6988d/src/homer/patch_llama.py#L198)
+
+下方是分支起点已有的 SnapKV 评测入口。HOMER 分层合并和任务评测将在后续步骤接入。
+
 # SnapKV baseline
 
 ## 用原始 Qwen3 Base 运行 niahLogKV 评测

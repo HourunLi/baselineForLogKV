@@ -1,0 +1,12 @@
+protocol: homer_calibration
+model: /workspace/checkpoints/Qwen/Qwen3-8B-Base
+output: outputs/homer/calibration/qwen8b-native-2048
+data: Salesforce/wikitext
+length: 2048  # Covers relative distances 0..2047. Set to max lookup distance + 1.
+samples: 100
+seed: 42
+dtype: bfloat16
+device: cuda
+yarn_factor: 1
+original_context: 32768
+reference_bias: null
