@@ -249,6 +249,8 @@ def main():
                 k: os.getenv(k)
                 for k in (
                     "HF_HOME",
+                    "HF_DATASETS_CACHE",
+                    "SOCIAL_IQA_CACHE_DIR",
                     "RULER_CACHE_DIR",
                     "BABILONG_DIR",
                     "LONG_PPL_DATA",

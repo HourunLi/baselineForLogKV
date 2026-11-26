@@ -44,6 +44,8 @@ bash majob.sh eval --no-main --lengths 512k,1m --suites ruler,turns,ppl,books,ba
 
 ## 缓存和验证
 
+managed_cluster 无法通过缓存别名读取 SocialIQA 时，预检和正式评测会尝试直接读取 niahLogKV 确认过的本地 Arrow 快照。可用 `SOCIAL_IQA_CACHE_DIR` 指定同一份数据的完整快照目录，其中须包含 `dataset_info.json` 和各 split 的 Arrow 文件。日志中的 `explicit_cache_loaded` 报告实际路径和样本数，`explicit_cache_failure` 标明访问失败的路径。
+
 按一个共享 KV 头的逻辑存储位置计数。每层有最近的最多 128 个位置，每个 CSA 层再存 floor(T/4) 项、每个 HCA 层再存 floor(T/128) 项。逐次统计检查实际缓存游标与已回填 token 数一致，汇总使用总 dense 槽位除以总有效槽位。常驻字节另计 index key、局部 KV、压缩池和用于跨块压缩的尾部 hidden 状态。与 Qwen BF16 dense 字节比较时使用其原生 8 个 KV 头与独立 K/V。GPU 峰值包含权重、激活和临时工作区，由正式运行单列。
 
 下表用实际缓冲区形状在 meta device 上统计，batch 为 1，有效输入为档位长度，分配容量含 1024 个额外位置。

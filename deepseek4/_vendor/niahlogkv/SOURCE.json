@@ -10,7 +10,8 @@
     "Normalize private import prefix only when fingerprinting upstream RULER generator source",
     "Report the same dense KV denominator for reference and full attention backends",
     "Resolve legacy LitGPT prompt style paths within the bundled package",
-    "Based on the private evaluator from baselineForLogKV@74432fa. Rebased package imports, added DeepSeek4 model/cache metrics. Task definitions and scoring retained."
+    "Based on the private evaluator from baselineForLogKV@74432fa. Rebased package imports, added DeepSeek4 model/cache metrics. Task definitions and scoring retained.",
+    "Fallback to the confirmed SocialIQA Arrow snapshot after cache lookup fails, adapted from niahLogKV@653df24a."
   ],
   "generator_sources": {
     "ruler_patch.py": {

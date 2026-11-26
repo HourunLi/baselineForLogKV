@@ -40,6 +40,7 @@ def check(cfg, rank):
                     for k in (
                         "HF_HOME",
                         "HF_DATASETS_CACHE",
+                        "SOCIAL_IQA_CACHE_DIR",
                         "BABILONG_DIR",
                         "LONGBENCH2_DIR",
                         "INFINITEBENCH_DIR",

@@ -724,6 +724,29 @@ def _walk_cache_path(path):
     return steps
 
 
+def _read_social_iqa_cache(directory):
+    """Read the prepared default SocialIQA snapshot without globbing parent directories."""
+    from datasets import Dataset, DatasetDict, DatasetInfo
+    from datasets.arrow_reader import ArrowReader
+
+    with (directory / "dataset_info.json").open(encoding="utf-8") as stream:
+        info = DatasetInfo.from_dict(json.load(stream))
+    expected = {"context", "question", "answerA", "answerB", "answerC", "label"}
+    if (info.dataset_name not in (None, "social_i_qa")
+            or info.config_name not in (None, "default")
+            or not expected.issubset(info.features or {})
+            or not {"train", "validation"}.issubset(info.splits or {})):
+        raise ValueError(f"Not a default SocialIQA cache: {directory}")
+    reader = ArrowReader(str(directory), info=info)
+    result = DatasetDict()
+    for split, split_info in info.splits.items():
+        data = Dataset(**reader.read("social_i_qa", split, list(info.splits.values())))
+        if not len(data) or len(data) != split_info.num_examples:
+            raise ValueError(f"Incomplete SocialIQA split {split}: {directory}")
+        result[split] = data
+    return result
+
+
 @contextlib.contextmanager
 def _trace_hf_cache_resolution():
     """Log hidden cache errors; follow cache aliases that this mount cannot resolve."""
@@ -795,6 +818,26 @@ def _trace_hf_cache_resolution():
             return None
         return alias, target
 
+    def load_social_iqa_snapshot(root):
+        # The exact prepared snapshot verified by niahLogKV before its generic alias handler.
+        snapshot = "default/0.1.0/674d85e42ac7430d3dcd4de7007feaffcb1527c535121e09bab2803fbcc925f8"
+        configured = os.getenv("SOCIAL_IQA_CACHE_DIR")
+        candidates = ([Path(configured).expanduser()] if configured else
+                      [root / name / snapshot for name in ("allenai___social_i_qa", "social_i_qa")])
+        failures = []
+        for directory in candidates:
+            try:
+                result = _read_social_iqa_cache(directory)
+            except (OSError, ValueError) as exc:
+                failures.append(f"{directory}: {type(exc).__name__}: {exc}")
+                emit("explicit_cache_failure", dataset="allenai/social_i_qa", directory=str(directory),
+                     error=str(exc), walk=_walk_cache_path(directory / "dataset_info.json"))
+                continue
+            emit("explicit_cache_loaded", dataset="allenai/social_i_qa", directory=str(directory),
+                 rows={split: len(data) for split, data in result.items()})
+            return result
+        raise RuntimeError("Could not read the prepared SocialIQA snapshot:\n" + "\n".join(failures))
+
     @functools.wraps(original_load)
     def load_with_local_fallback(*args, **kwargs):
         cache_misses.clear()
@@ -816,18 +859,28 @@ def _trace_hf_cache_resolution():
             found = unusable_alias(root, path)
             legacy = path.split("/")[1]
             packaged = importlib.import_module("datasets.packaged_modules")._PACKAGED_DATASETS_MODULES
+            config = args[1] if len(args) > 1 else kwargs.get("name")
+            can_read_snapshot = (path == "allenai/social_i_qa" and config in (None, "default")
+                                 and len(args) <= 2
+                                 and not set(kwargs) - {"path", "name", "cache_dir", "trust_remote_code"})
             # The legacy name must reach the same cache lookup, not a packaged builder or a local folder.
             if found is None or legacy in packaged or os.path.exists(legacy):
+                if can_read_snapshot:
+                    return load_social_iqa_snapshot(root)
                 raise
             alias, target = found
-            config = args[1] if len(args) > 1 else kwargs.get("name")
             emit("cache_alias_unusable", dataset=path, alias=str(alias), target=str(target),
                  walk=_walk_cache_path(alias / (config or "default")))
             # Loading under the legacy name is what following namespace___name -> name would do.
-            if args:
-                result = original_load(legacy, *args[1:], **kwargs)
-            else:
-                result = original_load(**dict(kwargs, path=legacy))
+            try:
+                if args:
+                    result = original_load(legacy, *args[1:], **kwargs)
+                else:
+                    result = original_load(**dict(kwargs, path=legacy))
+            except (ConnectionError, FileNotFoundError):
+                if can_read_snapshot and legacy in cache_misses:
+                    return load_social_iqa_snapshot(root)
+                raise
             emit("cache_alias_followed", dataset=path, loaded_as=legacy, directory=str(target),
                  num_rows=getattr(result, "num_rows", None))
             return result
