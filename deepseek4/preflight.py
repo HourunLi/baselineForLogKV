@@ -95,11 +95,13 @@ def check(cfg, rank):
     # Exercise the harness's own dataset/metric imports on the native tasks.
     # Synthetic long inputs are checked from their assets, without generating
     # every 1M prompt a second time.
-    for name in rows[0]["benchmark"].split(","):
-        if name == "niah_turns_32k" or name.startswith("long_ppl_books_"):
-            continue
-        print(f"Checking native task {name}", flush=True)
-        manager.load_task_or_group(name)
+    # Use the same offline cache alias handling as the formal evaluation.
+    with evaluator._trace_hf_cache_resolution():
+        for name in rows[0]["benchmark"].split(","):
+            if name == "niah_turns_32k" or name.startswith("long_ppl_books_"):
+                continue
+            print(f"Checking native task {name}", flush=True)
+            manager.load_task_or_group(name)
 
     for filename in ruler_patch._URL_TO_FILENAME.values():
         if not ruler_patch._load_json_local(filename):
