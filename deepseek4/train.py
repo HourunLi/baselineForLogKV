@@ -175,6 +175,28 @@ def restore_progress(folder, model, opt, loader, rank):
     return state["elapsed"]
 
 
+def initialize_recipe(output, manifest):
+    """Start in a pre-created directory, preserving unrelated managed_cluster files."""
+    reserved = {"recipe.json", "training.json", "training.json.tmp", "model_config.yaml",
+                "lit_model.pth", "lit_model.pth.tmp", "evaluation"}
+    conflicts = []
+    for entry in output.iterdir():
+        if entry.name == "evaluation" and not entry.is_symlink() and entry.is_dir() and not any(entry.iterdir()):
+            continue
+        if (entry.name in reserved or entry.match("step-" + "[0-9]" * 8)
+                or entry.match("steps-from-*.jsonl") or entry.name.startswith(".checkpoint-")):
+            conflicts.append(entry.name)
+    if conflicts:
+        raise FileExistsError(
+            f"No recipe.json for existing training artifacts in {output}: {', '.join(sorted(conflicts))}. "
+            "Restore the matching recipe to resume, or set DEEPSEEK4_OUTPUT_DIR to a fresh directory."
+        )
+    # An interrupted publication can leave recipe.tmp behind. Use a new temporary file.
+    with tempfile.NamedTemporaryFile(mode="w", dir=output, prefix=".recipe-", delete=False) as stream:
+        json.dump(manifest, stream, indent=2)
+    Path(stream.name).replace(output / "recipe.json")
+
+
 def train(cfg):
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
         raise RuntimeError("Training requires BF16 CUDA")
@@ -236,11 +258,7 @@ def train(cfg):
                 if checkpoints:
                     start[0] = int(checkpoints[-1].name[5:])
             else:
-                if any(p != Path(lock.name) for p in output.iterdir()):
-                    raise FileExistsError(f"Unrecognized training output: {output}")
-                tmp = recipe.with_suffix(".tmp")
-                tmp.write_text(json.dumps(manifest, indent=2))
-                tmp.replace(recipe)
+                initialize_recipe(output, manifest)
         if multi:
             dist.broadcast_object_list(start, src=0)
         completed = start[0]

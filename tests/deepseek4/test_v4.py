@@ -272,3 +272,33 @@ def test_reference_chunks_and_resume(tmp_path):
         reference, batch_size=1, num_workers=0, pin_memory=True, drop_last=True
     )
     torch.testing.assert_close(next(iter(reference_loader)), first)
+
+
+def test_initialize_recipe_in_precreated_output(tmp_path):
+    import json
+    import pytest
+    from deepseek4.train import initialize_recipe
+
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "worker.log").write_text("existing")
+    (tmp_path / "recipe.tmp").write_text("partial")
+    (tmp_path / ".cpt.lock").touch()
+    manifest = {"world_size": 16}
+    for name in ("step-00000400", "lit_model.pth", "steps-from-00000000-1.jsonl", "model_config.yaml"):
+        entry = tmp_path / name
+        entry.touch()
+        with pytest.raises(FileExistsError, match=name):
+            initialize_recipe(tmp_path, manifest)
+        assert entry.exists() and not (tmp_path / "recipe.json").exists()
+        entry.unlink()
+    evaluation = tmp_path / "evaluation"
+    evaluation.mkdir()
+    previous_stage = evaluation / "main"
+    previous_stage.mkdir()
+    with pytest.raises(FileExistsError, match="evaluation"):
+        initialize_recipe(tmp_path, manifest)
+    previous_stage.rmdir()
+    initialize_recipe(tmp_path, manifest)
+    assert json.loads((tmp_path / "recipe.json").read_text()) == manifest
+    assert (tmp_path / "logs" / "worker.log").read_text() == "existing"
+    assert (tmp_path / "recipe.tmp").read_text() == "partial"
