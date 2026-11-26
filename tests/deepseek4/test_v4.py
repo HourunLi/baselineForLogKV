@@ -302,3 +302,35 @@ def test_initialize_recipe_in_precreated_output(tmp_path):
     assert json.loads((tmp_path / "recipe.json").read_text()) == manifest
     assert (tmp_path / "logs" / "worker.log").read_text() == "existing"
     assert (tmp_path / "recipe.tmp").read_text() == "partial"
+
+
+def test_checkpoint_publication_without_rename(tmp_path, monkeypatch):
+    from pathlib import Path
+    from unittest.mock import Mock
+
+    import pytest
+    from deepseek4.train import initialize_recipe, latest_checkpoint, restore_progress, save_progress
+
+    def unsupported(*args):
+        raise OSError("rename unsupported")
+
+    monkeypatch.setattr(Path, "replace", unsupported)
+    monkeypatch.setattr(Path, "rename", unsupported)
+    (tmp_path / "recipe.tmp").write_text("old temporary file")
+    initialize_recipe(tmp_path, {"world_size": 1})
+    model = torch.nn.Linear(2, 2)
+    opt = torch.optim.AdamW(model.parameters())
+    loader = Mock()
+    loader.state_dict.return_value = {"position": 123}
+    old = tmp_path / "step-00000001"
+    old.mkdir()
+    partial = tmp_path / "checkpoint-00000002"
+    partial.mkdir()
+    (partial / "rank-0.pt").write_bytes(b"partial")
+    assert latest_checkpoint(tmp_path) == old
+    save_progress(tmp_path, 2, model, opt, loader, 1.5, 0, 1)
+    assert latest_checkpoint(tmp_path) == partial
+    assert restore_progress(partial, model, opt, loader, 0) == 1.5
+    loader.load_state_dict.assert_called_once_with({"position": 123})
+    with pytest.raises(FileExistsError):
+        save_progress(tmp_path, 2, model, opt, loader, 2.5, 0, 1)

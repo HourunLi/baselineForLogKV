@@ -7,7 +7,6 @@ import importlib.metadata
 import json
 import math
 import random
-import tempfile
 import fcntl
 import os
 from pathlib import Path
@@ -99,9 +98,7 @@ def save_model(model, directory, rank, distributed):
                 for key, tensor in module.state_dict().items():
                     state[f"transformer.h.{i}.{key}"] = tensor.to(device="cpu", dtype=torch.bfloat16, copy=True)
     if rank == 0:
-        temporary = directory / "lit_model.pth.tmp"
-        torch.save(state, temporary)
-        temporary.replace(directory / "lit_model.pth")
+        torch.save(state, directory / "lit_model.pth")
 
 
 def accumulation_steps(cfg, world):
@@ -137,11 +134,10 @@ def optimizer(model, cfg):
 
 def save_progress(output, step, model, opt, loader, elapsed, rank, world):
     # Local original-parameter shards and optimizer use the same rank layout on resume.
-    # Publish the directory only after every shard has been closed successfully.
-    staging = [tempfile.mkdtemp(prefix=".checkpoint-", dir=output) if rank == 0 else None]
-    if world > 1:
-        dist.broadcast_object_list(staging, src=0)
-    folder = Path(staging[0])
+    folder = output / f"checkpoint-{step:08d}"
+    folder.mkdir(exist_ok=True)
+    if (folder / "complete").exists():
+        raise FileExistsError(f"Checkpoint already published: {folder}")
     torch.save(
         dict(
             params={name: p.detach().to("cpu", copy=True) for name, p in model.named_parameters()},
@@ -154,9 +150,17 @@ def save_progress(output, step, model, opt, loader, elapsed, rank, world):
     if world > 1:
         dist.barrier()
     if rank == 0:
-        folder.rename(output / f"step-{step:08d}")
+        (folder / "complete").touch(exist_ok=False)
     if world > 1:
         dist.barrier()
+
+
+def latest_checkpoint(output):
+    digits = "[0-9]" * 8
+    # Older runs published step directories by rename. New runs publish a marker last.
+    folders = [p for p in output.glob("step-" + digits) if p.is_dir()]
+    folders.extend(p for p in output.glob("checkpoint-" + digits) if (p / "complete").is_file())
+    return max(folders, key=lambda p: int(p.name.split("-")[1]), default=None)
 
 
 def restore_progress(folder, model, opt, loader, rank):
@@ -177,24 +181,38 @@ def restore_progress(folder, model, opt, loader, rank):
 
 def initialize_recipe(output, manifest):
     """Start in a pre-created directory, preserving unrelated managed_cluster files."""
-    reserved = {"recipe.json", "training.json", "training.json.tmp", "model_config.yaml",
+    recipe = output / "recipe.json"
+    expected = json.dumps(manifest, indent=2)
+    if recipe.is_symlink():
+        raise FileExistsError(f"Expected a regular training recipe: {recipe}")
+    if recipe.exists():
+        stored = recipe.read_text()
+        try:
+            previous = json.loads(stored)
+        except json.JSONDecodeError:
+            # A truncated first write is recoverable only before any training artifacts exist.
+            if not expected.startswith(stored):
+                raise
+        else:
+            if previous != manifest:
+                raise ValueError(f"Resume recipe differs from {recipe}")
+            return
+    reserved = {"training.json", "training.json.tmp", "model_config.yaml",
                 "lit_model.pth", "lit_model.pth.tmp", "evaluation"}
     conflicts = []
     for entry in output.iterdir():
         if entry.name == "evaluation" and not entry.is_symlink() and entry.is_dir() and not any(entry.iterdir()):
             continue
         if (entry.name in reserved or entry.match("step-" + "[0-9]" * 8)
-                or entry.match("steps-from-*.jsonl") or entry.name.startswith(".checkpoint-")):
+                or entry.match("checkpoint-" + "[0-9]" * 8) or entry.match("steps-from-*.jsonl")
+                or entry.name.startswith(".checkpoint-")):
             conflicts.append(entry.name)
     if conflicts:
         raise FileExistsError(
-            f"No recipe.json for existing training artifacts in {output}: {', '.join(sorted(conflicts))}. "
+            f"No complete recipe.json for existing training artifacts in {output}: {', '.join(sorted(conflicts))}. "
             "Restore the matching recipe to resume, or set DEEPSEEK4_OUTPUT_DIR to a fresh directory."
         )
-    # An interrupted publication can leave recipe.tmp behind. Use a new temporary file.
-    with tempfile.NamedTemporaryFile(mode="w", dir=output, prefix=".recipe-", delete=False) as stream:
-        json.dump(manifest, stream, indent=2)
-    Path(stream.name).replace(output / "recipe.json")
+    recipe.write_text(expected)
 
 
 def train(cfg):
@@ -223,7 +241,7 @@ def train(cfg):
                 "ProLong stream is too short to reach the formal budget within the reference epoch limit"
             )
         base = Path(cfg["base_checkpoint_dir"])
-        start = [0]
+        start = [None]
         if not rank:
             output.mkdir(parents=True, exist_ok=True)
             lock = (output / ".cpt.lock").open("a")
@@ -249,23 +267,29 @@ def train(cfg):
                 git=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 code_sha256={str(p.relative_to(ROOT)): sha256(p) for p in (ROOT / "deepseek4").glob("*.py")},
             )
-            if (output / "training.json").exists():
-                raise FileExistsError(f"Completed training in {output}; use majob.sh eval --full")
-            if recipe.exists():
-                if json.loads(recipe.read_text()) != manifest:
-                    raise ValueError(f"Resume recipe differs from {recipe}")
-                checkpoints = sorted(output.glob("step-" + "[0-9]" * 8))
-                if checkpoints:
-                    start[0] = int(checkpoints[-1].name[5:])
-            else:
-                initialize_recipe(output, manifest)
+            record = output / "training.json"
+            if record.exists():
+                try:
+                    json.loads(record.read_text())
+                except json.JSONDecodeError:
+                    # A final manifest interrupted during writing can be republished from the final step.
+                    final = output / f"checkpoint-{cfg['steps']:08d}" / "complete"
+                    if not recipe.is_file() or not final.is_file():
+                        raise
+                else:
+                    raise FileExistsError(f"Completed training in {output}; use majob.sh eval --full")
+            initialize_recipe(output, manifest)
+            checkpoint = latest_checkpoint(output)
+            if checkpoint is not None:
+                start[0] = checkpoint.name
         if multi:
             dist.broadcast_object_list(start, src=0)
-        completed = start[0]
+        checkpoint_name = start[0]
+        completed = int(checkpoint_name.split("-")[1]) if checkpoint_name else 0
         model = load_model(cfg, device, multi)
         opt = optimizer(model, cfg)
         previous_time = (
-            restore_progress(output / f"step-{completed:08d}", model, opt, loader, rank) if completed else 0
+            restore_progress(output / checkpoint_name, model, opt, loader, rank) if checkpoint_name else 0
         )
         if not rank:
             # Retain superseded attempts separately so throughput and wasted work remain auditable.
@@ -341,9 +365,7 @@ def train(cfg):
                 gpu_hours=attempt_seconds * world / 3600,
                 weight_sha256=sha256(output / "lit_model.pth"),
             )
-            tmp = output / "training.json.tmp"
-            tmp.write_text(json.dumps(manifest, indent=2))
-            tmp.replace(output / "training.json")
+            record.write_text(json.dumps(manifest, indent=2))
         if multi:
             dist.barrier()
     finally:
