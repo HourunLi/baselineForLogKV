@@ -71,7 +71,7 @@ def resolve_training_config(train_config):
                "merged_state_staging_dir": save_path.with_name(save_path.name + "_fsdp_staging")}
     protected = [_absolute(source[key], BASELINE_ROOT) for key in
                  ("ckpt_dir", "save_path", "tensorboard_root", "merged_state_staging_dir") if source.get(key)]
-    protected.append(Path("/workspace/semanticLogKV"))
+    protected.append(Path("/data/lihourun/semanticLogKV"))
     for name, path in outputs.items():
         if (path.is_relative_to(RUNTIME_ROOT) or RUNTIME_ROOT.is_relative_to(path)
                 or any(path.is_relative_to(p) or p.is_relative_to(path) for p in protected)):

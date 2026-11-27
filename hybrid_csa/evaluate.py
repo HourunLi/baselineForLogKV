@@ -37,7 +37,7 @@ EVAL_LM_EVAL_MIN, EVAL_DATASETS_MIN = (0, 4, 11), (4, 8, 4)
 def configure_environment():
     # HF libraries capture these values at first import. This path is data, not source code.
     base = environment_path("HYBRID_CSA_HF_CACHE", "BASELINE_HF_CACHE", "HF_HOME") or \
-        "/workspace/data/hf_cache"
+        "/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache"
     os.environ["HF_HOME"] = base
     hub = environment_path("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE") or f"{base}/hub"
     for key, value in dict(
@@ -341,7 +341,7 @@ def run_evaluation(evaluator, kwargs, backend, contract, options=None, adapter_p
 
 
 def validate_output(output, kwargs):
-    protected = [BASELINE_ROOT / "hybrid_csa", Path("/workspace/semanticLogKV")]
+    protected = [BASELINE_ROOT / "hybrid_csa", Path("/data/lihourun/semanticLogKV")]
     protected += [Path(kwargs[k]).resolve() for k in ("checkpoint_dir", "tokenizer_dir") if kwargs.get(k)]
     protected += [Path(os.environ[k]).resolve() for k in ("HF_HOME", "HF_DATASETS_CACHE", "RULER_CACHE_DIR")
                   if os.environ.get(k)]

@@ -36,7 +36,7 @@ EVAL_LM_EVAL_MIN, EVAL_DATASETS_MIN = (0, 4, 9), (4, 7)
 
 def configure_environment():
     # HF libraries capture these values at first import. This path is data, not source code.
-    base = os.environ.get("CHUNKKV_HF_CACHE", "/workspace/data/hf_cache")
+    base = os.environ.get("CHUNKKV_HF_CACHE", "/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache")
     os.environ.update(
         HF_HOME=base, HF_DATASETS_CACHE=f"{base}/hf_cache", HF_EVALUATE_CACHE=f"{base}/evaluate",
         HF_MODULES_CACHE=f"{base}/modules", HF_HUB_CACHE=f"{base}/hub",

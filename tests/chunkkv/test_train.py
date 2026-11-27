@@ -64,7 +64,7 @@ def test_resolution_keeps_the_local_experiment_and_only_switches_off_logkv(refer
     ("chunkkv/_vendor/semanticlogkv/outputs/dense", {}, "outside the bundled runtime"),
     ("{tmp}/ckpt/semantic/dense", {}, "SemanticLogKV run"),
     ("weights/base/new", {}, "Base"),
-    ("/workspace/semanticLogKV/outputs/dense", {}, "SemanticLogKV run"),
+    ("/data/lihourun/semanticLogKV/outputs/dense", {}, "SemanticLogKV run"),
     ("{tmp}", {}, "SemanticLogKV run"),  # would contain the Base checkpoint and source tree
     ("outputs/dense", {"ckpt_dir": "/another/base"}, "fixed"),
     ("outputs/dense", {"log_kv_semantic_clusters": True}, "fixed"),

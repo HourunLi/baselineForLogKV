@@ -84,7 +84,7 @@ def resolve_config(path=DEFAULT_CONFIG, overrides=None):
         if not 0 < stage["learning_rate"] < 1:
             raise ValueError("learning_rate must be between 0 and 1")
     protected = [absolute(cfg[k]) for k in ("base_checkpoint_dir", "data_dir")]
-    protected += [BASELINE_ROOT / "hybrid_csa", Path("/workspace/semanticLogKV")]
+    protected += [BASELINE_ROOT / "hybrid_csa", Path("/data/lihourun/semanticLogKV")]
     protected += [Path(os.environ[k]).resolve() for k in ("HF_HOME", "HF_DATASETS_CACHE", "RULER_CACHE_DIR")
                   if os.environ.get(k)]
     outputs = [absolute(cfg[k]) for k in ("tokenized_dir", "output_dir")]

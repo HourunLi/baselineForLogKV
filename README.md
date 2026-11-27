@@ -13,19 +13,19 @@ python -m hybrid_csa.train --print-config
 python -m hybrid_csa.evaluate --suite niah --print-config
 
 # 训练与评测都用已有 torch218（缺省即此路径）；不再设置单独的训练解释器
-export HYBRID_CSA_PYTHON=/opt/conda/envs/torch218/bin/python
+export HYBRID_CSA_PYTHON=/home/ma-user/anaconda3/envs/torch218/bin/python
 bash majob.sh --print-config
 
 # 平台每节点执行一次：准备数据 → 三阶段适配 → main → NIAH，不需要任何参数。
-# 输出写到 configs/hybrid_csa/majob.yaml 的 output：/workspace/ckpt-logKV/hybrid-csa4
+# 输出写到 configs/hybrid_csa/majob.yaml 的 output：/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4
 # 每次运行覆盖它：环境预检通过后先删除上次的 train/、eval/、main/、niah/ 与运行记录，其他文件不动；
 # 其中的 tokenized/ 是第一次运行准备的分词数据，之后的运行校验后直接复用
 bash majob.sh
 # --output 可改用别的运行目录（同样覆盖；多节点使用同一共享绝对路径）
 
 # 已有产物时只评测；--limit 仅限制评测样本，不缩短训练
-bash majob.sh --mode eval --adapter /workspace/ckpt-logKV/hybrid-csa4/train/sparse.pt \
-  --limit 4 --output /workspace/ckpt-logKV/hybrid-csa4-eval-smoke
+bash majob.sh --mode eval --adapter /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4/train/sparse.pt \
+  --limit 4 --output /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4-eval-smoke
 
 # 本地实现验证（需项目基础依赖和 pytest）
 python -m pytest -q tests/hybrid_csa

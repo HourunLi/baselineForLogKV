@@ -1,6 +1,6 @@
 {
   "source_project": "SemanticLogKV (local LitGPT fork)",
-  "source_commit": "bf8ca5f73dd891047359b9e567fea3b524295841",
+  "source_commit": "4fd97c78e04f0ec96ad6aed18df9e9cf440c6090",
   "snapshot_date": "2026-10-20",
   "upstream_litgpt_version": "0.5.12",
   "license": "Apache-2.0",
@@ -41,7 +41,7 @@
     "litgpt/tokenizer.py": "deb3b48fc91abb36e397a033eb80420adbbce99015ab908647d11e891e0ecb0f",
     "litgpt/types.py": "cecb1f5b6ec643cb201b51c5ef5124cd6d6ba6c835044074d3e641895492064b",
     "litgpt/utils.py": "189624090b3d3a9d1f70000a49818b8f540d454b01ea1b89b7a7e2fbfe5c97f1",
-    "utils.py": "e2b3d4f8f0d6707829b755b1d3320959e6016eb572ac4662a2c635bfe499d851",
+    "utils.py": "c2a5a974e6c42ad3ad478aca18908ab49b99b7e7cb7b47c56e0b1845cbf0815d",
     "LICENSE.md": "ab89ceca19ca531005699095ca542f982fac92efd82f954f49ac17aa99a37cda"
   },
   "bundled_sha256": {
@@ -50,7 +50,7 @@
     "__init__.py": "9997312c1405bc293b6f92a626d5736ba321539b300fb0e60767fd431805595a",
     "data.py": "a9694ee4c227cedce7511331834d65f214d47f63a4012a31c73ad6b694d8b447",
     "demo.py": "d07ce202ab6d1c8b7a1e02e4a84c06cf645feb5ccb51a8a36799e2a042a5da29",
-    "eval.py": "e64826974965b40b975cd29b5e58a4e0c7b558ed1d38ef0bc23768c463bfe3ee",
+    "eval.py": "cde6e673f50e54eceeb715dd1b113a17ae6b86381f087043924fecd70a652b3f",
     "litgpt/__init__.py": "13c9674725944fe8890dd5670e6129f9a68a655eaa6c8eb61d50634694d911d4",
     "litgpt/alpha_log_kv.py": "a359b1aa403e452c2a62d103e1384a40a30c7d59ecf93f17967ce69543c1f65c",
     "litgpt/beta_log_kv.py": "e60c3dc36f663907db4c5ae1e1989f2a178594e4612d1ef25207a695525e7842",
@@ -78,7 +78,7 @@
     "litgpt/tokenizer.py": "ddba5d3cbe6321c63071731095d663e1170a6c6899e23156ed0ab32c6ebf8da1",
     "litgpt/types.py": "5e5fda4e287ba4e86c03713f870bb060da9439f34fec5ebc9e38cbfe6d40e2af",
     "litgpt/utils.py": "8a11e6f7993f5726b6e13786966585c800a38e47dbbca07ac275585f872a8b8a",
-    "utils.py": "d15b4fea7a3c9a959bbebae8b304feb3b87c1be2b4bc59ccc1941cfd81af0adb"
+    "utils.py": "7ff0e876fe4335d4c859055a5f2db9f4c13fdc7d7bea9a6d17b55579a7252c83"
   },
   "generated_files": [
     "__init__.py",

@@ -11,7 +11,7 @@ for name in HYBRID_CSA_TRAIN_PYTHON BASELINE_TRAIN_PYTHON; do
         exit 2
     fi
 done
-PYTHON=${HYBRID_CSA_PYTHON:-${BASELINE_EVAL_PYTHON:-${BASELINE_PYTHON:-/opt/conda/envs/torch218/bin/python}}}
+PYTHON=${HYBRID_CSA_PYTHON:-${BASELINE_EVAL_PYTHON:-${BASELINE_PYTHON:-/home/ma-user/anaconda3/envs/torch218/bin/python}}}
 source scripts/hybrid_csa_runtime.sh
 for argument in "$@"; do
     if [[ "$argument" == --print-config || "$argument" == --prepare-data ]]; then
