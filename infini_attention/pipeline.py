@@ -31,7 +31,7 @@ def main():
         cli.error(f"Global batch {cfg['global_batch_size']} must be divisible by {nodes} nodes x {gpus} GPUs")
     print(f"Topology: {nodes} nodes x {gpus} GPUs, accumulation={cfg['global_batch_size'] // world}", flush=True)
     root = Path(env.get("INFINI_OUTPUT_ROOT") or
-                Path("/workspace/ckpt-logKV/Infini-Attention") /
+                Path("/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/Infini-Attention") /
                 env.get("MA_VJ_NAME", "qwen8b-32k")).resolve()
     if args.steps is not None:
         if not 1 <= args.steps < cfg["steps"]:

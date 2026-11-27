@@ -3,8 +3,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/nccl_env.sh
 python_bin=${INFINI_TRAIN_PYTHON:-python}
-if [[ -z ${INFINI_TRAIN_PYTHON:-} && -d /opt/conda ]]; then
-    python_bin=/opt/conda/envs/torch218/bin/python
+if [[ -z ${INFINI_TRAIN_PYTHON:-} && -d /home/ma-user/anaconda3 ]]; then
+    python_bin=/home/ma-user/anaconda3/envs/torch218/bin/python
 fi
 if ! command -v "$python_bin" >/dev/null; then
     echo "Training interpreter unavailable: $python_bin. Set INFINI_TRAIN_PYTHON to the prepared environment." >&2
