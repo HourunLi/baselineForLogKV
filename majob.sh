@@ -2,7 +2,7 @@
 set -eu
 cd "$(dirname "$0")"
 if [[ ${1:-} == --pipeline || ${1:-} == --check ]]; then
-    set +u  # managed_cluster conda activation can read unset variables.
+    set +u  # ModelArts conda activation can read unset variables.
     source scripts/hattention_env.sh
     exec "${PYTHON_BIN}" -m infini_attention.pipeline "$@"
 fi

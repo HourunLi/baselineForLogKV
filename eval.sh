@@ -212,7 +212,7 @@ if [[ ${METHOD} == Infini-Attention ]]; then
     "${PYTHON_BIN}" -c 'import json,sys; from pathlib import Path; p=Path(sys.argv[1]); sys.exit(0 if "infini_segment_length" in json.loads((p/"config.json").read_text()) and (p/"training.json").is_file() else "Expected an exported Infini checkpoint: "+str(p))' "${SAVE_DIR}"
 fi
 mkdir -p "${EVAL_OUTPUT_DIR}"
-# Detect GPUs visible to this job (including CUDA_VISIBLE_DEVICES); managed_cluster
+# Detect GPUs visible to this job (including CUDA_VISIBLE_DEVICES); ModelArts
 # allocation is an upper bound. GPUS_PER_NODE may explicitly select fewer GPUs.
 GPUS_PER_NODE=$("${PYTHON_BIN}" - <<'PY_GPU_COUNT'
 import os

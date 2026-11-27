@@ -9,7 +9,7 @@ import pytest
 
 
 @pytest.mark.parametrize("mode,fail", [("--pipeline", ""), ("--check", ""), ("--pipeline", "cpt:1")])
-def test_managed_cluster_entrypoint(tmp_path, mode, fail):
+def test_modelarts_entrypoint(tmp_path, mode, fail):
     repo = Path(__file__).resolve().parents[1]
     (tmp_path / "scripts").mkdir()
     (tmp_path / "configs").mkdir()

@@ -1,10 +1,10 @@
 # Infini-Attention × Qwen3-8B-Base
 
-本分支实现基于原始 Qwen3-8B-Base 的 GQA Infini-Attention。训练与 LogKV 8B 使用相同起点、32K ProLong 语言建模目标和 **8,388,608,000 个输入 token**。评测对齐固定版本的 niahLogKV，包括 32K 主线和 32K、64K、128K、256K、512K、1M 长测。8B 对照配置
+本分支实现基于原始 Qwen3-8B-Base 的 GQA Infini-Attention。训练与 LogKV 8B 使用相同起点、32K ProLong 语言建模目标和 **8,388,608,000 个输入 token**。评测对齐固定版本的 niahLogKV，包括 32K 主线和 32K、64K、128K、256K、512K、1M 长测。[8B 对照配置](https://github.com/HourunLi/LogKV/tree/a126a1b3a11262a5dea85c0416b57753a44e9c6f/exp/qwen8b-32k)
 
-## managed_cluster 一次提交训练和评测
+## ModelArts 一次提交训练和评测
 
-选用上次 LogKV 的 CUDA / torch218 镜像与共享桶挂载，按当前作业分配 GPU，启动器读取 `MA_NUM_HOSTS` 和每节点卡数；2×8 时累积 8 次，4×8 时累积 4 次。使用本分支仓库根目录作为工作目录，每节点由 managed_cluster 执行一次同一条启动命令：
+选用上次 LogKV 的 CUDA / torch218 镜像与共享桶挂载，按当前作业分配 GPU，启动器读取 `MA_NUM_HOSTS` 和每节点卡数；2×8 时累积 8 次，4×8 时累积 4 次。使用本分支仓库根目录作为工作目录，每节点由 ModelArts 执行一次同一条启动命令：
 
 ```bash
 bash majob.sh --pipeline
@@ -12,18 +12,18 @@ bash majob.sh --pipeline
 
 作业先实际执行 全部训练进程的 NCCL 求和，检查各节点的底模分片、tokenizer、ProLong 输入、共享输出和评测环境。主节点离线打开主线任务数据，并核查各档长测语料。已有兼容的 ProLong 缓存直接复用，只有缺缓存且原始语料可读时，主节点才在本次输出目录准备数据。所有节点完成 CPT，写出最终权重后，自动运行 32K 主线及 32K–1M 六档评测。任一阶段失败，全作业停止。单独使用 `bash majob.sh --check` 只执行预检，默认一键命令已包含它；预检可能生成数据集或分词缓存。
 
-平台提供 `MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MA_NUM_GPUS` 和主节点地址；沿用原作业的网络设置，节点间需能访问默认端口 6000–6002。每次输出根目录默认为 `/workspace/ckpt-logKV/Infini-Attention/${MA_VJ_NAME}`（未设置作业名时使用 `qwen8b-32k`）。`cpt/` 为最终权重，`evaluate/` 为成绩。可用 `INFINI_OUTPUT_ROOT` 指定新的共享目录。训练已成功而仅需重跑评测时，设置 `INFINI_OUTPUT_ROOT` 为原作业根目录、`INFINI_OUTPUT_DIR` 为目标结果目录，然后运行原有的 `bash majob.sh`。
+平台提供 `MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MA_NUM_GPUS` 和主节点地址；沿用原作业的网络设置，节点间需能访问默认端口 6000–6002。每次输出根目录默认为 `/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/Infini-Attention/${MA_VJ_NAME}`（未设置作业名时使用 `qwen8b-32k`）。`cpt/` 为最终权重，`evaluate/` 为成绩。可用 `INFINI_OUTPUT_ROOT` 指定新的共享目录。训练已成功而仅需重跑评测时，设置 `INFINI_OUTPUT_ROOT` 为原作业根目录、`INFINI_OUTPUT_DIR` 为目标结果目录，然后运行原有的 `bash majob.sh`。
 
 **下载与数据。** 启动器离线运行。共享桶已有原始 HF 格式的 Qwen3-8B-Base、ProLong 和完整评测资产，且镜像具备下述依赖时，无需下载模型、数据或安装 Infini-Attention 包。只有 LitGPT 的 `lit_model.pth` 时，需先补齐原始 HF 权重和 tokenizer。长测缺失的数据可在联网准备机按预检报告补齐，再挂载同一目录。
 
 | 评测输入 | 沿用的 LogKV 默认路径 |
 | --- | --- |
-| HF_HOME | `/workspace/data/hf_cache` |
+| HF_HOME | `/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache` |
 | 普通长文 PPL | `$HF_HOME/long_ppl_data/emozilla--pg19-test` |
 | 32K–256K 书籍 PPL | `$HF_HOME/long_ppl_books/emozilla--pg19`，上限 100 本 |
 | 512K/1M 书籍 PPL | `$HF_HOME/long_ppl_books_1m/emozilla--pg19`，上限 10 本 |
 
-已导出的 `LONG_PPL_DATA`、`LONG_PPL_BOOKS`、`LONG_PPL_DOCS` 对所有档位生效。仅长两档使用了不同设置时，可以用 `INFINI_LONG_PPL_DATA_1M`、`INFINI_LONG_PPL_BOOKS_1M`、`INFINI_LONG_PPL_DOCS_1M` 指向上次对照的取值。普通 PPL 与书籍 PPL 各自都需要至少一篇经同一 tokenizer 分词后达到 1,048,576 token 的文档。上次只做了书籍 PPL 时，普通 PPL 的 1M 数据仍需实际核实；若无合格样本，预检会报出具体来源并停止。LogKV 长测数据说明
+已导出的 `LONG_PPL_DATA`、`LONG_PPL_BOOKS`、`LONG_PPL_DOCS` 对所有档位生效。仅长两档使用了不同设置时，可以用 `INFINI_LONG_PPL_DATA_1M`、`INFINI_LONG_PPL_BOOKS_1M`、`INFINI_LONG_PPL_DOCS_1M` 指向上次对照的取值。普通 PPL 与书籍 PPL 各自都需要至少一篇经同一 tokenizer 分词后达到 1,048,576 token 的文档。上次只做了书籍 PPL 时，普通 PPL 的 1M 数据仍需实际核实；若无合格样本，预检会报出具体来源并停止。[LogKV 长测数据说明](https://github.com/HourunLi/LogKV/blob/a126a1b3a11262a5dea85c0416b57753a44e9c6f/docs/eval-512k-1m.md)
 
 ## 单独训练
 
@@ -36,7 +36,7 @@ bash majob.sh --train cpt --print-config
 # 仅在缺少既有 packed 数据时运行一次，输出到本项目的独立缓存
 bash majob.sh --train prepare
 
-# managed_cluster 每节点一次。正式对照作业共 32 个进程
+# ModelArts 每节点一次。正式对照作业共 32 个进程
 bash majob.sh --train cpt
 ```
 
@@ -85,4 +85,4 @@ python -m infini_attention.depth /path/to/1m_niah_result.json --tokenizer /path/
 `python -m pytest -q tests/test_infini_attention.py` 检查原始权重迁移、关闭记忆后的段内 dense 对齐、独立公式重算矩阵、因果性、跨段分块、缓存重置、CPT 保存恢复及 lm-eval 的三种请求。开发机另外用双进程 CPU FSDP 验证了连续与断点恢复训练逐参数一致，用小型 BF16 模型完成 32K 前向与反向。在微型模型上使用正式的 1M 长文本 PPL 入口、合成留出文本和 RULER 单针生成任务，验证了打分、生成和位置统计。8B 在目标 GPU 的完整训练、质量、峰值显存和吞吐仍待实测。
 
 - 方法采用原论文的 Linear 更新和逐头门控。第三方 Qwen1.5-MoE 实现提供算法参考，本文的 Qwen3 分组记忆、请求缓存和训练代码在本项目内实现。[论文](https://arxiv.org/abs/2404.07143) · [参考实现及固定提交](https://github.com/jlamprou/Infini-Attention/tree/3a86dd5c528f3cf9ecd231314338c5fac6f88dd1)
-- 长测计划、任务定义和评测协议源自 Apache-2.0 的 niahLogKV；项目内已有评测器和 ProLong 读取器在本分支复用。CSV 汇总沿用本仓库 5e00e96 的报告实现，按新模型提供缓存字段。运行时使用本仓库私有模块和已安装的依赖。固定评测版本 · [已有代码来源](lla_bench/SOURCES.md) · [许可证](LICENSE)
+- 长测计划、任务定义和评测协议源自 Apache-2.0 的 niahLogKV；项目内已有评测器和 ProLong 读取器在本分支复用。CSV 汇总沿用本仓库 5e00e96 的报告实现，按新模型提供缓存字段。运行时使用本仓库私有模块和已安装的依赖。[固定评测版本](https://github.com/HourunLi/LogKV/tree/a126a1b3a11262a5dea85c0416b57753a44e9c6f) · [已有代码来源](lla_bench/SOURCES.md) · [许可证](LICENSE)

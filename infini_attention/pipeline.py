@@ -1,4 +1,4 @@
-"""managed_cluster entry point for a budget-matched distributed CPT and evaluation."""
+"""ModelArts entry point for a budget-matched distributed CPT and evaluation."""
 import argparse
 import os
 from pathlib import Path
@@ -19,7 +19,7 @@ def main():
         cli.error("--steps requires --pipeline")
     nodes, rank, env = node_environment()
     if nodes > 1 and not any(os.getenv(k) for k in ("VC_TASK_INDEX", "NODE_RANK", "GROUP_RANK")):
-        cli.error("Multi-node managed_cluster jobs require a node rank on each host.")
+        cli.error("Multi-node ModelArts jobs require a node rank on each host.")
     import torch
     allocated = int(env.get("MA_NUM_GPUS") or torch.cuda.device_count())
     gpus = int(env.get("GPUS_PER_NODE") or allocated)

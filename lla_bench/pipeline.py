@@ -1,4 +1,4 @@
-"""One managed_cluster process per node coordinates the existing training and evaluation launchers."""
+"""One ModelArts process per node coordinates the existing training and evaluation launchers."""
 import os
 import subprocess
 from datetime import timedelta
