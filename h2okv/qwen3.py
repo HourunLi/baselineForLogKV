@@ -7,7 +7,7 @@ names. Numerics follow the reference dense path: fp32 RMSNorm statistics, RoPE
 tables cast to the model dtype, grouped K/V expanded with ``repeat_interleave``.
 
 Beyond the 32K the Base was trained for, ``rope_scaling`` applies YaRN as SemanticLogKV's long-context
-evaluation does (LogKV niahLogKV@26a4f47, ``litgpt/model.py`` ``build_rope_cache``, Apache-2.0,
+evaluation does (HourunLi/LogKV niahLogKV@4615501, ``litgpt/model.py`` ``build_rope_cache``, Apache-2.0,
 itself matching transformers' ``_compute_yarn_parameters``): the frequencies above ``beta_slow`` rotations
 are interpolated by ``factor``, those below ``beta_fast`` kept, a linear ramp between; cos/sin are scaled by
 the attention temperature ``0.1 * ln(factor) + 1``. With ``prefill_chunk_size`` a cached forward runs the

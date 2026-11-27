@@ -70,9 +70,9 @@ KVCache-Factory 把多种 KV 压缩方法放在同一个推理入口下，用参
 
 ```bash
 # 首次检出：仓库的默认分支是 DMS，必须用 -b 指定本分支；已有目录不能靠 git pull 换分支
-git clone -b H2O "${BASELINE_REPOSITORY_URL:?Set the repository URL}" /workspace/baselineForLogKV/H2O
-source /opt/conda/bin/activate torch218
-cd /workspace/baselineForLogKV/H2O
+git clone -b H2O https://github.com/HourunLi/baselineForLogKV.git /data/lihourun/baselineForLogKV/H2O
+source /home/ma-user/anaconda3/bin/activate torch218
+cd /data/lihourun/baselineForLogKV/H2O
 git branch --show-current    # 应为 H2O；目录里应有 h2okv/，不应有 dms/ 或其他方法的包
 ```
 
@@ -121,7 +121,7 @@ BUDGETS="128 512 2048" bash scripts/sweep_budget.sh configs/qwen3_1.7b_32k_h2o.y
 `majob.sh` 是正式完整评测入口，**每个节点执行一次**：先 main（47 个入口），再 NIAH（3 个入口，仅 32768）。两个阶段各自一次 `torch.distributed.run`、各用一个端口，输出分别在 `<output>/main/` 与 `<output>/niah/`；main 失败时返回非零并且不启动 NIAH。它不允许 `--suite/--tasks/--eval-suites/--include-path/--ruler-lengths/--ruler-pretrained/--max-seq-length` 等会改变协议的参数，只接受方法、预算、输出目录与调试用 `--limit`。
 
 ```bash
-cd /workspace/baselineForLogKV/H2O    # 不安装任何包；默认激活 torch218
+cd /data/lihourun/baselineForLogKV/H2O    # 不安装任何包；默认激活 torch218
 bash majob.sh configs/qwen3_1.7b_32k_h2o.yaml --limit 4 --output outputs/h2o-32k-smoke   # 小样本检查
 bash majob.sh configs/qwen3_1.7b_32k_h2o.yaml --output outputs/h2o-32k-full              # 全量
 ```
@@ -133,7 +133,7 @@ bash majob.sh configs/qwen3_1.7b_32k_h2o.yaml --output outputs/h2o-32k-full     
 | `VC_TASK_INDEX` | 节点 rank；缺省使用 `NODE_RANK`、`GROUP_RANK` 或 0 |
 | `MA_VJ_NAME`、`MA_TASK_NAME`、`MA_MASTER_INDEX` | 主节点 DNS（`<作业>-<任务>-<序号>.<作业>`）；无作业名时使用 `MASTER_ADDR`，多节点禁止 localhost |
 | `MASTER_PORT` | 只用于多节点：默认 6000，main 用 +1、NIAH 用 +2，可由 `EVAL_MASTER_PORT`、`NIAH_MASTER_PORT` 覆盖。单节点每个阶段用 `--standalone`，由 torchrun 绑定空闲端口，不会因固定端口被占用而失败 |
-| `H2O_PYTHON` / `H2O_CONDA_ENV` | 直接指定解释器；否则激活 `/opt/conda/bin/activate ${H2O_CONDA_ENV:-torch218}`。环境名不代表实际版本，以结果中的 `provenance` 为准 |
+| `H2O_PYTHON` / `H2O_CONDA_ENV` | 直接指定解释器；否则激活 `/home/ma-user/anaconda3/bin/activate ${H2O_CONDA_ENV:-torch218}`。环境名不代表实际版本，以结果中的 `provenance` 为准 |
 
 激活环境后、任何 CUDA 调用之前，脚本照搬 SemanticLogKV `eval.sh`/`majob.sh` 的运行库设置：把 `/usr/local/cuda-12.8/bin` 加到 `PATH` 前面，
 `/usr/lib/x86_64-linux-gnu` 与 `/usr/local/cuda-12.8/lib64` 加到 `LD_LIBRARY_PATH` 前面，并设置同样的 `CUDA_DEVICE_MAX_CONNECTIONS`、`NCCL_*` 变量
@@ -180,7 +180,7 @@ bash scripts/evaluate.sh configs/qwen3_1.7b_64k_h2o.yaml --suite ruler --limit 4
 1. 在 SemanticLogKV 自己的项目里生成同一组样本的结果（以 NIAH 为例：单档 32K，`pretrained` 用同一个 Base 路径；main 阶段按其默认任务列表、不传 metadata）。本项目不读取、不调用 SemanticLogKV 的代码或配置，下面的命令在对方项目中执行：
 
    ```bash
-   DIAG_ARGS='--limit 4 --metadata {"pretrained":"/workspace/checkpoints/Qwen/Qwen3-1.7B-Base/","max_seq_lengths":[32768]}' \
+   DIAG_ARGS='--limit 4 --metadata {"pretrained":"/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/","max_seq_lengths":[32768]}' \
      bash eval.sh exp/qwen1.7b-32k/arc_attach_alpha_beta_k12_b128_2k.yaml niah_single_1,niah_single_2,niah_single_3 none
    ```
 

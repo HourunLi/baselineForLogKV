@@ -1,7 +1,7 @@
 {
- "source_project": "SemanticLogKV (LogKV)",
+ "source_project": "SemanticLogKV (HourunLi/LogKV)",
  "source_branch": "niahLogKV",
- "source_commit": "26a4f47",
+ "source_commit": "4615501",
  "source_paths": {
   "tasks/babilong_long": "eval_tasks/babilong_long",
   "tasks/long_ppl": "eval_tasks/long_ppl"
