@@ -53,7 +53,7 @@ eval "${eval_settings}"
 # An explicit 512K/1M-only selection uses those passes and their standard suites by default.
 DEFAULT_EVAL_MAIN=${CONFIG_EVAL_MAIN}
 DEFAULT_EVAL_SUITES=${CONFIG_EVAL_SUITES}
-if [[ ${EVAL_LENGTHS,,} =~ ^[[:space:],]*(512k|1m)([[:space:],]+(512k|1m))*[[:space:],]*$ ]]; then
+if [[ $(printf '%s' "${EVAL_LENGTHS:-}" | tr '[:upper:]' '[:lower:]') =~ ^[[:space:],]*(512k|1m)([[:space:],]+(512k|1m))*[[:space:],]*$ ]]; then
     DEFAULT_EVAL_MAIN=0
     DEFAULT_EVAL_SUITES=${CONFIG_EVAL_SUITES:-ruler,babilong,books,longbench2}
 fi
@@ -102,8 +102,8 @@ if [ -z "${BENCHMARKS}" ]; then
     export EVAL_OPTIONAL_TASKS=${DEFAULT_OPTIONAL_BENCHMARKS}
     # When the main line supplies the 32K books result to an explicit long
     # suite, missing data must fail here before the planner deduplicates it.
-    if [[ "${EVAL_MAIN}" == 1 && ",${EVAL_LENGTHS,,}," =~ [,[:space:]]32k[,[:space:]] &&
-          ",${EVAL_SUITES,,}," =~ [,[:space:]]books[,[:space:]] ]]; then
+    if [[ "${EVAL_MAIN}" == 1 && ",$(printf '%s' "${EVAL_LENGTHS:-}" | tr '[:upper:]' '[:lower:]')," =~ [,[:space:]]32k[,[:space:]] &&
+          ",$(printf '%s' "${EVAL_SUITES:-}" | tr '[:upper:]' '[:lower:]')," =~ [,[:space:]]books[,[:space:]] ]]; then
         export EVAL_OPTIONAL_TASKS=niah_turns_32k
     fi
 fi
@@ -150,7 +150,7 @@ if [ -n "${EVAL_LENGTHS}" ]; then
     fi
     LONG_EVAL_PLAN=$("${PYTHON_BIN}" -m lla_bench.long_eval_plan "${EVAL_LENGTHS}" "${EVAL_SUITES:-}" "${YARN_MODE:-per_length}" \
         "${NIAH_ONLY:-0}" "${CONFIG_OVERRIDES}" "${EVAL_OUTPUT_DIR}" "${LONG_EVAL_SKIP}") || exit 1
-    mapfile -t LONG_EVAL_PASSES <<< "${LONG_EVAL_PLAN}"
+    while IFS= read -r pass; do LONG_EVAL_PASSES+=("$pass"); done <<< "${LONG_EVAL_PLAN}"
     echo "Long-context passes (YARN_MODE=${YARN_MODE:-per_length}, EVAL_SUITES=${EVAL_SUITES:-all}, main line first: ${EVAL_MAIN:-0}):"
     printf '  %s\n' "${LONG_EVAL_PASSES[@]}"
 fi
