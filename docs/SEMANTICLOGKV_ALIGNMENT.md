@@ -8,7 +8,7 @@
 
 | 原依赖 | 现在 |
 |---|---|
-| `../litgpt/eval.py`、`utils.py`、`litgpt` 包 | 私有快照 `models/_vendor/semanticlogkv/`（命名空间 `models._vendor.semanticlogkv`），来源 `LogKV@bf8ca5f`，只保留 `eval.py` 的导入闭包；来源 commit、原始与打包文件 SHA-256、许可证（Apache-2.0）和修改说明见该目录 `SOURCE.json`、`README.md`、`LICENSE.md` |
+| `../litgpt/eval.py`、`utils.py`、`litgpt` 包 | 私有快照 `models/_vendor/semanticlogkv/`（命名空间 `models._vendor.semanticlogkv`），来源 `HourunLi/LogKV@4fd97c7`，只保留 `eval.py` 的导入闭包；来源 commit、原始与打包文件 SHA-256、许可证（Apache-2.0）和修改说明见该目录 `SOURCE.json`、`README.md`、`LICENSE.md` |
 | `../litgpt/exp/qwen1.7b-32k/arc_attach_alpha_beta_k12_b128_2k.yaml` 继承链 | 项目内平铺快照 `configs/experiment_qwen1.7b_32k.yaml`：原始 Base `ckpt_dir`、`context_length=32768`、仅供 `--backend logkv` 对照使用的 `log_kv_*` 参数；不含 SemanticLogKV CPT 的训练字段 |
 | `../litgpt/eval.sh` 任务列表 | 项目内 `configs/eval_suites.yaml`：47 个 main 入口与 3 个 NIAH（仅 `[32768]`） |
 | `litgpt.scripts.convert_lit_checkpoint.copy_weights_qwen_3` | `models/qwen3/convert_lit_to_hf.py`（改编自 LitGPT 0.5.12，Apache-2.0），测试中用参考快照的 HF→LitGPT 转换做逐张量零误差往返校验 |

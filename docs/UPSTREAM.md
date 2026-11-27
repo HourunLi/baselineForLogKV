@@ -18,7 +18,7 @@
 
 | 来源 | 当前路径 | 处理 |
 |---|---|---|
-| SemanticLogKV（`LogKV@bf8ca5f73dd891047359b9e567fea3b524295841`）`eval.py` 及其导入闭包（LitGPT 0.5.12 分支） | `models/_vendor/semanticlogkv` | 评测协议私有快照，Apache-2.0；仅改命名空间、头注释与 `DMS_HF_CACHE`；省略 `demo.py`、`data.py`。逐文件来源/打包哈希见其 `SOURCE.json` |
+| SemanticLogKV（`HourunLi/LogKV@4fd97c78e04f0ec96ad6aed18df9e9cf440c6090`）`eval.py` 及其导入闭包（LitGPT 0.5.12 分支） | `models/_vendor/semanticlogkv` | 评测协议私有快照，Apache-2.0；仅改命名空间、头注释与 `DMS_HF_CACHE`；省略 `demo.py`、`data.py`。逐文件来源/打包哈希见其 `SOURCE.json` |
 | LitGPT 0.5.12 `litgpt/scripts/convert_lit_checkpoint.py` 的 `copy_weights_qwen_3` | `models/qwen3/convert_lit_to_hf.py` | Apache-2.0；只保留 dense Qwen3 映射，去掉惰性加载 saver，未知键报错 |
 
 ## 本地差异

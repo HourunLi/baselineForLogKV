@@ -29,7 +29,7 @@ from .config import (
 
 BACKENDS = ("dms", "logkv")
 SUITES = ("main", "longbench", "niah")
-DEFAULT_HF_CACHE = "/workspace/data/hf_cache"
+DEFAULT_HF_CACHE = "/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache"
 TOKENIZER_NAMES = ("tokenizer.json", "tokenizer.model", "tokenizer_config.json", "special_tokens_map.json",
                    "added_tokens.json", "vocab.json", "merges.txt", "chat_template.jinja",
                    "generation_config.json")

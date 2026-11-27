@@ -32,7 +32,7 @@ done
 
 # Conda activation scripts may read unset variables; enable nounset afterwards.
 if [[ -z "${DMS_PYTHON:-}" ]]; then
-    source /opt/conda/bin/activate "${DMS_CONDA_ENV:-torch218}"
+    source /home/ma-user/anaconda3/bin/activate "${DMS_CONDA_ENV:-torch218}"
     DMS_PYTHON=$(python -c 'import sys; print(sys.executable)')
 fi
 set -u
