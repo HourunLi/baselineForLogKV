@@ -1,7 +1,7 @@
 {
-  "repository": "LogKV",
+  "repository": "https://github.com/HourunLi/LogKV",
   "branch": "niahLogKV",
-  "commit": "0f4396b617a5cfcead9da3d6bb23a4f0693c97f5",
+  "commit": "a126a1b3a11262a5dea85c0416b57753a44e9c6f",
   "license": "Apache-2.0",
   "changes": [
     "Private package imports and minimal litgpt exports",
@@ -24,5 +24,5 @@
       "bundled": "2fff1ac3c0d4748204ece02ef6cd05f9846627b7bd88826d0a97fabea29ca857"
     }
   },
-  "packaging_source": "baselineForLogKV/tree/df8a84b5c156900cd5c82c9f6ef73ab8da41a6ef"
+  "packaging_source": "https://github.com/HourunLi/baselineForLogKV/tree/df8a84b5c156900cd5c82c9f6ef73ab8da41a6ef"
 }

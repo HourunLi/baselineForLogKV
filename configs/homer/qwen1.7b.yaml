@@ -1,5 +1,5 @@
 protocol: homer_calibration
-model: /workspace/checkpoints/Qwen/Qwen3-1.7B-Base
+model: /home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base
 output: outputs/homer/calibration/qwen1.7b-native-2048
 data: Salesforce/wikitext
 length: 2048  # Covers relative distances 0..2047. Set to max lookup distance + 1.

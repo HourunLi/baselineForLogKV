@@ -33,7 +33,7 @@ bash majob.sh configs/niah/qwen8b.yaml
 
 `log_kv_*` 参数给出缓存预算的参照。SnapKV 使用原始 Base 权重；`--backend logkv` 和 `--backend dense` 默认使用 `save_path` 中的 gamma CPT 对照权重。如需测量 SnapKV 相对同权重 dense 的质量变化，在同一份 YAML 后加 `--backend dense --model /path/to/Qwen3-X-Base`。各次结果记录实际 checkpoint 的 SHA-256。单卡试跑可加 `--no-main --lengths 32k --suites ruler --limit 1`。结果写到 `outputs/niahlogkv/<规模>/<参考配置>/<后端>/`。共享数据路径沿用 `HF_HOME`、`LONG_PPL_DATA`、`LONG_PPL_BOOKS`、`BABILONG_DIR`、`LONGBENCH2_DIR` 和 `INFINITEBENCH_DIR`。
 
-原生主线含 49 个 main 入口及 20 个 NIAH 入口。长文本各档按参考计划去重，每任务默认最多 100 条，窗口为目标长度加 1024。各档包含 RULER、BABILong、多轮 NIAH、LongBench v2、长文 PPL 和书籍 PPL 曲线。InfiniteBench 到 256K，RULER SQuAD 到 128K。可选数据缺失及显式选择任务的行为继承参考评测器。仅选 512K/1M 时默认跑 RULER、BABILong、单点 PPL、书籍 PPL、多轮 NIAH 和 LongBench v2。源码与许可证见 `pyramidkv/_vendor/niahlogkv/SOURCE.json`。参考配置
+原生主线含 49 个 main 入口及 20 个 NIAH 入口。长文本各档按参考计划去重，每任务默认最多 100 条，窗口为目标长度加 1024。各档包含 RULER、BABILong、多轮 NIAH、LongBench v2、长文 PPL 和书籍 PPL 曲线。InfiniteBench 到 256K，RULER SQuAD 到 128K。可选数据缺失及显式选择任务的行为继承参考评测器。仅选 512K/1M 时默认跑 RULER、BABILong、单点 PPL、书籍 PPL、多轮 NIAH 和 LongBench v2。源码与许可证见 `pyramidkv/_vendor/niahlogkv/SOURCE.json`。[参考配置](https://github.com/HourunLi/LogKV/blob/a126a1b3a11262a5dea85c0416b57753a44e9c6f/exp/qwen1.7b-32k/eval_full_baseline.yaml)
 
 本入口采用流式 SnapKV。每层、每个 KV 头的容量相同。每个块先用保留下来的历史执行因果注意力；超出容量时，用当前块末尾最多 8 个查询给历史键打分，再保留池化分数最高的历史和最近 8 个位置。单 token 解码使用当前查询。已淘汰的 KV 无法参与后续块的注意力。原始一次性 prefill、decode 追加的 SnapKV 仍可用下方旧入口复现。
 
@@ -134,9 +134,9 @@ NIAH 是生成任务，不受此选项影响。与 PyramidKV、H2O 分支的默�
 
 ```bash
 # 首次检出：仓库的默认分支是 DMS，必须用 -b 指定本分支；已有目录不能靠 git pull 换分支
-git clone -b snapKV "${BASELINE_REPOSITORY_URL:?Set the repository URL}" /workspace/baselineForLogKV/snapKV
-source /opt/conda/bin/activate torch218
-cd /workspace/baselineForLogKV/snapKV
+git clone -b snapKV https://github.com/HourunLi/baselineForLogKV.git /data/lihourun/baselineForLogKV/snapKV
+source /home/ma-user/anaconda3/bin/activate torch218
+cd /data/lihourun/baselineForLogKV/snapKV
 git branch --show-current    # 应为 snapKV；目录里应有 snapkv/，不应有 dms/ 或其他方法的包
 ```
 
@@ -192,7 +192,7 @@ BUDGETS="128 512 2048" bash scripts/sweep_budget.sh configs/qwen3_1.7b_32k_snapk
 只接受方法、预算、输出目录与调试用 `--limit`。
 
 ```bash
-cd /workspace/baselineForLogKV/snapKV    # 不安装任何包；默认激活 torch218
+cd /data/lihourun/baselineForLogKV/snapKV    # 不安装任何包；默认激活 torch218
 bash majob.sh configs/qwen3_1.7b_32k_snapkv.yaml --limit 4 --output outputs/snapkv-32k-smoke   # 小样本检查
 bash majob.sh configs/qwen3_1.7b_32k_snapkv.yaml --output outputs/snapkv-32k-full              # 全量
 ```
@@ -204,7 +204,7 @@ bash majob.sh configs/qwen3_1.7b_32k_snapkv.yaml --output outputs/snapkv-32k-ful
 | `VC_TASK_INDEX` | 节点 rank；缺省使用 `NODE_RANK`、`GROUP_RANK` 或 0 |
 | `MA_VJ_NAME`、`MA_TASK_NAME`、`MA_MASTER_INDEX` | 主节点 DNS（`<作业>-<任务>-<序号>.<作业>`）；无作业名时使用 `MASTER_ADDR`，多节点禁止 localhost |
 | `MASTER_PORT` | 只用于多节点：默认 6000，main 用 +1、NIAH 用 +2，可由 `EVAL_MASTER_PORT`、`NIAH_MASTER_PORT` 覆盖。单节点每个阶段用 `--standalone`，由 torchrun 绑定空闲端口 |
-| `SNAPKV_PYTHON` / `SNAPKV_CONDA_ENV` | 直接指定解释器；否则激活 `/opt/conda/bin/activate ${SNAPKV_CONDA_ENV:-torch218}`。环境名不代表实际版本，以结果中的 `provenance` 为准 |
+| `SNAPKV_PYTHON` / `SNAPKV_CONDA_ENV` | 直接指定解释器；否则激活 `/home/ma-user/anaconda3/bin/activate ${SNAPKV_CONDA_ENV:-torch218}`。环境名不代表实际版本，以结果中的 `provenance` 为准 |
 
 激活环境后、任何 CUDA 调用之前，脚本照搬 SemanticLogKV `eval.sh`/`majob.sh` 的运行库设置：把 `/usr/local/cuda-12.8/bin` 加到 `PATH` 前面，
 `/usr/lib/x86_64-linux-gnu` 与 `/usr/local/cuda-12.8/lib64` 加到 `LD_LIBRARY_PATH` 前面，并设置同样的 `CUDA_DEVICE_MAX_CONNECTIONS`、`NCCL_*` 变量
@@ -220,7 +220,7 @@ bash majob.sh configs/qwen3_1.7b_32k_snapkv.yaml --output outputs/snapkv-32k-ful
    本项目不读取、不调用 SemanticLogKV 的代码或配置，下面的命令在对方项目中执行：
 
    ```bash
-   DIAG_ARGS='--limit 4 --metadata {"pretrained":"/workspace/checkpoints/Qwen/Qwen3-1.7B-Base/","max_seq_lengths":[32768]}' \
+   DIAG_ARGS='--limit 4 --metadata {"pretrained":"/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/","max_seq_lengths":[32768]}' \
      bash eval.sh exp/qwen1.7b-32k/arc_attach_alpha_beta_k12_b128_2k.yaml niah_single_1,niah_single_2,niah_single_3 none
    ```
 

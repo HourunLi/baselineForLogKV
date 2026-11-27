@@ -18,7 +18,7 @@ import json
 import os
 from pathlib import Path
 
-DEFAULT_HF_CACHE_BASE = "/workspace/data/hf_cache"
+DEFAULT_HF_CACHE_BASE = "/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache"
 
 RULER_URL_FILES = {
     "https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json": "dev-v2.0.json",
