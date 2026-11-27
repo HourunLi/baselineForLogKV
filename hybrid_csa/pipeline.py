@@ -22,7 +22,7 @@ from .evaluate import (BACKENDS, DEFAULT_CONFIG, DEFAULT_HYBRID_CSA_CONFIG, DEFA
 from .train import DEFAULT_CONFIG as TRAIN_CONFIG, accumulation_steps, resolve_config
 
 
-TORCH218_PYTHON = "/opt/conda/envs/torch218/bin/python"
+TORCH218_PYTHON = "/home/ma-user/anaconda3/envs/torch218/bin/python"
 JOB_CONFIG = BASELINE_ROOT / "configs/hybrid_csa/majob.yaml"
 # What a run deletes from its output directory before writing (see clear_previous_run).
 RESULT_DIRECTORIES = ("train", "eval", "main", "niah")

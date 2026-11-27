@@ -20,7 +20,7 @@ bash majob.sh all
 
 `all` 先在每节点用 torch218 检查 CUDA BF16、NCCL、依赖、Base/tokenizer、训练语料和离线评测资产。它通过 lm-eval 加载原生主线任务，检查 RULER 的背景与问答文件、BABILong 的各长度/分组、LongBench v2 的各子集和 InfiniteBench 的文件与首条样本。主节点按 Qwen tokenizer 验证 PPL 文档可达到对应长度，复用参考评测器的文档选择缓存。检查成功后读取对照作业的分片并训练。所有训练进程等待 rank 0 写完权重及指纹，评测进程验证指纹后进入主线和六档评测。任何阶段失败都会以非零状态退出。单独运行 `bash majob.sh check` 可在目标环境执行相同的训练前检查。
 
-8B 参考 YAML 直接读取 `LONG_PPL_DATA` 和 `LONG_PPL_BOOKS`。请保留对照作业导出的两项实际路径，并沿用同一份 `LONG_PPL_DOCS` 和 `LONG_PPL_CONCAT` 设置。单点 PPL 和书籍 PPL 在 512K/1M 档都需要能提供 1,048,576 tokens 的来源。完整模式若缺少这些变量或读不到足够长的文档，会在训练前报错。InfiniteBench 沿用显式目录、普通文件和 Hub 缓存的参考查找顺序。8B 长档参考配置
+8B 参考 YAML 直接读取 `LONG_PPL_DATA` 和 `LONG_PPL_BOOKS`。请保留对照作业导出的两项实际路径，并沿用同一份 `LONG_PPL_DOCS` 和 `LONG_PPL_CONCAT` 设置。单点 PPL 和书籍 PPL 在 512K/1M 档都需要能提供 1,048,576 tokens 的来源。完整模式若缺少这些变量或读不到足够长的文档，会在训练前报错。InfiniteBench 沿用显式目录、普通文件和 Hub 缓存的参考查找顺序。[8B 长档参考配置](https://github.com/HourunLi/LogKV/blob/a126a1b3a11262a5dea85c0416b57753a44e9c6f/exp/qwen8b-32k/eval_long_word_first.yaml)
 
 1. 正式作业直接读取 8B LogKV 的 ProLong LitData 资产。按参照实现对 Qwen tokenizer 文件计算哈希，在 `DEEPSEEK4_DATA_DIR` 下定位 `litdata_<hash>_ctx32768`。`prepare` 核验索引和分片大小。两边使用同一底模、分片、LitData 版本、进程与 worker 数才能复现相同的输入顺序。每卡 16 个 worker，shuffle seed 42，块长 32,769，训练输入与目标相差一个 token。没有合成检索样本。
 2. 全模型 CPT 使用 next-token CE，加 CSA 索引器从本层注意力质量计算的辅助交叉熵。没有外部 teacher。模型采用 BF16、FULL_SHARD、激活重计算，每个 micro-batch 同步分片梯度。词表交叉熵复用参考实现，按 1,024 个 token 分块。AdamW 的 betas 为 (0.9, 0.95)，eps 为 1e-8，weight decay 为 0.1，名称含 bias、norm 或 ln_ 的参数免衰减。前 100 次更新线性预热至 5e-6，之后按参考代码用已完成更新数计算余弦衰减，目标下限为 3e-6。沿用对照的无梯度裁剪设置。
@@ -28,11 +28,11 @@ bash majob.sh all
 4. 每 400 步，各 rank 在断点目录直接写入权重分片、AdamW 状态和 LitData 读取位置。所有 rank 写完后由 rank 0 创建完成标记；续训跳过缺少标记的新格式断点。配方相同且训练尚未结束时从最近完整断点续训。配方变化或训练已完成后再次启动训练，会在原目录删除旧断点、权重、步日志和默认 evaluation 结果，从 Base 开始新一轮训练。默认输出为 `deepseek4/cpt-32k-b128-2k`。五个断点加最终 BF16 模型合计约 350 GB，使用独立共享存储。每次尝试保存独立的 `steps-from-*.jsonl`。最终 `training.json` 记录底模、分片索引指纹、依赖、实际步数、token 和 GPU 小时；GPU 小时包含之前尝试已记入日志的训练时间。评测前验证最终权重指纹。
 5. 两种方法的输入和更新预算相同。CSA/HCA 模型的参数量、初始化、索引辅助损失和实际算力成本属于方法差异。历史 LogKV 作业实际完成的 token 和 GPU 小时需从该次作业日志核对。64K–1M 的五个档位属于训练长度外推。
 
-多节点需要共享资产和输出目录，使用 `MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MASTER_ADDR`、`MASTER_PORT` 与 `MA_NUM_GPUS`。也支持 `NNODES`、`NODE_RANK` 与 `NPROC_PER_NODE`。一体化入口使用独立的 torchrun 进程依次启动各阶段，managed_cluster 环境可由作业名、任务名及主节点索引推导主机地址。单节点使用 standalone，多节点各阶段使用不同 rendezvous 端口。评测使用现有 torch218 环境，检查 lm-eval 0.4.11 和 datasets 4.8.4。
+多节点需要共享资产和输出目录，使用 `MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MASTER_ADDR`、`MASTER_PORT` 与 `MA_NUM_GPUS`。也支持 `NNODES`、`NODE_RANK` 与 `NPROC_PER_NODE`。一体化入口使用独立的 torchrun 进程依次启动各阶段，ModelArts 环境可由作业名、任务名及主节点索引推导主机地址。单节点使用 standalone，多节点各阶段使用不同 rendezvous 端口。评测使用现有 torch218 环境，检查 lm-eval 0.4.11 和 datasets 4.8.4。
 
 ## 评测
 
-`bash majob.sh eval` 加载训练清单指定的模型，按顺序运行 49 个 main 入口、20 个 NIAH 入口及六个长度的去重任务。源协议为 niahLogKV@0f4396b。支持 RULER、BABILong、LongBench v2、多轮 NIAH、单点 PPL、书籍 PPL 曲线以及至 256K 的 InfiniteBench。RULER SQuAD 至 128K。多轮 NIAH 在同一次会话共享缓存。各长档窗口为目标长度 + 1024，默认逐档 YaRN 和每任务最多 100 条。完整运行和单选超长档的默认套件与参考入口一致。单独使用 `eval` 时保留参考入口的可选任务规则。一体化入口调用 `eval --full`，此时所有受支持的套件均必跑。
+`bash majob.sh eval` 加载训练清单指定的模型，按顺序运行 49 个 main 入口、20 个 NIAH 入口及六个长度的去重任务。源协议为 [niahLogKV@a126a1b](https://github.com/HourunLi/LogKV/tree/a126a1b3a11262a5dea85c0416b57753a44e9c6f)。支持 RULER、BABILong、LongBench v2、多轮 NIAH、单点 PPL、书籍 PPL 曲线以及至 256K 的 InfiniteBench。RULER SQuAD 至 128K。多轮 NIAH 在同一次会话共享缓存。各长档窗口为目标长度 + 1024，默认逐档 YaRN 和每任务最多 100 条。完整运行和单选超长档的默认套件与参考入口一致。单独使用 `eval` 时保留参考入口的可选任务规则。一体化入口调用 `eval --full`，此时所有受支持的套件均必跑。
 
 ```bash
 bash majob.sh eval --print-config
@@ -44,7 +44,7 @@ bash majob.sh eval --no-main --lengths 512k,1m --suites ruler,turns,ppl,books,ba
 
 ## 缓存和验证
 
-managed_cluster 无法通过缓存别名读取 SocialIQA 时，预检和正式评测会尝试直接读取 niahLogKV 确认过的本地 Arrow 快照。可用 `SOCIAL_IQA_CACHE_DIR` 指定同一份数据的完整快照目录，其中须包含 `dataset_info.json` 和各 split 的 Arrow 文件。日志中的 `explicit_cache_loaded` 报告实际路径和样本数，`explicit_cache_failure` 标明访问失败的路径。
+ModelArts 无法通过缓存别名读取 SocialIQA 时，预检和正式评测会尝试直接读取 niahLogKV 确认过的本地 Arrow 快照。可用 `SOCIAL_IQA_CACHE_DIR` 指定同一份数据的完整快照目录，其中须包含 `dataset_info.json` 和各 split 的 Arrow 文件。日志中的 `explicit_cache_loaded` 报告实际路径和样本数，`explicit_cache_failure` 标明访问失败的路径。
 
 按一个共享 KV 头的逻辑存储位置计数。每层有最近的最多 128 个位置，每个 CSA 层再存 floor(T/4) 项、每个 HCA 层再存 floor(T/128) 项。逐次统计检查实际缓存游标与已回填 token 数一致，汇总使用总 dense 槽位除以总有效槽位。常驻字节另计 index key、局部 KV、压缩池和用于跨块压缩的尾部 hidden 状态。与 Qwen BF16 dense 字节比较时使用其原生 8 个 KV 头与独立 K/V。GPU 峰值包含权重、激活和临时工作区，由正式运行单列。
 

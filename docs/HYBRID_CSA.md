@@ -109,7 +109,7 @@ bash scripts/hybrid_csa_train.sh
 
 ## 5. 固定 32K 评测
 
-项目内私有 vendor 固定 SemanticLogKV 来源 commit `bf8ca5f73dd891047359b9e567fea3b524295841`；不读取相邻项目源码或 YAML。沿用其 loglikelihood、rolling、generate、分词和评分接口。当前共享生成协议只按 EOS/最大长度停止，不执行 until 字符串；本分支不单侧改变这项语义。
+项目内私有 vendor 固定 SemanticLogKV 来源 commit `4fd97c78e04f0ec96ad6aed18df9e9cf440c6090`；不读取相邻项目源码或 YAML。沿用其 loglikelihood、rolling、generate、分词和评分接口。当前共享生成协议只按 EOS/最大长度停止，不执行 until 字符串；本分支不单侧改变这项语义。
 
 在已有 torch218 环境、项目根执行：
 
@@ -135,18 +135,18 @@ bash majob.sh --adapter outputs/hybrid_csa/adaptation/sparse.pt --output outputs
 
 ```bash
 # 训练与评测共用 torch218；缺省即此路径，可显式固定
-export HYBRID_CSA_PYTHON=/opt/conda/envs/torch218/bin/python
+export HYBRID_CSA_PYTHON=/home/ma-user/anaconda3/envs/torch218/bin/python
 # 默认路径已对齐现有资产；需要时覆盖，环境路径必须为绝对路径
-export HYBRID_CSA_BASE_CHECKPOINT=/workspace/checkpoints/Qwen/Qwen3-1.7B-Base/
-export HYBRID_CSA_DATA_DIR=/workspace/longcontext/prolong/data
+export HYBRID_CSA_BASE_CHECKPOINT=/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/
+export HYBRID_CSA_DATA_DIR=/home/ma-user/work/bucket-pangu-green/lihourun/longcontext/prolong/data
 
 # 不导入 torch/lm_eval，不访问权重，不建输出目录
 bash majob.sh --print-config
 # 每节点执行同一命令一次，平台节点变量自动解析；输出见下表"本次输出"
 bash majob.sh
 # 已训练产物的少样本检查；去掉 --limit 才是完整评测
-bash majob.sh --mode eval --adapter /workspace/ckpt-logKV/hybrid-csa4/train/sparse.pt \
-  --limit 4 --output /workspace/ckpt-logKV/hybrid-csa4-eval-smoke
+bash majob.sh --mode eval --adapter /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4/train/sparse.pt \
+  --limit 4 --output /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4-eval-smoke
 ```
 
 **不要向 torch218 安装任何 extra，包括 `[eval]`**；训练不需要额外依赖。
@@ -156,8 +156,8 @@ bash majob.sh --mode eval --adapter /workspace/ckpt-logKV/hybrid-csa4/train/spar
 |---|---|
 | Python（所有阶段） | `--eval-python` → `HYBRID_CSA_PYTHON` → `BASELINE_EVAL_PYTHON` → `BASELINE_PYTHON` → 已有 torch218 绝对路径；与此前评测解释器的规则相同。`--train-python`、`HYBRID_CSA_TRAIN_PYTHON`、`BASELINE_TRAIN_PYTHON` 已取消，出现即报错 |
 | Base / 语料 | `--base-checkpoint-dir` / `--data-dir` → `HYBRID_CSA_*` → `BASELINE_BASE_CHECKPOINT` / `BASELINE_DATA_DIR` → 项目 YAML |
-| 分词缓存 | `--tokenized-dir` → `HYBRID_CSA_TOKENIZED_DIR` → 训练 YAML（当前 `/workspace/ckpt-logKV/hybrid-csa4/tokenized`）。放在持久共享存储上：第一次运行准备一次（全量 241 个分片），之后的运行校验后直接复用。可以位于输出目录中、与结果并列，但不能在每次运行会删除的 `train/`、`eval/`、`main/`、`niah/` 里；与原始语料和评测 HF 缓存分开 |
-| 本次输出 | `--output` → `HYBRID_CSA_OUTPUT_ROOT` → `BASELINE_OUTPUT_ROOT` → `configs/hybrid_csa/majob.yaml` 的 `output`（当前 `/workspace/ckpt-logKV/hybrid-csa4`）；每次运行覆盖，见下文 |
+| 分词缓存 | `--tokenized-dir` → `HYBRID_CSA_TOKENIZED_DIR` → 训练 YAML（当前 `/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4/tokenized`）。放在持久共享存储上：第一次运行准备一次（全量 241 个分片），之后的运行校验后直接复用。可以位于输出目录中、与结果并列，但不能在每次运行会删除的 `train/`、`eval/`、`main/`、`niah/` 里；与原始语料和评测 HF 缓存分开 |
+| 本次输出 | `--output` → `HYBRID_CSA_OUTPUT_ROOT` → `BASELINE_OUTPUT_ROOT` → `configs/hybrid_csa/majob.yaml` 的 `output`（当前 `/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4`）；每次运行覆盖，见下文 |
 | 配置 | 可选位置参数选择项目内实验 YAML；`--train-config`、`--hybrid-csa-config` 选择项目内训练/方法 YAML；结构设置必须一致 |
 | 相对路径 | shell 入口先切到项目根；直接 Python CLI 的路径参数相对于调用者 cwd，YAML 内的资产相对路径相对于项目根 |
 | HF 路径 | `HYBRID_CSA_HF_CACHE` → `BASELINE_HF_CACHE` → `HF_HOME` → 默认根；显式 HF 子目录、RULER、NLTK 路径保留 |

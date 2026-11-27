@@ -238,7 +238,7 @@ def prepare_data(cfg):
 
 
 def reference_chunks(cfg):
-    # Same cache key as niahLogKV@0f4396b data.py, independent of checkout paths.
+    # Same cache key as niahLogKV@a126a1b data.py, independent of checkout paths.
     base = Path(cfg["base_checkpoint_dir"])
     if not any((base / name).is_file() for name in ("tokenizer.json", "tokenizer.model")):
         raise FileNotFoundError(f"No Qwen tokenizer in {base}")

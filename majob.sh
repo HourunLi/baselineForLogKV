@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# managed_cluster launches this script once on each node.
+# ModelArts launches this script once on each node.
 set -euo pipefail
 cd "$(dirname "$0")"
 python_bin=${DEEPSEEK4_PYTHON:-/home/ma-user/anaconda3/envs/torch218/bin/python}

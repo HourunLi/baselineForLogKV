@@ -181,7 +181,7 @@ def restore_progress(folder, model, opt, loader, rank):
 
 
 def initialize_recipe(output, manifest):
-    """Start in a pre-created directory, preserving unrelated managed_cluster files."""
+    """Start in a pre-created directory, preserving unrelated ModelArts files."""
     recipe = output / "recipe.json"
     reset = output / ".cpt-reset"
     record = output / "training.json"

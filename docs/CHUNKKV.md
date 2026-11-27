@@ -14,8 +14,8 @@ SemanticLogKV CPT 起点相同的 Base `lit_model.pth`，不做 HF 转换。运�
 
 | 路径 | 用途 |
 |---|---|
-| `/workspace/baselineForLogKV/chunkKV` | ChunkKV 项目根，以下命令均从此目录执行 |
-| `/workspace/semanticLogKV` | 独立的 SemanticLogKV 对照项目，ChunkKV 运行不要求其存在 |
+| `/data/lihourun/baselineForLogKV/chunkKV` | ChunkKV 项目根，以下命令均从此目录执行 |
+| `/data/lihourun/semanticLogKV` | 独立的 SemanticLogKV 对照项目，ChunkKV 运行不要求其存在 |
 | `configs/chunkkv/experiment_qwen1.7b_32k.yaml` | 自有平铺实验配置，保存 Base、数据、32K 上下文与训练/LogKV 参数，不继承外部 `exp/` YAML |
 | `configs/chunkkv/qwen3_1.7b_32k.yaml` | ChunkKV 的选块、预算和层间复用参数 |
 | `configs/chunkkv/eval_semantic_default.yaml` | Semantic 当前默认评测脚本的本地任务快照：47 个主任务入口和 3 个 NIAH，后者仅评测 32768 tokens |
@@ -27,7 +27,7 @@ SemanticLogKV CPT 起点相同的 Base `lit_model.pth`，不做 HF 转换。运�
 dense 配置中的 `experiment_config` 相对其配置文件目录解析。
 
 项目地址与数据地址分别管理：没有证据表明原始权重、训练数据或缓存已迁移，所以仍保留现有
-`/workspace/...` 默认位置。迁移这些资产后，分别设置 `CHUNKKV_BASE_CHECKPOINT`、
+`/home/ma-user/...` 默认位置。迁移这些资产后，分别设置 `CHUNKKV_BASE_CHECKPOINT`、
 `CHUNKKV_DATA_DIR`、`CHUNKKV_HF_CACHE`，或修改自有配置。比较 SemanticLogKV 的训练权重时，
 用 `--model` 指定实际 checkpoint，不能直接把其项目根当作权重目录。
 
@@ -101,7 +101,7 @@ ChunkKV 不需要训练，主表行应为 "Base + ChunkKV"。SemanticLogKV 是�
 
 ```bash
 # 训练环境：兼容的 PyTorch/CUDA 环境，训练依赖由 extra 安装
-cd /workspace/baselineForLogKV/chunkKV
+cd /data/lihourun/baselineForLogKV/chunkKV
 python -m pip install -e '.[chunkkv-train]'
 python -m chunkkv.train --print-config
 NPROC_PER_NODE=8 bash scripts/chunkkv_train.sh configs/chunkkv/dense_cpt_qwen1.7b_32k.yaml
@@ -131,7 +131,7 @@ LongBench 等真实数据任务使用 32K 模型上下文上限，保留原始�
 
 ```bash
 # 评测环境：SemanticLogKV 的 torch218（当前 lm-eval 0.4.11、datasets 4.8.4；代码需 lm-eval>=0.4.9、datasets>=4.7）；无需安装本项目，不改动其依赖
-cd /workspace/baselineForLogKV/chunkKV
+cd /data/lihourun/baselineForLogKV/chunkKV
 
 # 只解析本项目配置，不加载权重或训练/评测依赖
 python -m chunkkv.evaluate --suite main --print-config
@@ -182,9 +182,9 @@ torch218 中为 lm-eval 0.4.11。vendor 的 `eval.py` 只用到 `evaluator.simpl
 
 项目根目录的 `majob.sh` 是纯评测入口：激活环境 → main → 32K NIAH，默认加载原始
 Qwen3-1.7B-Base，不执行 CPT。它只调用本项目的 `chunkkv.evaluate`，无需部署 SemanticLogKV。
-默认激活 `/opt/conda/bin/activate torch218`；环境名称可通过
+默认激活 `/home/ma-user/anaconda3/bin/activate torch218`；环境名称可通过
 `CHUNKKV_CONDA_ENV` 修改，或设置 `CHUNKKV_PYTHON=/absolute/path/to/python` 直接使用已准备的解释器。
-激活后，脚本照 SemanticLogKV 的 `eval.sh`/`majob.sh`（bf8ca5f）把 `/usr/local/cuda-12.8/bin` 加到 `PATH`，把
+激活后，脚本照 SemanticLogKV 的 `eval.sh`/`majob.sh`（4fd97c7）把 `/usr/local/cuda-12.8/bin` 加到 `PATH`，把
 `/usr/lib/x86_64-linux-gnu:/usr/local/cuda-12.8/lib64` 加到 `LD_LIBRARY_PATH` 最前面，并沿用其 NCCL 设置；随后用同一解释器
 执行一次 `torch.cuda.init()`，驱动库不匹配时在启动 torchrun 前退出，并打印加载的 libcuda 路径、驱动 API 版本与 `LD_LIBRARY_PATH`。
 
@@ -201,7 +201,7 @@ Qwen3-1.7B-Base，不执行 CPT。它只调用本项目的 `chunkkv.evaluate`，
 先用 `--limit 4` 检查路径、缓存和分布式流程，通过后删除该参数进行全量评测。
 
 ```bash
-cd /workspace/baselineForLogKV/chunkKV
+cd /data/lihourun/baselineForLogKV/chunkKV
 bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml \
   --limit 4 --output outputs/chunkkv-base-32k-smoke
 
@@ -220,7 +220,7 @@ bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml \
 
 所有节点需能读取同一路径下的代码、Base checkpoint、完整评测缓存，并使用同一输出路径。
 无需额外共享文件 barrier：每个阶段的 torchrun rendezvous 负责节点汇合；main 失败则不进入 NIAH。
-默认缓存与权重路径沿用前文的 `/workspace/...`，缓存需提前准备齐全（评测默认离线）。
+默认缓存与权重路径沿用前文的 `/home/ma-user/...`，缓存需提前准备齐全（评测默认离线）。
 输出分别位于指定目录的 `main/`、`niah/`。普通单机终端仍可使用 `scripts/chunkkv_evaluate_all.sh`。
 
 该入口为 CUDA GPU 作业设计；每张卡持有完整模型、分担评测样本。增加 GPU 数能分摊任务，
@@ -254,7 +254,7 @@ MASTER_PORT=29500 bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml \
 平台上可显式使用节点本地临时盘，避免临时文件也写回桶挂载：
 
 ```bash
-cd /workspace/baselineForLogKV/chunkKV
+cd /data/lihourun/baselineForLogKV/chunkKV
 TMPDIR=/tmp bash majob.sh configs/chunkkv/experiment_qwen1.7b_32k.yaml \
   --limit 4 --output outputs/chunkkv-base-32k-smoke
 ```
@@ -282,15 +282,15 @@ vendor 的评测代码需要 `lm-eval>=0.4.9`；共享缓存中的 IFEval 条目
 撤销，使缓存回到 SemanticLogKV 读取的状态。请在没有其他作业读写该缓存时执行：
 
 ```bash
-source /opt/conda/bin/activate torch218
-cd /workspace/baselineForLogKV/chunkKV
+source /home/ma-user/anaconda3/bin/activate torch218
+cd /data/lihourun/baselineForLogKV/chunkKV
 python -m chunkkv.check_dataset_cache \
-  --restore /workspace/data/hf_cache/unreadable_by_datasets3
+  --restore /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache/unreadable_by_datasets3
 python -m chunkkv.check_dataset_cache    # 应报告每个配置都选中可读条目
 ```
 
 `--restore` 把隔离目录中的条目原样移回原路径。在本地文件系统上，移动是重命名，保留条目自身的修改时间，所以离线加载
-重新选中 4.8.4 写的条目；但在 `shared-storage` 桶挂载上，这一过程留下了损坏的 `dataset_info.json`，见下一节。旧版 `--convert` 曾在原路径写入转换副本（记录在 `DIR/conversions.json`）；恢复时
+重新选中 4.8.4 写的条目；但在 `bucket-pangu-green` 桶挂载上，这一过程留下了损坏的 `dataset_info.json`，见下一节。旧版 `--convert` 曾在原路径写入转换副本（记录在 `DIR/conversions.json`）；恢复时
 先按哈希确认目标就是记录中的副本，再把它移到 `DIR/_converted_copies/`。任一目标路径存在未记录的内容时，
 工具整体拒绝，不移动任何文件。全程不删除文件，`DIR` 中剩下的空目录和副本可在确认后自行清理。
 
@@ -322,7 +322,7 @@ column 5 (char 1328)`，此前 `cache_alias_followed` 已成功加载 openbookqa
 
 ```bash
 python -m chunkkv.check_dataset_cache \
-  --compare /workspace/data/hf_cache/unreadable_by_datasets3
+  --compare /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache/unreadable_by_datasets3
 ```
 
 输出会列出每个 `dataset_info.json` 缺失或不合法的条目：路径、字节数、行数、修改时间、SHA-256、出错前的文本，
@@ -418,7 +418,7 @@ python -m pytest -q tests/chunkkv/test_standalone.py tests/chunkkv/test_evaluate
 
 以下是 2026-10-13 的历史验证，发生在项目独立化之前，不能作为本次改动的通过记录。
 当时环境：Linux CPU，Python 3.13、PyTorch 2.9.1、lightning 2.6.6、lm-eval 0.4.9、datasets 3.6.0、
-transformers 4.56.2、litdata 0.2.59；SemanticLogKV 参考为 `LogKV@bf8ca5f`，editable 安装核心包。
+transformers 4.56.2、litdata 0.2.59；SemanticLogKV 参考为 `HourunLi/LogKV@4fd97c7`，editable 安装核心包。
 
 ```bash
 python -m pytest -q tests/chunkkv

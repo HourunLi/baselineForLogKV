@@ -1,5 +1,5 @@
 # Project-owned snapshot of SemanticLogKV eval.sh / majob.sh defaults.
-# Source: LogKV bf8ca5f73dd891047359b9e567fea3b524295841 (2026-10-15).
+# Source: HourunLi/LogKV 4fd97c78e04f0ec96ad6aed18df9e9cf440c6090 (2026-10-15).
 # Main benchmarks and NIAH run in separate processes, as in the reference scripts.
 # Task lists match the reference; NIAH is restricted to 32K for this comparison.
 main_tasks:

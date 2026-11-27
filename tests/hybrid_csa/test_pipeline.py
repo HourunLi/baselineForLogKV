@@ -179,7 +179,7 @@ main()
 
 
 def test_plain_majob_writes_to_the_configured_directory(clean_env, monkeypatch, tmp_path):
-    assert pipeline.configured_output() == Path("/workspace/ckpt-logKV/hybrid-csa4")
+    assert pipeline.configured_output() == Path("/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4")
     config = pipeline.BASELINE_ROOT / "configs/hybrid_csa/test_majob_output.yaml"
     config.write_text(f"output: {tmp_path / 'ckpt'}\n")
     try:
@@ -321,7 +321,7 @@ def test_more_gpus_than_the_recipe_uses_train_on_fewer_and_evaluate_on_all(launc
 
 
 def test_prepared_data_lives_beside_the_results_and_survives_reruns(clean_env, tmp_path):
-    output = Path("/workspace/ckpt-logKV/hybrid-csa4").resolve()
+    output = Path("/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4").resolve()
     plan = pipeline.build_plan(pipeline.parse_args([]))
     assert Path(plan["output"]).resolve() == output
     assert Path(plan["training"]["tokenized_dir"]).resolve() == output / "tokenized"

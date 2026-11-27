@@ -1,4 +1,4 @@
-"""managed_cluster orchestration. Run once per node with the same arguments."""
+"""ModelArts orchestration. Run once per node with the same arguments."""
 
 import argparse
 import os

@@ -30,12 +30,12 @@
 set -e
 conda create --name baseline-train --clone cuda-base
 
-source /opt/conda/bin/activate baseline-train
+source /home/ma-user/anaconda3/bin/activate baseline-train
 python -m pip install -c requirements/train-constraints.txt -e '.[train]'
 python -m pip check
 
 # 评测仅选择已有环境，不运行 pip install / pip check 修复共享平台包
-source /opt/conda/bin/activate torch218
+source /home/ma-user/anaconda3/bin/activate torch218
 ```
 
 需要训练的项目分别声明 `train`、`eval` 依赖组；免训练项目只需评测环境及其依赖，不必提供空训练入口。不能要求安装 `[train,eval]` 才能评测。安装应服从已验证的精确版本约束，不能默许依赖解析器替换已验证的 CUDA/PyTorch 组合。安装和模型/数据准备在作业提交前完成，正式作业不现场升级包。
@@ -99,7 +99,7 @@ Hub 下载缓存和 datasets 的 Arrow 缓存是不同目录，必须分别确�
 
 shell 启动器定位并切换到自身项目根后再调用 Python，因此**通过项目 shell 脚本传入的相对 CLI 路径统一相对项目根**；直接运行 Python CLI 则遵循上表的调用目录语义。平台提交建议使用绝对项目路径，项目内配置和输出可使用明确的项目相对路径。
 
-例如项目为 `/workspace/baselineForLogKV/your_baseline`，`configs/experiment.yaml` 中引用 `base.yaml`，则父配置是 `configs/base.yaml`；其中的 `output: outputs/train/run-001` 指项目根下的 `outputs/train/run-001`。共享 checkpoint 使用绝对资产路径，不用 `../../另一个项目/...` 绕过独立性规则。
+例如项目为 `/data/lihourun/baselineForLogKV/your_baseline`，`configs/experiment.yaml` 中引用 `base.yaml`，则父配置是 `configs/base.yaml`；其中的 `output: outputs/train/run-001` 指项目根下的 `outputs/train/run-001`。共享 checkpoint 使用绝对资产路径，不用 `../../另一个项目/...` 绕过独立性规则。
 
 配置加载先完成显式支持的环境变量展开、`~` 展开与路径解析，再创建输出目录或切换工作目录。未设置的必需变量应报错，不能当作空字符串或保留字面量继续运行。保存实际解析路径；不能在训练环境、评测环境和不同 rank 中分别猜测路径。
 
@@ -109,10 +109,10 @@ shell 启动器定位并切换到自身项目根后再调用 Python，因此**�
 
 ```bash
 set -e
-source /opt/conda/bin/activate baseline-train
-export BASELINE_PROJECT_ROOT="/workspace/baselineForLogKV/your_baseline"
+source /home/ma-user/anaconda3/bin/activate baseline-train
+export BASELINE_PROJECT_ROOT="/data/lihourun/baselineForLogKV/your_baseline"
 export BASELINE_PYTHON="$(python -c 'import sys; print(sys.executable)')"
-export BASELINE_BASE_CHECKPOINT="/workspace/checkpoints/Qwen/Qwen3-1.7B-Base/"
+export BASELINE_BASE_CHECKPOINT="/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/"
 export BASELINE_DATA_DIR="/absolute/path/to/prepared-training-data"
 export BASELINE_OUTPUT_ROOT="$BASELINE_PROJECT_ROOT/outputs/train/run-001"
 
@@ -141,13 +141,13 @@ bash scripts/train.sh configs/train-smoke.yaml
 
 ```bash
 set -e
-source /opt/conda/bin/activate torch218
-export BASELINE_PROJECT_ROOT="/workspace/baselineForLogKV/your_baseline"
+source /home/ma-user/anaconda3/bin/activate torch218
+export BASELINE_PROJECT_ROOT="/data/lihourun/baselineForLogKV/your_baseline"
 export BASELINE_PYTHON="$(python -c 'import sys; print(sys.executable)')"
-export BASELINE_BASE_CHECKPOINT="/workspace/checkpoints/Qwen/Qwen3-1.7B-Base/"
+export BASELINE_BASE_CHECKPOINT="/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/"
 export BASELINE_OUTPUT_ROOT="$BASELINE_PROJECT_ROOT/outputs/eval/run-001"
 
-export HF_HOME="/workspace/data/hf_cache"
+export HF_HOME="/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache"
 export HF_DATASETS_CACHE="$HF_HOME/hf_cache"
 export HF_HUB_CACHE="$HF_HOME/hub"
 export HUGGINGFACE_HUB_CACHE="$HF_HUB_CACHE"

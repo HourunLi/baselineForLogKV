@@ -3,4 +3,4 @@
 # the train/, eval/, main/ and niah/ results and pipeline records of the earlier run are deleted (eval-only runs
 # keep train/), so no earlier file can pass for this run's. Other files in the directory are left alone, including
 # tokenized/, the prepared training data the first run writes and later runs reuse (train_qwen1.7b_32k.yaml).
-output: /workspace/ckpt-logKV/hybrid-csa4
+output: /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/hybrid-csa4

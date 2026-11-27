@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/hybrid_csa_runtime.sh
-PYTHON=${HYBRID_CSA_PYTHON:-${BASELINE_EVAL_PYTHON:-${BASELINE_PYTHON:-/opt/conda/envs/torch218/bin/python}}}
+PYTHON=${HYBRID_CSA_PYTHON:-${BASELINE_EVAL_PYTHON:-${BASELINE_PYTHON:-/home/ma-user/anaconda3/envs/torch218/bin/python}}}
 for arg in "$@"; do
     if [[ "$arg" == --print-config || "$arg" == --help || "$arg" == -h ]]; then
         exec "$PYTHON" -m hybrid_csa.evaluate "$@"

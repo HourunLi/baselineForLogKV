@@ -216,7 +216,7 @@ def main():
         folder.mkdir(parents=True, exist_ok=False)
         record = json.loads((model / "training.json").read_text())
         contract = dict(
-            protocol="niahLogKV@0f4396b",
+            protocol="niahLogKV@a126a1b",
             method=record["method"],
             weight_sha256=record["weight_sha256"],
             base=record["base"],
