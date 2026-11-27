@@ -11,7 +11,7 @@ Online loads never take such a folder for a finished cache; with this patch the 
 well. When nothing else is cached for the config, the error names the unfinished folders. Applied by
 chunkkv.evaluate before any task loads data.
 
-Copied from SemanticLogKV (LogKV niahLogKV@26a4f47, ``litgpt/hf_cache_patch.py``, Apache-2.0); only
+Copied from SemanticLogKV (HourunLi/LogKV niahLogKV@4615501, ``litgpt/hf_cache_patch.py``, Apache-2.0); only
 this docstring and the hint in the error message differ. Both projects read the same offline cache.
 """
 from __future__ import annotations

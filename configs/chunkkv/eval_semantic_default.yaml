@@ -1,5 +1,5 @@
 # Project-owned snapshot of SemanticLogKV eval.sh / majob.sh defaults.
-# Source: LogKV bf8ca5f73dd891047359b9e567fea3b524295841 (2026-10-15).
+# Source: HourunLi/LogKV 4fd97c78e04f0ec96ad6aed18df9e9cf440c6090 (2026-10-15).
 # Main benchmarks and NIAH run in separate processes, as in the reference scripts.
 # Task lists match the reference; NIAH is restricted to 32K for this comparison.
 main_tasks:
@@ -57,7 +57,7 @@ niah_tasks:
 niah_max_seq_lengths:
 - 32768
 
-# Long-context stages (64K / 128K): SemanticLogKV's eval_long{64k,128k}_*.yaml (LogKV niahLogKV@26a4f47).
+# Long-context stages (64K / 128K): SemanticLogKV's eval_long{64k,128k}_*.yaml (HourunLi/LogKV niahLogKV@4615501).
 # --context 64k|128k fixes the model window (block_size there), YaRN (rope_adjustments there) and the RULER
 # length; the 'long' suite is its main stage (BABILong and long-document perplexity, task files under tasks/),
 # the 'ruler' suite its NIAH stage (all 13 RULER tasks). Every task takes the first long_limit samples.
@@ -83,10 +83,10 @@ contexts:
     ruler_length: 65536
     rope_scaling: {factor: 2.0, beta_fast: 32, beta_slow: 1, original_max_seq_len: 32768}
     long_tasks: [babilong_64k, long_ppl_32k, long_ppl_64k]
-    long_ppl_data: /workspace/data/hf_cache/hub/datasets--emozilla--pg19-test/snapshots/c5e39bf32e33f9111323aa68d7d9000d22722035
+    long_ppl_data: /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache/hub/datasets--emozilla--pg19-test/snapshots/c5e39bf32e33f9111323aa68d7d9000d22722035
   128k:
     max_seq_length: 132096
     ruler_length: 131072
     rope_scaling: {factor: 4.0, beta_fast: 32, beta_slow: 1, original_max_seq_len: 32768}
     long_tasks: [babilong_128k, long_ppl_128k]
-    long_ppl_data: /workspace/data/hf_cache/hub/datasets--emozilla--pg19-test/snapshots/c5e39bf32e33f9111323aa68d7d9000d22722035
+    long_ppl_data: /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache/hub/datasets--emozilla--pg19-test/snapshots/c5e39bf32e33f9111323aa68d7d9000d22722035

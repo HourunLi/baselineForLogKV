@@ -2,8 +2,8 @@ protocol: niahLogKV
 backend: logkv
 model_size: 1.7b
 reference: baseline
-base_checkpoint: /workspace/checkpoints/Qwen/Qwen3-1.7B-Base/
-cpt_checkpoint: /workspace/ckpt-logKV/qwen1.7b-32k-gamma_k12_b128_p1024_2k
+base_checkpoint: /home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/
+cpt_checkpoint: /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/qwen1.7b-32k-gamma_k12_b128_p1024_2k
 output: outputs/niahlogkv/1.7b/baseline/logkv
 main: true
 lengths:

@@ -1,6 +1,6 @@
 {
   "source_project": "SemanticLogKV (local LitGPT fork)",
-  "source_commit": "bf8ca5f73dd891047359b9e567fea3b524295841",
+  "source_commit": "4fd97c78e04f0ec96ad6aed18df9e9cf440c6090",
   "snapshot_date": "2026-10-15",
   "upstream_litgpt_version": "0.5.12",
   "license": "Apache-2.0",
@@ -10,7 +10,7 @@
     "Minimal litgpt package exports Config, GPT and Tokenizer; no API or CLI package.",
     "HF cache BASE accepts CHUNKKV_HF_CACHE.",
     "Legacy litgpt.prompts class paths resolve to the bundled prompts module.",
-    "litgpt/model.py build_rope_cache: SemanticLogKV's YaRN fix (LogKV f220cb9, as of niahLogKV@26a4f47) backported for the 64K/128K stages: the ramp keeps the fast dimensions and interpolates the slow ones, the attention temperature defaults to 0.1*ln(factor)+1, and high_dim is clamped to n_elem-1, as transformers' _compute_yarn_parameters does. 32K runs use no rope_adjustments and are unaffected."
+    "litgpt/model.py build_rope_cache: SemanticLogKV's YaRN fix (HourunLi/LogKV b749072, as of niahLogKV@4615501) backported for the 64K/128K stages: the ramp keeps the fast dimensions and interpolates the slow ones, the attention temperature defaults to 0.1*ln(factor)+1, and high_dim is clamped to n_elem-1, as transformers' _compute_yarn_parameters does. 32K runs use no rope_adjustments and are unaffected."
   ],
   "source_sha256": {
     "data.py": "de82dcc1680702866190fe304ddcbcfa509c69bd776a90936d2147c74632560c",
@@ -40,7 +40,7 @@
     "litgpt/tokenizer.py": "deb3b48fc91abb36e397a033eb80420adbbce99015ab908647d11e891e0ecb0f",
     "litgpt/types.py": "cecb1f5b6ec643cb201b51c5ef5124cd6d6ba6c835044074d3e641895492064b",
     "litgpt/utils.py": "189624090b3d3a9d1f70000a49818b8f540d454b01ea1b89b7a7e2fbfe5c97f1",
-    "utils.py": "e2b3d4f8f0d6707829b755b1d3320959e6016eb572ac4662a2c635bfe499d851",
+    "utils.py": "c2a5a974e6c42ad3ad478aca18908ab49b99b7e7cb7b47c56e0b1845cbf0815d",
     "LICENSE.md": "ab89ceca19ca531005699095ca542f982fac92efd82f954f49ac17aa99a37cda"
   },
   "bundled_sha256": {
@@ -49,7 +49,7 @@
     "__init__.py": "819ccb8d0a496de11a95b0b1acd4a4e1352d290e59d804f8836b60f9e82e8637",
     "data.py": "dd1acb0837b86109966f955e1d31aa32eb070f9b2567a0d4534d04cfb0060d78",
     "demo.py": "795763fb11cbc45fc9775422628f89dfe98d58094a01728d587375da312f07eb",
-    "eval.py": "c5015fc4f327b4b4374d2d1f614572dd415d84399121fe3139042f5f58812063",
+    "eval.py": "ccc1e9d566ea6e92b39c08cf625fe8ca113f4c31e09a8e98b14a2a6a682e9749",
     "litgpt/__init__.py": "17a860fb7ee78411ff41183c64ba874a7a42c79bc7c0d58f14a3353bc3a27c60",
     "litgpt/alpha_log_kv.py": "3cff028f8a7050783098a25f2990ddc941a94e1c4eb69c1b88a922c04b234da8",
     "litgpt/beta_log_kv.py": "0af79b7e4cbfacf9683dacc80c891772936db1abdabd88387f16dc20d9d5b3a2",
@@ -77,7 +77,7 @@
     "litgpt/tokenizer.py": "248449585473ef6e6a5a9b61b3814b4e41970ae2beb8f3ce3c2bd2bc81403717",
     "litgpt/types.py": "c44039906db0022b802f1be155dcb9c19ff6854148aa789be03587a4087388a2",
     "litgpt/utils.py": "aac563bb19ac6223ea7a1d1f1faea6f3306b72dfcefd0ce264bd8a1387ad87c5",
-    "utils.py": "ccd79882632c62a58c7625e00405ca904508be66c70735275e751b8985b8841e"
+    "utils.py": "c0d4561917f36ad21940b3a415e96c4ebb8453e18f713bcb67e19d24b03e5c60"
   },
   "generated_files": [
     "__init__.py",

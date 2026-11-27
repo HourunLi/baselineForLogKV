@@ -2,7 +2,7 @@
 
 ## niahLogKV 同缓存预算评测
 
-当前完整评测采用 `LogKV` 的 `niahLogKV@0f4396b`。ChunkKV 默认加载原始 Qwen3-1.7B-Base。LogKV 和它的 dense 同权重对照加载该规模的 gamma CPT checkpoint。`--model-size 8b` 同样按后端选择 8B Base 或 8B CPT。正式对照使用流式 ChunkKV，逐层常驻 K/V 和位置索引一并计入预算。六档长度、YaRN、任务、生成与评分接口随仓库提供。
+当前完整评测采用 `HourunLi/LogKV` 的 `niahLogKV@a126a1b`。ChunkKV 默认加载原始 Qwen3-1.7B-Base。LogKV 和它的 dense 同权重对照加载该规模的 gamma CPT checkpoint。`--model-size 8b` 同样按后端选择 8B Base 或 8B CPT。正式对照使用流式 ChunkKV，逐层常驻 K/V 和位置索引一并计入预算。六档长度、YaRN、任务、生成与评分接口随仓库提供。
 
 ```bash
 # 先查看完整计划，包括权重、每阶段任务和样本上限
@@ -30,11 +30,11 @@ bash majob.sh configs/chunkkv/jobs/chunkkv_8b.yaml
 - **预算**：默认按参考 LogKV 缓存的持久分配字节对齐（同其 SWA 对照口径）；也可用 `--budget-from-result` 按 SemanticLogKV 实测保留条目数对齐，或 `--budget` / `--keep-ratio`。
 - **训练接口（可选对照）**：ChunkKV 本身不训练；`scripts/chunkkv_train.sh` 用本地训练运行快照和同一份自有实验配置做同数据、同预算的 dense CPT，供 "CPT + ChunkKV" 对照。
 
-服务器项目根为 `/workspace/baselineForLogKV/chunkKV`。SemanticLogKV 项目位于 `/workspace/semanticLogKV`，仅作为独立对照项目；比较其训练权重时用 `--model` 指定实际 checkpoint。原始权重、训练数据和缓存的默认位置仍保留现有 `/workspace/...`，可分别通过 `CHUNKKV_BASE_CHECKPOINT`、`CHUNKKV_DATA_DIR`、`CHUNKKV_HF_CACHE` 覆盖。
+服务器项目根为 `/data/lihourun/baselineForLogKV/chunkKV`。SemanticLogKV 项目位于 `/data/lihourun/semanticLogKV`，仅作为独立对照项目；比较其训练权重时用 `--model` 指定实际 checkpoint。原始权重、训练数据和缓存的默认位置仍保留现有 `/home/ma-user/...`，可分别通过 `CHUNKKV_BASE_CHECKPOINT`、`CHUNKKV_DATA_DIR`、`CHUNKKV_HF_CACHE` 覆盖。
 ChunkKV 使用 Python 3.10–3.13、PyTorch >= 2.7。
 
 ```bash
-cd /workspace/baselineForLogKV/chunkKV
+cd /data/lihourun/baselineForLogKV/chunkKV
 # 在 SemanticLogKV 的评测环境 torch218 中直接运行，无需安装本项目，不改动其中任何包
 python -m chunkkv.evaluate --suite main --print-config
 python -m chunkkv.evaluate --suite niah --print-config
