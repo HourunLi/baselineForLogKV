@@ -411,7 +411,7 @@ def extract_results_to_csv(results: dict, benchmark: str, output_path: Path) -> 
     except Exception as e:
         print(f"❌ 保存 CSV 失败: {e}")
 
-BASE = os.environ.get('DEEPSEEK4_HF_CACHE', os.environ.get('HF_HOME', '/workspace/data/hf_cache'))
+BASE = os.environ.get('DEEPSEEK4_HF_CACHE', os.environ.get('HF_HOME', '/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache'))
 os.environ['HF_HOME'] = BASE
 os.environ['HF_DATASETS_CACHE'] = f'{BASE}/hf_cache'
 os.environ['HF_EVALUATE_CACHE'] = f'{BASE}/evaluate'

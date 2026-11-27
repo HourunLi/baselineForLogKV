@@ -2,7 +2,7 @@
 # managed_cluster launches this script once on each node.
 set -euo pipefail
 cd "$(dirname "$0")"
-python_bin=${DEEPSEEK4_PYTHON:-/opt/conda/envs/torch218/bin/python}
+python_bin=${DEEPSEEK4_PYTHON:-/home/ma-user/anaconda3/envs/torch218/bin/python}
 export PATH="/usr/local/cuda-12.8/bin:$PATH"
 export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:/usr/local/cuda-12.8/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export NCCL_IB_TIMEOUT=${NCCL_IB_TIMEOUT:-22} NCCL_NVLS_ENABLE=${NCCL_NVLS_ENABLE:-0}
@@ -11,7 +11,7 @@ export NCCL_MIN_NCHANNELS=${NCCL_MIN_NCHANNELS:-4} CUDA_DEVICE_MAX_CONNECTIONS=$
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
 # Set these before importing any HF library in the parent or torchrun workers.
-export HF_HOME=${DEEPSEEK4_HF_CACHE:-${HF_HOME:-/workspace/data/hf_cache}}
+export HF_HOME=${DEEPSEEK4_HF_CACHE:-${HF_HOME:-/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache}}
 export HF_DATASETS_CACHE="$HF_HOME/hf_cache" HF_EVALUATE_CACHE="$HF_HOME/evaluate"
 export HF_MODULES_CACHE="$HF_HOME/modules" HF_HUB_CACHE="$HF_HOME/hub" HUGGINGFACE_HUB_CACHE="$HF_HOME/hub"
 export RULER_CACHE_DIR="$HF_HOME/ruler_cache" NLTK_DATA="$HF_HOME/nltk_data"
