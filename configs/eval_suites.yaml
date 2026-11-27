@@ -1,5 +1,5 @@
 # Project-owned task lists of the fixed SemanticLogKV reference evaluation.
-# Reference: LogKV bf8ca5f73dd891047359b9e567fea3b524295841, eval.sh / majob.sh defaults.
+# Reference: HourunLi/LogKV 4fd97c78e04f0ec96ad6aed18df9e9cf440c6090, eval.sh / majob.sh defaults.
 # 47 main entries (14 general, 20 LongBench, 13 LongBench-E) and 3 NIAH entries.
 # Main tasks and NIAH run as separate stages; NIAH is evaluated at 32K only.
 # lm-eval expands task groups (e.g. mmlu) into their subtasks.

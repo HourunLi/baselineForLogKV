@@ -23,9 +23,9 @@ snapkv:
 # Flattened evaluation fields from niahLogKV exp/qwen8b-32k/eval_full_baseline.yaml
 arch_name: Qwen/Qwen3-8B-Base
 # SnapKV 原始 Base 权重（LitGPT 格式）和 tokenizer 目录。
-ckpt_dir: /workspace/checkpoints/Qwen/Qwen3-8B-Base/
+ckpt_dir: /home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-8B-Base/
 # LogKV 和 CPT dense 对照使用此目录。
-save_path: /workspace/ckpt-logKV/qwen8b-32k-gamma_k12_b128_p1024_2k
+save_path: /home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/qwen8b-32k-gamma_k12_b128_p1024_2k
 # 用以下参数测量 niahLogKV 缓存预算，推导 SnapKV 各层容量。
 log_kv_B: 128
 log_kv_recent_size: 2048

@@ -39,7 +39,7 @@ from .qwen3_config import detect_weights_format, load_config
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_DIR.parent
-DEFAULT_BASE = "/workspace/checkpoints/Qwen/Qwen3-1.7B-Base/"
+DEFAULT_BASE = "/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/"
 DEFAULT_EVAL_SUITES = REPO_ROOT / "configs" / "eval_suites.yaml"
 SUITES = ("main", "longbench", "niah")
 # Requirements of this code and the shared offline cache, not a target environment: evaluation adapts to
