@@ -47,11 +47,11 @@ fi
 
 # Conda activation scripts may read unset variables; enable nounset afterwards.
 if [[ -z "${DMS_PYTHON:-}" ]]; then
-    source /opt/conda/bin/activate "${DMS_CONDA_ENV:-torch218}"
+    source /home/ma-user/anaconda3/bin/activate "${DMS_CONDA_ENV:-torch218}"
     DMS_PYTHON=$(python -c 'import sys; print(sys.executable)')
 fi
 set -u
-# Runtime settings of SemanticLogKV's eval.sh/majob.sh (commit bf8ca5f) on this platform. A training job's
+# Runtime settings of SemanticLogKV's eval.sh/majob.sh (commit 4fd97c7) on this platform. A training job's
 # default LD_LIBRARY_PATH can reach an older libcuda first; torch218's cu128 build needs these libraries first.
 # Its NVTE_*/CUDNN_PATH settings serve Transformer Engine, which this project does not use.
 export PATH=/usr/local/cuda-12.8/bin:${PATH}

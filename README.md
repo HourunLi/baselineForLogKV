@@ -4,7 +4,7 @@
 
 这是一份可训练的实现，仓库不包含已经训练好的 1.7B DMS 权重。采用的是官方当前的 **adapter-only** 配方，不能表述为原论文全参数训练结果的复现，也不是 KVPress 的 `DMSPress` 包装器。
 
-**项目边界：本项目独立运行。** 统一规则见 [AGENTS.md](AGENTS.md) 与 [Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md)。SemanticLogKV 的评测协议（`eval.py` 及其 LitGPT 依赖）以私有快照放在 `models/_vendor/semanticlogkv/`（来源 `LogKV@bf8ca5f`，Apache-2.0，来源与哈希见其 `SOURCE.json`）；实验配置、任务清单、Base 转换器均在本项目内。运行时不读取、不导入相邻 `litgpt`/SemanticLogKV 的源码、实验 YAML 或脚本，也不需要其 editable 安装。共享的只读资产只有原始 Base 权重/tokenizer 与离线评测缓存。
+**项目边界：本项目独立运行。** 统一规则见 [AGENTS.md](AGENTS.md) 与 [Baseline 实现规范](docs/BASELINE_IMPLEMENTATION_GUIDE.md)。SemanticLogKV 的评测协议（`eval.py` 及其 LitGPT 依赖）以私有快照放在 `models/_vendor/semanticlogkv/`（来源 `HourunLi/LogKV@4fd97c7`，Apache-2.0，来源与哈希见其 `SOURCE.json`）；实验配置、任务清单、Base 转换器均在本项目内。运行时不读取、不导入相邻 `litgpt`/SemanticLogKV 的源码、实验 YAML 或脚本，也不需要其 editable 安装。共享的只读资产只有原始 Base 权重/tokenizer 与离线评测缓存。
 
 ## 实现与来源
 
@@ -64,7 +64,7 @@ python -m models.qwen3.prepare_base
 
 转换使用项目内 `models/qwen3/convert_lit_to_hf.py`（改编自 LitGPT 0.5.12 的 Qwen3 映射），严格校验参数、绑定 embedding 和模型配置（原始 Base 的 `model_config.yaml` 带有 SemanticLogKV 研究分支的 `use_research`、`research_swa_size`、`research_breakpoint_schedule` 等开关；按评测器的同一规则丢弃 LitGPT Config 没有的全部字段，与取值无关，因为评测器同样忽略它们，被评测的 Base 是普通 dense 结构；丢弃的字段及取值写入 manifest 的 `source_config_ignored_keys`），原样复制 tokenizer，保存来源、实验 YAML、转换器及输出文件 SHA-256。训练启动前验证已转换文件；来源信息随 DMS 模型导出，并在正式评测前与当前比较 Base 再核对。没有 manifest 的旧模型不能直接进入正式对比；早先用相邻 LitGPT 转换的产物（manifest v1）仍按同样哈希校验。
 
-当前配置的权重与测试缓存是服务器 `/workspace/...` 路径，本地 Mac 未存放这些真实文件。应在同样挂载这些目录的 CUDA 机器执行；不会因文件缺失自动下载替代版本。完整说明见 [评测对齐记录](docs/SEMANTICLOGKV_ALIGNMENT.md)。
+当前配置的权重与测试缓存是服务器 `/home/ma-user/...` 路径，本地 Mac 未存放这些真实文件。应在同样挂载这些目录的 CUDA 机器执行；不会因文件缺失自动下载替代版本。完整说明见 [评测对齐记录](docs/SEMANTICLOGKV_ALIGNMENT.md)。
 
 ## 先做小规模检查
 
@@ -176,8 +176,8 @@ python -m models.qwen3.infer \
 正式横向评测在 torch218 中执行，两种方法使用同一入口。每次必须选 `--suite main|niah|longbench`（项目内 `configs/eval_suites.yaml`：47 个 main 入口、其中 33 个 LongBench/LongBench-E，3 个 NIAH 仅 32768；输出进入 `<output>/<suite>/`）或诊断用 `--tasks`：
 
 ```bash
-source /opt/conda/bin/activate torch218
-cd /workspace/baselineForLogKV/DMS          # 本分支的检出目录；不安装任何包
+source /home/ma-user/anaconda3/bin/activate torch218
+cd /data/lihourun/baselineForLogKV/DMS          # 本分支的检出目录；不安装任何包
 python -m models.qwen3.check_env                 # GPU 机器上：CUDA、BF16、FlexAttention、FlashAttention 接口
 python -m models.qwen3.evaluate --model outputs/qwen3_1.7b_base/student_model --suite main --print-config
 bash scripts/evaluate.sh outputs/qwen3_1.7b_base/student_model --suite niah --limit 4
@@ -204,7 +204,7 @@ bash majob.sh --train configs/qwen3_1.7b_base_smoke.yaml --limit 4 --output outp
 bash majob.sh --train configs/qwen3_1.7b_base.yaml --output outputs/dms-32k-full
 ```
 
-平台变量与 chunkKV 等分支一致：`MA_NUM_GPUS`（每节点进程数，缺省 `NPROC_PER_NODE`/`LOCAL_WORLD_SIZE`/本节点可见的 CUDA 设备数，超过可见设备数时在启动 torchrun 前报错）、`MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MA_VJ_NAME`/`MA_TASK_NAME`/`MA_MASTER_INDEX`（主节点 DNS，多节点禁止 localhost）、`MASTER_PORT`（只用于多节点：main 用 +1、NIAH 用 +2，可由 `EVAL_MASTER_PORT`/`NIAH_MASTER_PORT` 覆盖；单节点每个阶段用 `--standalone` 绑定空闲端口）。激活环境后、任何 CUDA 调用之前，脚本照搬 SemanticLogKV `eval.sh`/`majob.sh` 的 CUDA 12.8 `PATH`/`LD_LIBRARY_PATH` 与 NCCL 设置，并用同一解释器执行一次 `torch.cuda.init()`，失败时打印加载的 libcuda 与 `LD_LIBRARY_PATH` 后退出；`scripts/evaluate.sh` 使用同样的库路径。平台上建议设置 `TMPDIR=/tmp`。`DMS_PYTHON` 直接指定解释器，否则激活 `/opt/conda/bin/activate ${DMS_CONDA_ENV:-torch218}`；环境名不代表实际版本，以结果记录为准。脚本导出 `LITGPT_EXPECTED_WORLD_SIZE`，快照评测器据此检查 rendezvous。
+平台变量与 chunkKV 等分支一致：`MA_NUM_GPUS`（每节点进程数，缺省 `NPROC_PER_NODE`/`LOCAL_WORLD_SIZE`/本节点可见的 CUDA 设备数，超过可见设备数时在启动 torchrun 前报错）、`MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MA_VJ_NAME`/`MA_TASK_NAME`/`MA_MASTER_INDEX`（主节点 DNS，多节点禁止 localhost）、`MASTER_PORT`（只用于多节点：main 用 +1、NIAH 用 +2，可由 `EVAL_MASTER_PORT`/`NIAH_MASTER_PORT` 覆盖；单节点每个阶段用 `--standalone` 绑定空闲端口）。激活环境后、任何 CUDA 调用之前，脚本照搬 SemanticLogKV `eval.sh`/`majob.sh` 的 CUDA 12.8 `PATH`/`LD_LIBRARY_PATH` 与 NCCL 设置，并用同一解释器执行一次 `torch.cuda.init()`，失败时打印加载的 libcuda 与 `LD_LIBRARY_PATH` 后退出；`scripts/evaluate.sh` 使用同样的库路径。平台上建议设置 `TMPDIR=/tmp`。`DMS_PYTHON` 直接指定解释器，否则激活 `/home/ma-user/anaconda3/bin/activate ${DMS_CONDA_ENV:-torch218}`；环境名不代表实际版本，以结果记录为准。脚本导出 `LITGPT_EXPECTED_WORLD_SIZE`，快照评测器据此检查 rendezvous。
 
 结果包含 `comparison_contract`、`resolved_eval` 和 harness 逐样本日志，可自动核对：
 
