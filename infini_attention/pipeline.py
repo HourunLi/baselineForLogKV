@@ -13,7 +13,10 @@ def main():
     modes = cli.add_mutually_exclusive_group(required=True)
     modes.add_argument("--pipeline", action="store_true")
     modes.add_argument("--check", action="store_true")
+    cli.add_argument("--steps", type=int, help="Run a training smoke test in a separate output directory")
     args = cli.parse_args()
+    if args.steps is not None and not args.pipeline:
+        cli.error("--steps requires --pipeline")
     nodes, rank, env = node_environment()
     if nodes > 1 and not any(os.getenv(k) for k in ("VC_TASK_INDEX", "NODE_RANK", "GROUP_RANK")):
         cli.error("Multi-node managed_cluster jobs require a node rank on each host.")
@@ -30,6 +33,20 @@ def main():
     root = Path(env.get("INFINI_OUTPUT_ROOT") or
                 Path("/workspace/ckpt-logKV/Infini-Attention") /
                 env.get("MA_VJ_NAME", "qwen8b-32k")).resolve()
+    if args.steps is not None:
+        if not 1 <= args.steps < cfg["steps"]:
+            cli.error(f"Smoke test steps must be between 1 and {cfg['steps'] - 1}")
+        root = root / "smoke" / f"steps-{args.steps}"
+        env.update(INFINI_OUTPUT_ROOT=str(root), GPUS_PER_NODE=str(gpus),
+                   INFINI_QWEN_BASE=env.get("INFINI_QWEN_BASE") or cfg["base"])
+        print(f"Training smoke test: {args.steps} steps in {root}", flush=True)
+        train = ["bash", "scripts/train_infini.sh"]
+        run_stages(nodes, rank, env, [
+            ("GPU, NCCL, base and shared storage", train + ["check"], False),
+            ("prepare ProLong", train + ["prepare"], True),
+            ("CPT smoke test", train + ["cpt", "--steps", str(args.steps)], False),
+        ])
+        return
     env.update(INFINI_OUTPUT_ROOT=str(root), INFINI_CHECKPOINT_DIR=str(root / "cpt"),
                GPUS_PER_NODE=str(gpus), INFINI_QWEN_BASE=env.get("INFINI_QWEN_BASE") or cfg["base"])
     env.setdefault("INFINI_OUTPUT_DIR", str(root / "evaluate"))
