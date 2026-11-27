@@ -12,4 +12,4 @@ lr: 5.0e-6
 min_lr: 3.0e-6
 warmup_steps: 100
 weight_decay: 0.1
-save_interval: 400
+save_interval: 200

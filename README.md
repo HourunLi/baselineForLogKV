@@ -42,7 +42,7 @@ bash majob.sh --train cpt
 
 默认从原始 HF 权重装载，各层只新增 32 个门控。全部 8,190,736,512 个参数参与训练。每条 32,769-token 数据块形成 32,768 个预测位置。全局 batch 128、每卡 batch 1、32 进程累积 4 次，共 2,000 步。使用 BF16、分层 FSDP、分段激活检查点和分块交叉熵。AdamW 的 betas 为 (0.9, 0.95)，eps 为 1e-8，衰减组为 0.1。前 100 步线性预热至 5e-6，此后按 LogKV 的零起始步号执行余弦计划，最低学习率为 3e-6。
 
-可通过 `INFINI_QWEN_BASE`、`INFINI_PROLONG_DATA`、`INFINI_PROLONG_CACHE_ROOT`、`INFINI_OUTPUT_ROOT` 分别覆盖底模、原始数据、包含 `litdata_<指纹>_ctx32768` 的缓存父目录和共享输出根目录。需要多个训练节点看到相同路径。默认每 400 步保存模型分片、优化器和各 rank 的数据位置。恢复使用相同配方和 world size。最终导出目录为 `checkpoints/Infini-Attention/cpt`；`training.json` 含底模和产物的哈希、缓存索引、训练步数、实际 token、训练耗时和各 rank 峰值显存。
+可通过 `INFINI_QWEN_BASE`、`INFINI_PROLONG_DATA`、`INFINI_PROLONG_CACHE_ROOT`、`INFINI_OUTPUT_ROOT` 分别覆盖底模、原始数据、包含 `litdata_<指纹>_ctx32768` 的缓存父目录和共享输出根目录。需要多个训练节点看到相同路径。默认每 200 个优化器步及训练结束时保存模型分片、优化器和各 rank 的数据位置。恢复使用相同配方和 world size。最终导出目录为 `checkpoints/Infini-Attention/cpt`；`training.json` 含底模和产物的哈希、缓存索引、训练步数、实际 token、训练耗时和各 rank 峰值显存。
 
 ```bash
 # 另设目录完成一个真实优化器步，沿用正式全局 batch；结果导出到 trial-1

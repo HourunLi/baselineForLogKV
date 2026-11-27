@@ -7,7 +7,6 @@ import os
 import shutil
 import subprocess
 import socket
-import tempfile
 import uuid
 import time
 from datetime import timedelta
@@ -20,6 +19,7 @@ import torch
 from torch.distributed.elastic.multiprocessing.errors import record
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
+from torch.distributed.checkpoint.filesystem import FileSystem
 import yaml
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, FullStateDictConfig, StateDictType
@@ -62,20 +62,29 @@ def gather(value):
     return values
 
 
+class BucketFileSystem(FileSystem):
+    def rename(self, path, new_path):
+        # DCP publishes its small metadata file after writing all tensor shards.
+        shutil.copyfile(path, new_path)
+        Path(path).unlink()
+
+
 def save_progress(folder, model, optimizer, loader, meta, rank):
-    folder.parent.mkdir(parents=True, exist_ok=True)
-    tmp = [tempfile.mkdtemp(dir=folder.parent, prefix=".saving-") if rank == 0 else None]
+    if rank == 0:
+        folder.mkdir(parents=True, exist_ok=True)
+        if (folder / "progress.json").exists():
+            raise FileExistsError(folder)
     if distributed():
-        dist.broadcast_object_list(tmp, src=0)
-    stage = Path(tmp[0])
+        dist.barrier()
+    writer = dcp.FileSystemWriter(folder / "state")
+    writer.fs = BucketFileSystem()
     model_state, optim_state = get_state_dict(model, optimizer)
-    dcp.save({"model": model_state, "optimizer": optim_state}, checkpoint_id=stage / "state")
-    torch.save(loader.state_dict(), stage / f"data-{rank}.pt")
+    dcp.save({"model": model_state, "optimizer": optim_state}, storage_writer=writer)
+    torch.save(loader.state_dict(), folder / f"data-{rank}.pt")
     if distributed():
         dist.barrier()
     if rank == 0:
-        (stage / "progress.json").write_text(json.dumps(meta, indent=2))
-        stage.rename(folder)
+        (folder / "progress.json").write_text(json.dumps(meta, indent=2))
     if distributed():
         dist.barrier()
 
@@ -86,6 +95,7 @@ def restore(folder, model, optimizer, loader, identity, rank):
     saved_recipe = meta["identity"]["recipe"]
     if "output_root" in identity["recipe"]:
         saved_recipe["output_root"] = identity["recipe"]["output_root"]
+    saved_recipe["save_interval"] = identity["recipe"]["save_interval"]
     if meta["identity"] != identity:
         raise ValueError("resume requires the same base, recipe, cache and world size")
     model_state, optim_state = get_state_dict(model, optimizer)
@@ -96,18 +106,16 @@ def restore(folder, model, optimizer, loader, identity, rank):
 
 
 def export(folder, model, state, base, report):
-    with tempfile.TemporaryDirectory(dir=folder.parent) as tmp:
-        stage = Path(tmp) / "export"
-        model.save_pretrained(stage, state_dict=state, max_shard_size="2GB", safe_serialization=True)
-        for name in ("tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt",
-                     "special_tokens_map.json", "added_tokens.json", "generation_config.json"):
-            if (base / name).is_file():
-                shutil.copy2(base / name, stage / name)
-        files = list(stage.iterdir())
-        report["files_sha256"] = {p.name: file_hash(p) for p in files}
-        report["file_stats"] = {p.name: [p.stat().st_size, p.stat().st_mtime_ns] for p in files}
-        (stage / "training.json").write_text(json.dumps(report, indent=2))
-        stage.rename(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(folder, state_dict=state, max_shard_size="2GB", safe_serialization=True)
+    for name in ("tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt",
+                 "special_tokens_map.json", "added_tokens.json", "generation_config.json"):
+        if (base / name).is_file():
+            shutil.copyfile(base / name, folder / name)
+    files = list(folder.iterdir())
+    report["files_sha256"] = {p.name: file_hash(p) for p in files}
+    report["file_stats"] = {p.name: [p.stat().st_size, p.stat().st_mtime_ns] for p in files}
+    (folder / "training.json").write_text(json.dumps(report, indent=2))
 
 
 def check_base_config(config, base):
@@ -131,7 +139,7 @@ def train(cfg, base, cache, root, device, *, resume=None, stop_after=None, requi
     # A short trial has its own export name and never becomes the default evaluation checkpoint.
     out = root / ("cpt" if target == cfg["steps"] else f"trial-{target}")
     root.mkdir(parents=True, exist_ok=True)
-    if out.exists():
+    if (out / "training.json").exists():
         raise FileExistsError(out)
     loader = prolong.loader(cache, length, cfg["seed"], cfg["num_workers"])
     torch.manual_seed(cfg["seed"])
@@ -170,8 +178,8 @@ def train(cfg, base, cache, root, device, *, resume=None, stop_after=None, requi
     if resume:
         progress = restore(resume, model, optimizer, loader, identity, rank)
     begin = progress["step"]
-    if begin >= target:
-        raise ValueError("resume step must precede requested stop")
+    if begin > target:
+        raise ValueError("resume step exceeds requested stop")
     previous_hours = progress["gpu_hours"]
     stream = iter(loader)
     digest = hashlib.sha256()
@@ -221,7 +229,7 @@ def train(cfg, base, cache, root, device, *, resume=None, stop_after=None, requi
             print(f"[Infini-Attention CPT] step={completed}/{target} ({completed / target:.2%}) "
                   f"loss={progress['last_loss']:.6f} lr={optimizer.param_groups[0]['lr']:.3e} "
                   f"avg_tokens/s={tokens_per_step / seconds_per_step:,.0f} ETA={eta}", flush=True)
-        if (step + 1) % cfg["save_interval"] == 0 and step + 1 < cfg["steps"]:
+        if (step + 1) % cfg["save_interval"] == 0 or step + 1 == target:
             save_progress(root / f"step-{step+1}", model, optimizer, loader, progress, rank)
     ranks = gather(dict(rank=rank, input_sha256_since_resume=digest.hexdigest(),
                         wall_seconds=time.monotonic() - started,
