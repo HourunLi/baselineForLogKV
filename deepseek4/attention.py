@@ -24,6 +24,7 @@ class Geometry:
     window: int = 128
 
 
+TRAIN_QUERY_TILE = 128
 LAYOUT = (0, 0) + (4, 128) * 17
 
 
@@ -225,14 +226,19 @@ class Attention(nn.Module):
             cache.local[:, :n].copy_(local[:, -n:])
         pool, keys = self.compress(x, start, cache) if self.ratio else (None, None)
         parts, losses = [], []
-        for off in range(0, x.size(1), 16):
-            part = x[:, off : off + 16]
+        tile = TRAIN_QUERY_TILE if self.training else 16
+        # Project the shared low-rank queries once per sequence during CPT.
+        chunks = x.split(tile, dim=1)
+        queries = (self.q_norm(self.qa(x)).split(tile, dim=1) if self.training
+                   else (self.q_norm(self.qa(part)) for part in chunks))
+        for i, (part, qr) in enumerate(zip(chunks, queries)):
+            off = i * tile
             end = start + off + part.size(1)
             count = end // self.ratio if self.ratio else 0
             args = (
                 part,
-                self.q_norm(self.qa(part)),
-                pos[off : off + 16],
+                qr,
+                pos[off : off + tile],
                 local,
                 start - recent,
                 pool[:, :count] if count else None,
