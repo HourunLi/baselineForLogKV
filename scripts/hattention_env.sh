@@ -1,5 +1,5 @@
-if [ -f /opt/conda/bin/activate ]; then
-    if ! source /opt/conda/bin/activate torch218; then
+if [ -f /home/ma-user/anaconda3/bin/activate ]; then
+    if ! source /home/ma-user/anaconda3/bin/activate torch218; then
         echo "ERROR: failed to activate torch218."
         exit 1
     fi
@@ -7,7 +7,7 @@ fi
 
 
 # Set caches before Python imports Hugging Face and freezes its cache paths.
-export HF_HOME=${HF_HOME:-/workspace/data/hf_cache}
+export HF_HOME=${HF_HOME:-/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache}
 export LONGBENCH2_DIR=${LONGBENCH2_DIR:-${HF_HOME}/longbench2}
 export BABILONG_DIR=${BABILONG_DIR:-${HF_HOME}/babilong}
 export HF_DATASETS_CACHE="${HF_HOME}/hf_cache"

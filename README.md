@@ -6,20 +6,20 @@
 
 这一入口复用 Qwen3-8B-Base 的 tokenizer、embedding、36 层 RMSNorm 和 SwiGLU、最终 RMSNorm 与 LM head。每层替换一个原生 Mamba-2 HAttention mixer，宽度 4096、32 头、8 组、状态及值维度均为 128。转换后模型有 8,876,197,248 个参数，其中 mixer 有 2,195,420,544 个。新 mixer 独立初始化，输出投影从零开始。32K 有 16 个可训练读出级别，超长时复用当前 token 对最深已训练级别的读出权重。
 
-managed_cluster 默认使用已有的 `/opt/conda/envs/torch218/bin/python`，启动时打印实际解释器。共享环境直接运行仓库代码，无需安装项目或训练 extra。独立管理的训练环境可用 `LLA_TRAIN_PYTHON` 指定。参照栈为 PyTorch 2.11.0+cu128、Transformers 4.51.3 和 LitData 0.2.61。教师走 PyTorch SDPA，学生使用项目内的 PyTorch HAttention，多卡由 torchrun、NCCL 和 FSDP 分片。[服务器环境清单](docs/BASELINE_ENVIRONMENT.md)
+ModelArts 默认使用已有的 `/home/ma-user/anaconda3/envs/torch218/bin/python`，启动时打印实际解释器。共享环境直接运行仓库代码，无需安装项目或训练 extra。独立管理的训练环境可用 `LLA_TRAIN_PYTHON` 指定。参照栈为 PyTorch 2.11.0+cu128、Transformers 4.51.3 和 LitData 0.2.61。教师走 PyTorch SDPA，学生使用项目内的 PyTorch HAttention，多卡由 torchrun、NCCL 和 FSDP 分片。[服务器环境清单](docs/BASELINE_ENVIRONMENT.md)
 
 ```bash
 bash majob.sh --pipeline
 ```
 
-managed_cluster 的默认 pipeline 将学生权重保存在共享目录 `/workspace/baselineForLogKV/checkpoints/qwen8b-hattention/`。多节点启动时先检查其他节点能否读取节点 0 新写的文件。旧作业目录中仍可见的相应 CPT、蒸馏或转换产物按阶段优先级迁入共享目录并核对文件摘要，原文件保留。
+ModelArts 的默认 pipeline 将学生权重保存在共享目录 `/home/ma-user/work/bucket-pangu-green/lihourun/baselineForLogKV/checkpoints/qwen8b-hattention/`。多节点启动时先检查其他节点能否读取节点 0 新写的文件。旧作业目录中仍可见的相应 CPT、蒸馏或转换产物按阶段优先级迁入共享目录并核对文件摘要，原文件保留。
 
 验证保存与恢复时可运行 `bash majob.sh --pipeline --cpt-steps 10`。试跑复用已有蒸馏产物，权重保存到学生目录的 `cpt-10-steps/`，评测结果写入结果目录的同名子目录。再次提交相同命令会校验试跑产物并从评测继续。
 
 重跑同一条 `bash majob.sh --pipeline` 即可。节点 0 优先校验 CPT 的文件哈希、权重结构、训练配置与完成步数，通过后所有节点直接进入评测。仅有完整蒸馏产物时，检查训练缓存后继续 CPT；已有产物校验失败时保留目录并报错。学生输出目录应在所有节点可见。
 
 
-managed_cluster 提交一次作业，每个节点执行上面同一条命令。首节点转换权重、复用或准备 ProLong 缓存并做单卡 32K 试跑。随后所有节点依次参与蒸馏、32K CPT 和学生评测。阶段之间同步，任一节点返回错误，作业失败退出。多节点需要各节点可见的共享学生目录与数据目录，并开放额外的协调端口 `MASTER_PORT + 2`（默认 6002）。评测自动读取本次 `LLA_STUDENT_ROOT/cpt`。整条流水线从新的学生目录开始；已有成功产物时，可用下列单阶段入口从失败处继续。
+ModelArts 提交一次作业，每个节点执行上面同一条命令。首节点转换权重、复用或准备 ProLong 缓存并做单卡 32K 试跑。随后所有节点依次参与蒸馏、32K CPT 和学生评测。阶段之间同步，任一节点返回错误，作业失败退出。多节点需要各节点可见的共享学生目录与数据目录，并开放额外的协调端口 `MASTER_PORT + 2`（默认 6002）。评测自动读取本次 `LLA_STUDENT_ROOT/cpt`。整条流水线从新的学生目录开始；已有成功产物时，可用下列单阶段入口从失败处继续。
 
 ```bash
 bash majob.sh --train convert
@@ -70,7 +70,7 @@ LIMIT=2 EVAL_MAIN=0 EVAL_LENGTHS=512k,1m EVAL_SUITES=ruler,turns bash eval.sh
 
 ## 数据
 
-默认 `HF_HOME` 为 `/workspace/data/hf_cache`。启动器按参考实现设置 hub、datasets、RULER、NLTK、BABILong 和 LongBench v2 路径及 CUDA/NCCL 环境。下载程序按 `niahLogKV/unused` 的方式使用普通文件、requests、429 重试并支持无可用 CA 的代理。模型下载验证 Git blob 或 LFS 摘要，数据准备使用参考代码的完整性检查。可用 `--verify-ssl` 开启证书验证。
+默认 `HF_HOME` 为 `/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache`。启动器按参考实现设置 hub、datasets、RULER、NLTK、BABILong 和 LongBench v2 路径及 CUDA/NCCL 环境。下载程序按 `niahLogKV/unused` 的方式使用普通文件、requests、429 重试并支持无可用 CA 的代理。模型下载验证 Git blob 或 LFS 摘要，数据准备使用参考代码的完整性检查。可用 `--verify-ssl` 开启证书验证。
 
 ```bash
 source scripts/hattention_env.sh

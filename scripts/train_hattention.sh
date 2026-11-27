@@ -2,8 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 python_bin=${LLA_TRAIN_PYTHON:-python}
-if [[ -z ${LLA_TRAIN_PYTHON:-} && -d /opt/conda ]]; then
-    python_bin=/opt/conda/envs/torch218/bin/python
+if [[ -z ${LLA_TRAIN_PYTHON:-} && -d /home/ma-user/anaconda3 ]]; then
+    python_bin=/home/ma-user/anaconda3/envs/torch218/bin/python
 fi
 if ! command -v "$python_bin" >/dev/null; then
     echo "Training interpreter unavailable: $python_bin. Set LLA_TRAIN_PYTHON to the prepared environment." >&2

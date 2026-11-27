@@ -36,7 +36,7 @@ FSDP 训练、续训与导出测试（主配置的 FSDP 设置）在 GPU 上运�
 
 ## 2026-10-19（续）：服务器 torch218 首次运行与修复
 
-服务器 torch218（GPU 机器，`/workspace/baselineForLogKV/DMS`，`2a3c18c`）上
+服务器 torch218（GPU 机器，`/data/lihourun/baselineForLogKV/DMS`，`2a3c18c`）上
 `env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 python -m pytest -q`：**98 passed、2 skipped、1 failed**（用户运行）。
 
 - 通过的包括上游 10 项 CUDA 测试（分块 prefill 与 prefill 后生成，对照参考实现）：编译的 FlexAttention prefill 与

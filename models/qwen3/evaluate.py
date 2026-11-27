@@ -30,7 +30,7 @@ from .config import (
 
 BACKENDS = ("dms", "logkv")
 SUITES = ("main", "longbench", "niah")
-DEFAULT_HF_CACHE = "/workspace/data/hf_cache"
+DEFAULT_HF_CACHE = "/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache"
 # Requirements of the bundled protocol code and the shared offline cache, not a target environment:
 # evaluation adapts to SemanticLogKV's environment (torch218: lm-eval 0.4.11, datasets 4.8.4 on 2026-10-16).
 # lm-eval 0.4.9 is the oldest release the bundled evaluator was checked against; the cache's IFEval entry

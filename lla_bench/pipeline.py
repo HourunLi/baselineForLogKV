@@ -1,4 +1,4 @@
-"""One managed_cluster process per node coordinates the existing training and evaluation launchers."""
+"""One ModelArts process per node coordinates the existing training and evaluation launchers."""
 import os
 import shutil
 import json
@@ -88,7 +88,7 @@ def main():
     root = legacy
     if (not env.get("LLA_STUDENT_ROOT") and (env.get("MA_JOB_DIR") or env.get("MA_VJ_NAME")) and
             configured_root == "checkpoints/qwen8b-hattention"):
-        root = Path("/workspace/baselineForLogKV") / configured_root
+        root = Path("/home/ma-user/work/bucket-pangu-green/lihourun/baselineForLogKV") / configured_root
     if rank == 0:
         print(f"[resume] Student checkpoint root: {root}", flush=True)
     steps = int(env["LLA_PIPELINE_CPT_STEPS"]) if "LLA_PIPELINE_CPT_STEPS" in env else None

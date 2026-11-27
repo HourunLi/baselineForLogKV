@@ -1,5 +1,5 @@
-base: /workspace/checkpoints/Qwen/Qwen3-8B-Base
-prolong: /workspace/longcontext/prolong/data
+base: /home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-8B-Base
+prolong: /home/ma-user/work/bucket-pangu-green/lihourun/longcontext/prolong/data
 output_root: checkpoints/qwen8b-hattention
 context_length: 32768
 seed: 42

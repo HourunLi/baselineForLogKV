@@ -191,7 +191,7 @@ PY_SHARDS
 fi
 
 mkdir -p "${EVAL_OUTPUT_DIR}"
-# Detect GPUs visible to this job (including CUDA_VISIBLE_DEVICES); managed_cluster
+# Detect GPUs visible to this job (including CUDA_VISIBLE_DEVICES); ModelArts
 # allocation is an upper bound. GPUS_PER_NODE may explicitly select fewer GPUs.
 GPUS_PER_NODE=$("${PYTHON_BIN}" - <<'PY_GPU_COUNT'
 import os

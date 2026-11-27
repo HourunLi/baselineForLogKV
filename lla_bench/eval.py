@@ -16,7 +16,7 @@ from importlib.metadata import version
 from datetime import datetime, timedelta
 from pathlib import Path
 
-BASE = os.environ.get("HF_HOME", "/workspace/data/hf_cache")
+BASE = os.environ.get("HF_HOME", "/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache")
 os.environ['HF_HOME'] = BASE
 os.environ['HF_DATASETS_CACHE'] = f'{BASE}/hf_cache'
 os.environ['HF_EVALUATE_CACHE'] = f'{BASE}/evaluate'
@@ -306,7 +306,7 @@ _SYNC_SEQ = 0
 def _wait_all_ranks(stage: str) -> float:
     """所有 rank 汇合，返回本 rank 的等待秒数；等待期间定期打印仍未到达的 rank。
 
-    不用 ``monitored_barrier``：它等待时进程没有任何输出、GPU 利用率恒定，managed_cluster
+    不用 ``monitored_barrier``：它等待时进程没有任何输出、GPU 利用率恒定，ModelArts
     卡死检测（进程 IO 不变 + GPU 利用率不变，默认 30 min）会把"等最慢的 rank / 等 rank 0
     写结果"判成卡死，且要到 12h 超时才报告缺席 rank。这里改在默认进程组的 TCPStore 上
     计数：CPU 轮询，每 ``LOGKV_EVAL_SYNC_HEARTBEAT_S``（默认 300s）打印一次缺席 rank；
@@ -1746,7 +1746,7 @@ def main(
                     "method": "qwen3_hattention_mamba2" if lm_model.config.student else "upstream_hattention_mamba2",
                     "implementation": "native_pytorch",
                     "upstream_commit": "7f8644159c1406fae1ad863829a5b3a4fbf63022",
-                    "eval_protocol_commit": "0f4396b617a5cfcead9da3d6bb23a4f0693c97f5",
+                    "eval_protocol_commit": "a126a1b3a11262a5dea85c0416b57753a44e9c6f",
                     "checkpoint_source": lm_model.checkpoint_source,
                     "evaluation_device": str(lm_model.device),
                     "model_dtype": str(lm_model.model.lm_head.weight.dtype),
