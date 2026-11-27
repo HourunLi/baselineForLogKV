@@ -276,7 +276,6 @@ def test_reference_chunks_and_resume(tmp_path):
 
 def test_initialize_recipe_in_precreated_output(tmp_path):
     import json
-    import pytest
     from deepseek4.train import initialize_recipe
 
     (tmp_path / "logs").mkdir()
@@ -284,21 +283,20 @@ def test_initialize_recipe_in_precreated_output(tmp_path):
     (tmp_path / "recipe.tmp").write_text("partial")
     (tmp_path / ".cpt.lock").touch()
     manifest = {"world_size": 16}
-    for name in ("step-00000400", "lit_model.pth", "steps-from-00000000-1.jsonl", "model_config.yaml"):
-        entry = tmp_path / name
-        entry.touch()
-        with pytest.raises(FileExistsError, match=name):
-            initialize_recipe(tmp_path, manifest)
-        assert entry.exists() and not (tmp_path / "recipe.json").exists()
-        entry.unlink()
-    evaluation = tmp_path / "evaluation"
-    evaluation.mkdir()
-    previous_stage = evaluation / "main"
-    previous_stage.mkdir()
-    with pytest.raises(FileExistsError, match="evaluation"):
-        initialize_recipe(tmp_path, manifest)
-    previous_stage.rmdir()
+    initialize_recipe(tmp_path, {"world_size": 8})
+    artifacts = ["step-00000400", "lit_model.pth", "steps-from-00000000-1.jsonl", "model_config.yaml"]
+    for name in artifacts:
+        (tmp_path / name).touch()
+    (tmp_path / "evaluation" / "main").mkdir(parents=True)
     initialize_recipe(tmp_path, manifest)
+    assert all(not (tmp_path / name).exists() for name in [*artifacts, "evaluation"])
+    checkpoint = tmp_path / "checkpoint-00000400"
+    checkpoint.mkdir()
+    initialize_recipe(tmp_path, manifest)
+    assert checkpoint.is_dir()
+    (tmp_path / "training.json").write_text("{}")
+    initialize_recipe(tmp_path, manifest)
+    assert not checkpoint.exists() and not (tmp_path / "training.json").exists()
     assert json.loads((tmp_path / "recipe.json").read_text()) == manifest
     assert (tmp_path / "logs" / "worker.log").read_text() == "existing"
     assert (tmp_path / "recipe.tmp").read_text() == "partial"

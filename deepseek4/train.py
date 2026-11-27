@@ -7,6 +7,7 @@ import importlib.metadata
 import json
 import math
 import random
+import shutil
 import fcntl
 import os
 from pathlib import Path
@@ -182,37 +183,48 @@ def restore_progress(folder, model, opt, loader, rank):
 def initialize_recipe(output, manifest):
     """Start in a pre-created directory, preserving unrelated managed_cluster files."""
     recipe = output / "recipe.json"
-    expected = json.dumps(manifest, indent=2)
-    if recipe.is_symlink():
-        raise FileExistsError(f"Expected a regular training recipe: {recipe}")
-    if recipe.exists():
-        stored = recipe.read_text()
+    reset = output / ".cpt-reset"
+    record = output / "training.json"
+    for key in ("base_checkpoint_dir", "data_dir", "tokenized_dir"):
+        path = manifest.get("config", {}).get(key)
+        if path:
+            asset = Path(path).resolve()
+            destination = output.resolve()
+            if asset.is_relative_to(destination) or destination.is_relative_to(asset):
+                raise ValueError(f"Training output {output} overlaps {key}={path}")
+    if recipe.is_symlink() or reset.is_symlink():
+        raise FileExistsError(f"Expected regular training metadata in {output}")
+    if recipe.is_file() and not reset.exists():
         try:
-            previous = json.loads(stored)
+            previous = json.loads(recipe.read_text())
         except json.JSONDecodeError:
-            # A truncated first write is recoverable only before any training artifacts exist.
-            if not expected.startswith(stored):
-                raise
-        else:
-            if previous != manifest:
-                raise ValueError(f"Resume recipe differs from {recipe}")
-            return
-    reserved = {"training.json", "training.json.tmp", "model_config.yaml",
-                "lit_model.pth", "lit_model.pth.tmp", "evaluation"}
-    conflicts = []
+            previous = None
+        if previous == manifest:
+            if not record.exists():
+                return
+            try:
+                json.loads(record.read_text())
+            except json.JSONDecodeError:
+                final = output / f"checkpoint-{manifest['config']['steps']:08d}" / "complete"
+                if final.is_file():
+                    return  # Retry final export from the published last step.
+
+    # Keep the marker until cleanup and publication both finish. A retry under
+    # the output lock must never resume a partly deleted generation.
+    reset.touch()
+    record.unlink(missing_ok=True)
+    reserved = {"training.json.tmp", "model_config.yaml", "lit_model.pth", "lit_model.pth.tmp", "evaluation"}
     for entry in output.iterdir():
-        if entry.name == "evaluation" and not entry.is_symlink() and entry.is_dir() and not any(entry.iterdir()):
-            continue
         if (entry.name in reserved or entry.match("step-" + "[0-9]" * 8)
                 or entry.match("checkpoint-" + "[0-9]" * 8) or entry.match("steps-from-*.jsonl")
                 or entry.name.startswith(".checkpoint-")):
-            conflicts.append(entry.name)
-    if conflicts:
-        raise FileExistsError(
-            f"No complete recipe.json for existing training artifacts in {output}: {', '.join(sorted(conflicts))}. "
-            "Restore the matching recipe to resume, or set DEEPSEEK4_OUTPUT_DIR to a fresh directory."
-        )
-    recipe.write_text(expected)
+            if entry.is_symlink() or not entry.is_dir():
+                entry.unlink()
+            else:
+                shutil.rmtree(entry)
+    recipe.write_text(json.dumps(manifest, indent=2))
+    reset.unlink()
+    print(f"Starting a new CPT run in {output} from the Base checkpoint", flush=True)
 
 
 def train(cfg):
@@ -246,7 +258,6 @@ def train(cfg):
             output.mkdir(parents=True, exist_ok=True)
             lock = (output / ".cpt.lock").open("a")
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            recipe = output / "recipe.json"
             manifest = dict(
                 method="qwen3-v4flash-36",
                 config=cfg,
@@ -268,16 +279,6 @@ def train(cfg):
                 code_sha256={str(p.relative_to(ROOT)): sha256(p) for p in (ROOT / "deepseek4").glob("*.py")},
             )
             record = output / "training.json"
-            if record.exists():
-                try:
-                    json.loads(record.read_text())
-                except json.JSONDecodeError:
-                    # A final manifest interrupted during writing can be republished from the final step.
-                    final = output / f"checkpoint-{cfg['steps']:08d}" / "complete"
-                    if not recipe.is_file() or not final.is_file():
-                        raise
-                else:
-                    raise FileExistsError(f"Completed training in {output}; use majob.sh eval --full")
             initialize_recipe(output, manifest)
             checkpoint = latest_checkpoint(output)
             if checkpoint is not None:
