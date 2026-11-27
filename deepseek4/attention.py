@@ -24,7 +24,7 @@ class Geometry:
     window: int = 128
 
 
-TRAIN_QUERY_TILE = 128
+TRAIN_QUERY_TILE = 2048
 LAYOUT = (0, 0) + (4, 128) * 17
 
 
