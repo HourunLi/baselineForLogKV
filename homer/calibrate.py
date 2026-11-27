@@ -1,4 +1,6 @@
 """Generate HOMER relative-position biases from a frozen HF Llama or Qwen3 decoder."""
+from __future__ import annotations
+
 import argparse
 from bisect import bisect_right
 from contextlib import contextmanager
@@ -12,9 +14,6 @@ import tempfile
 from unittest.mock import patch
 
 import torch
-import transformers
-from datasets import load_dataset, load_from_disk
-from transformers import AutoConfig, AutoModel, AutoTokenizer
 import yaml
 
 
@@ -144,6 +143,10 @@ def reference_table(path, layers, length):
 
 
 def run(cfg):
+    import transformers
+    from datasets import load_dataset, load_from_disk
+    from transformers import AutoConfig, AutoModel, AutoTokenizer
+
     cfg.validate()
     out = Path(cfg.output)
     if out.exists():
