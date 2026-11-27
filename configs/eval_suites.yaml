@@ -1,5 +1,5 @@
 # Project-owned task lists of the fixed SemanticLogKV reference evaluation.
-# Reference: LogKV bf8ca5f73dd891047359b9e567fea3b524295841, eval.sh / majob.sh defaults.
+# Reference: HourunLi/LogKV 4fd97c78e04f0ec96ad6aed18df9e9cf440c6090, eval.sh / majob.sh defaults.
 # 47 main entries (14 general, 20 LongBench, 13 LongBench-E) and 3 NIAH entries.
 # Main tasks and NIAH run as separate stages; NIAH is evaluated at 32K only.
 # lm-eval expands task groups (e.g. mmlu) into their subtasks.
@@ -58,7 +58,7 @@ niah_tasks:
 niah_max_seq_lengths:
 - 32768
 
-# Long-context stages (64K / 128K): SemanticLogKV's eval_long{64k,128k}_*.yaml (LogKV niahLogKV@26a4f47).
+# Long-context stages (64K / 128K): SemanticLogKV's eval_long{64k,128k}_*.yaml (HourunLi/LogKV niahLogKV@4615501).
 # --context 64k|128k fixes the model window (block_size there), YaRN (rope_adjustments there) and the RULER
 # length; the 'long' suite is its main stage (BABILong and long-document perplexity, task files under tasks/),
 # the 'ruler' suite its NIAH stage (all 13 RULER tasks). Every task takes the first long_limit samples.

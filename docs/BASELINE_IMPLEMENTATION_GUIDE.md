@@ -75,7 +75,7 @@ NIAH 必须统一 tokenizer、长度 metadata 和生成规则；缓存标识和�
 
 ### 6.1 64K / 128K 长文本评测
 
-口径取自 SemanticLogKV 的 `eval_long{64k,128k}_*.yaml`（LogKV niahLogKV@26a4f47），任务清单与长度写在各项目的 `configs/eval_suites.yaml`：
+口径取自 SemanticLogKV 的 `eval_long{64k,128k}_*.yaml`（HourunLi/LogKV niahLogKV@4615501），任务清单与长度写在各项目的 `configs/eval_suites.yaml`：
 
 | 项目 | 64K | 128K |
 |---|---|---|

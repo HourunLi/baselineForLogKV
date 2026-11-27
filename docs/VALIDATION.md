@@ -24,7 +24,7 @@
 
 ## 2026-10-19：`--print-config` 独立性测试不再依赖机器上是否有 Base
 
-服务器 torch218（`/workspace/baselineForLogKV/PyramidKV-clean`，`e82ff02`）上 `env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 python -m pytest -q`：**75 passed、5 failed**（用户运行）。失败的都是 `tests/test_standalone.py` 的 `--print-config` 测试：
+服务器 torch218（`/data/lihourun/baselineForLogKV/PyramidKV-clean`，`e82ff02`）上 `env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 python -m pytest -q`：**75 passed、5 failed**（用户运行）。失败的都是 `tests/test_standalone.py` 的 `--print-config` 测试：
 服务器上真实 Base 存在，预览按设计读取其 `model_config.yaml` 取层数（共享模型元数据，规范允许），而测试只允许读项目内的 YAML；
 开发容器里没有这个路径，所以此前没有暴露。评测代码未改。
 

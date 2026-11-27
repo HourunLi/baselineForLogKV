@@ -43,7 +43,7 @@ from .qwen3_config import detect_weights_format, load_config
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_DIR.parent
-DEFAULT_BASE = "/workspace/checkpoints/Qwen/Qwen3-1.7B-Base/"
+DEFAULT_BASE = "/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/"
 DEFAULT_EVAL_SUITES = REPO_ROOT / "configs" / "eval_suites.yaml"
 # Project copies of SemanticLogKV's long-context task files (BABILong by length, long-document perplexity).
 LONG_TASKS_DIR = REPO_ROOT / "tasks"
