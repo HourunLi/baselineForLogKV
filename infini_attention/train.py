@@ -27,7 +27,6 @@ from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 
 from lla_bench import prolong
 from lla_bench.student import base_identity, file_hash
-from .model import InfiniLM, SegmentLayer
 
 
 def code_identity():
@@ -127,6 +126,8 @@ def check_base_config(config, base):
 
 
 def train(cfg, base, cache, root, device, *, resume=None, stop_after=None, require_8b=True):
+    from .model import InfiniLM, SegmentLayer
+
     rank = dist.get_rank() if distributed() else 0
     world = dist.get_world_size() if distributed() else 1
     length = cfg["context_length"]
