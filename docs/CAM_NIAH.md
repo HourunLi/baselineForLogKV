@@ -14,7 +14,7 @@ bash majob.sh --all
 
 等字节结果写入 `outputs/niahlogkv/1.7b/cam-all-step1/logkv/`，目标倍率 RULER 写入同级 `target-bytes/`。启动会核对版本、可见 GPU、checkpoint、tokenizer 和长文本输入。PPL 会用任务 tokenizer 在每个来源找到至少一篇达到所需长度的文档；主线 HF 任务在实际加载时检查离线缓存。启动器复用现有资源并报告本节点缺少的路径。
 
-- 共享根目录默认使用 `/workspace/data/hf_cache`。可以用 CAM_HF_CACHE 或 HF_HOME 指定根目录，HF_DATASETS_CACHE、RULER_CACHE_DIR、NLTK_DATA 等独立覆盖会保留。
+- 共享根目录默认使用 `/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache`。可以用 CAM_HF_CACHE 或 HF_HOME 指定根目录，HF_DATASETS_CACHE、RULER_CACHE_DIR、NLTK_DATA 等独立覆盖会保留。
 - 分词默认沿用参考 SAVE_DIR。完整模式在该目录缺 tokenizer.json 时，使用模型的原始 Base tokenizer 目录作为生成器来源，实际路径进入结果。
 - 普通 PPL 优先读取 LONG_PPL_DATA，否则使用共享根下的 `long_ppl_data/emozilla--pg19-test`。512K/1M 均需要至少 1,048,576 token 的参考文档。若这两档使用另一个已准备的单点 PPL 语料，用 LONG_PPL_DATA_1M 指向它。书籍曲线使用 LONG_PPL_BOOKS、可选的 LONG_PPL_BOOKS_1M，或参考下载器的 `long_ppl_books/emozilla--pg19`、`long_ppl_books_1m/emozilla--pg19`。
 - 512K/1M 需要 RULER 的 english_words.json、essay 背景、离线 QA 数据、NLTK punkt_tab，以及 BABILong QA1–QA5 的普通 Arrow 或 JSON。LongBench v2 需要 20 个完整子集，InfiniteBench 的 10 个任务到 256K。已准备的文件可直接复用。RULER_DATASET_CACHE_DIR 仅在指定了对应已生成的共享 Arrow 缓存时设置。
@@ -30,7 +30,7 @@ bash majob.sh --backend logkv --no-main --suites ruler
 bash majob.sh --backend dense --no-main --suites ruler
 ```
 
-长文本窗口为名义长度加 1024。默认按档使用 YaRN，倍率为 1、2、4、8、16、32。32K 至 128K 有 13 个 RULER 任务，256K 起有 12 个，SQuAD 的材料无法填满更长窗口。512K 与 1M 使用上游扩展生成协议。完整长评测还含 BABILong、LongBench v2、多轮 NIAH、长文档及书籍困惑度，以及 256K 以内的 InfiniteBench。长评测默认每任务 100 条，数据必选和可选规则、评分与逐样本聚合沿用上游。仅选 512K/1M 的默认子集和其他按需选择由 `--suites` 控制。dense 的可运行长度取决于显存，所有 rank 都各自加载完整模型。见 参考长文本规划器。
+长文本窗口为名义长度加 1024。默认按档使用 YaRN，倍率为 1、2、4、8、16、32。32K 至 128K 有 13 个 RULER 任务，256K 起有 12 个，SQuAD 的材料无法填满更长窗口。512K 与 1M 使用上游扩展生成协议。完整长评测还含 BABILong、LongBench v2、多轮 NIAH、长文档及书籍困惑度，以及 256K 以内的 InfiniteBench。长评测默认每任务 100 条，数据必选和可选规则、评分与逐样本聚合沿用上游。仅选 512K/1M 的默认子集和其他按需选择由 `--suites` 控制。dense 的可运行长度取决于显存，所有 rank 都各自加载完整模型。见 [参考长文本规划器](https://github.com/HourunLi/LogKV/blob/a126a1b3a11262a5dea85c0416b57753a44e9c6f/long_eval_plan.py)。
 
 结果 JSON 中，`kv_compression` 按实际处理 token 数量和实际保留槽总数汇总。`cache_budget` 记录整模型持久缓存字节、参考字节、名义长度分母及含 1024 余量的 dense 分母。`inference_metrics` 含按请求测量的 CUDA allocated / reserved 峰值、TTFT 与解码速度。模型权重、RoPE 和单层临时张量会进入运行峰值。
 
@@ -55,6 +55,6 @@ bash majob.sh --backend dense --no-main --suites ruler
 
 官方流式 CaM 在当步注意力输出后淘汰最旧的非 sink token。合并概率由被淘汰项的累计注意力除以后继 16 项的平均累计注意力得到，裁剪到 [0,1]。被选中时把 V 均分给这 16 项；保留的 K 按缓存槽重新施加 RoPE。默认 `--merge-interval 1` 对应此更新时序。Qwen3 GQA 对共享同一 KV 头的 query 头概率取平均，累计分数使用 FP32。启动器固定 32 个 sink，随机种子按层隔离。较大的 `--merge-interval` 将淘汰推迟到块末，会改变注意力历史，单独报告。如需测量这种吞吐折中，可显式选 `--merge-interval 128 --prefill-chunk 256`。分块求解顺序合并的 V 递推，临时线性系统每边最多 64 个被淘汰项。见 [官方流式缓存实现](https://github.com/zyxxmu/cam/blob/fc80e64f460b343be96c87596f2494fc9d319c45/generate_task/streaming_llm/kv_cache_cam.py)。
 
-独立检查 chunkKV 分支发现两处比较时需要处理的差异。其默认 ChunkKV 运行选 Base，dense 与 LogKV 选 Gamma CPT，权重哈希会不同。其流式 `streaming_keep` 按得分排列后用累计块长取前缀，当较高分块放不下时，其后的较短块即使装得下也被排除。CPU 复现中，预算 6、观察窗口 1、chunk size 4，较旧候选块长度依次为 4、4、1，分数依次为 12、8、1，当前代码保留位置 [0,1,2,3,9]，位置 8 可装入剩余槽。这会影响逻辑保留率；固定缓冲区仍分配 6 个位置。参见 ChunkKV 权重选择 和 候选块选择。
+独立检查 chunkKV 分支发现两处比较时需要处理的差异。其默认 ChunkKV 运行选 Base，dense 与 LogKV 选 Gamma CPT，权重哈希会不同。其流式 `streaming_keep` 按得分排列后用累计块长取前缀，当较高分块放不下时，其后的较短块即使装得下也被排除。CPU 复现中，预算 6、观察窗口 1、chunk size 4，较旧候选块长度依次为 4、4、1，分数依次为 12、8、1，当前代码保留位置 [0,1,2,3,9]，位置 8 可装入剩余槽。这会影响逻辑保留率；固定缓冲区仍分配 6 个位置。参见 [ChunkKV 权重选择](https://github.com/HourunLi/baselineForLogKV/blob/5341f9e5cf3017c156ddddcae8de35c5dd62035c/chunkkv/niah.py) 和 [候选块选择](https://github.com/HourunLi/baselineForLogKV/blob/5341f9e5cf3017c156ddddcae8de35c5dd62035c/chunkkv/core.py)。
 
 已验证 CPU 缓存字节、六档计划、小模型 YaRN 下无淘汰区间与 dense 的 logits、跨块合并，以及参考评测器的 checkpoint 加载、生成和对数似然接口。真实权重的六档任务分数、GPU 峰值和吞吐需在目标设备与数据上测量。

@@ -1,5 +1,5 @@
 # Project-owned snapshot of the SemanticLogKV experiment this baseline is compared with.
-# Source: LogKV bf8ca5f73dd891047359b9e567fea3b524295841,
+# Source: HourunLi/LogKV 4fd97c78e04f0ec96ad6aed18df9e9cf440c6090,
 #   exp/qwen1.7b-32k/arc_attach_alpha_beta_k12_b128_2k.yaml -> arc_semantic_fast -> base (flattened).
 # No cross-project YAML is read at runtime. Kept fields: the original Base (ckpt_dir) that
 # prepare_base converts and that supplies the tokenizer/NIAH metadata, the 32K window, and the
@@ -9,7 +9,7 @@
 arch_name: Qwen/Qwen3-1.7B-Base
 context_length: 32768
 expid: qwen1.7b-32k-attach-alpha-beta_k12_b128_2k
-ckpt_dir: ${CAM_BASE_CHECKPOINT-/workspace/checkpoints/Qwen/Qwen3-1.7B-Base/}
+ckpt_dir: ${CAM_BASE_CHECKPOINT-/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/}
 log_kv_B: 128
 log_kv_recent_size: 2048
 log_kv_train_block: 2048

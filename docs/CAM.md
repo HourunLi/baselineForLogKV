@@ -2,7 +2,7 @@
 
 `CaM` 分支是 CaM 的独立项目（自 DMS 分支创建；DMS 方法代码已移出，在其自己的分支维护）。统一规则见 [AGENTS.md](../AGENTS.md) 与 [Baseline 实现规范](BASELINE_IMPLEMENTATION_GUIDE.md)。
 
-**项目边界**：运行时不读取、不导入相邻 `litgpt`/SemanticLogKV 的源码、实验 YAML 或脚本。SemanticLogKV 评测协议（`eval.py` 及其 LitGPT 依赖）是私有快照 `models/_vendor/semanticlogkv/`（来源 `LogKV@bf8ca5f`，Apache-2.0，逐文件哈希见 `SOURCE.json`）；实验配置 `configs/experiment_qwen1.7b_32k.yaml`、任务清单 `configs/eval_suites.yaml`、Base 转换器 `models/qwen3/convert_lit_to_hf.py`（改编自 LitGPT 0.5.12）均在本项目内。共享的只读资产只有原始 Base 权重/tokenizer 与离线评测缓存（`CAM_HF_CACHE` 可改缓存根目录）。
+**项目边界**：运行时不读取、不导入相邻 `litgpt`/SemanticLogKV 的源码、实验 YAML 或脚本。SemanticLogKV 评测协议（`eval.py` 及其 LitGPT 依赖）是私有快照 `models/_vendor/semanticlogkv/`（来源 `HourunLi/LogKV@4fd97c7`，Apache-2.0，逐文件哈希见 `SOURCE.json`）；实验配置 `configs/experiment_qwen1.7b_32k.yaml`、任务清单 `configs/eval_suites.yaml`、Base 转换器 `models/qwen3/convert_lit_to_hf.py`（改编自 LitGPT 0.5.12）均在本项目内。共享的只读资产只有原始 Base 权重/tokenizer 与离线评测缓存（`CAM_HF_CACHE` 可改缓存根目录）。
 
 ## 方法与边界
 
@@ -41,7 +41,7 @@ transformers 4.51.3 的接口写成，也兼容更新的版本（`torch_dtype` �
 2026-11-09 之前本分支要求 `transformers==4.57.3`、`lm-eval==0.4.9`、`datasets<4`，在 torch218 中启动即失败。CaM 本身无 FlashAttention/Triton 依赖。
 
 ```bash
-source /opt/conda/bin/activate torch218
+source /home/ma-user/anaconda3/bin/activate torch218
 
 # 仅首次需要；已有同一 Base 输出目录时跳过此命令，禁止覆盖旧结果
 python -m models.qwen3.prepare_base
@@ -59,7 +59,7 @@ bash scripts/evaluate_cam.sh --backend logkv --model /path/to/semanticlogkv/chec
   --suite niah --limit 4 --output outputs/logkv-check
 ```
 
-每次必须选择 `--suite main|niah|longbench`（输出进入 `<output>/<suite>/`）或诊断用 `--tasks`。可直接 `torchrun --standalone --nproc_per_node=1 -m models.cam.evaluate ...`。`scripts/evaluate_cam.sh` 默认单卡，可设 `NPROC_PER_NODE=8`，并支持 `NNODES/NODE_RANK/MASTER_ADDR/MASTER_PORT` 与 managed_cluster 变量。
+每次必须选择 `--suite main|niah|longbench`（输出进入 `<output>/<suite>/`）或诊断用 `--tasks`。可直接 `torchrun --standalone --nproc_per_node=1 -m models.cam.evaluate ...`。`scripts/evaluate_cam.sh` 默认单卡，可设 `NPROC_PER_NODE=8`，并支持 `NNODES/NODE_RANK/MASTER_ADDR/MASTER_PORT` 与 ModelArts 变量。
 
 ### 训练平台作业：majob.sh
 
@@ -71,13 +71,13 @@ bash majob.sh configs/cam_qwen3_1.7b.yaml --output outputs/cam-32k-full
 bash majob.sh configs/cam_qwen3_1.7b.yaml --backend dense --output outputs/dense-32k-full
 ```
 
-平台变量：`MA_NUM_GPUS`（每节点进程数，缺省 `NPROC_PER_NODE`/`LOCAL_WORLD_SIZE`/8）、`MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MA_VJ_NAME`/`MA_TASK_NAME`/`MA_MASTER_INDEX`（主节点 DNS，多节点禁止 localhost）、`MASTER_PORT`（main 用 +1、NIAH 用 +2，可由 `EVAL_MASTER_PORT`/`NIAH_MASTER_PORT` 覆盖）。`CAM_PYTHON` 直接指定解释器，否则激活 `/opt/conda/bin/activate ${CAM_CONDA_ENV:-torch218}`；环境名不代表实际版本，以结果记录为准。脚本导出 `LITGPT_EXPECTED_WORLD_SIZE`，快照评测器据此检查 rendezvous。
+平台变量：`MA_NUM_GPUS`（每节点进程数，缺省 `NPROC_PER_NODE`/`LOCAL_WORLD_SIZE`/8）、`MA_NUM_HOSTS`、`VC_TASK_INDEX`、`MA_VJ_NAME`/`MA_TASK_NAME`/`MA_MASTER_INDEX`（主节点 DNS，多节点禁止 localhost）、`MASTER_PORT`（main 用 +1、NIAH 用 +2，可由 `EVAL_MASTER_PORT`/`NIAH_MASTER_PORT` 覆盖）。`CAM_PYTHON` 直接指定解释器，否则激活 `/home/ma-user/anaconda3/bin/activate ${CAM_CONDA_ENV:-torch218}`；环境名不代表实际版本，以结果记录为准。脚本导出 `LITGPT_EXPECTED_WORLD_SIZE`，快照评测器据此检查 rendezvous。
 
-本地开发机没有服务器 `/workspace/...` 下的实际权重、数据缓存或 CUDA。正式实验在有这些挂载的 CUDA 机器运行；缺文件会明确报错。
+本地开发机没有服务器 `/home/ma-user/...` 下的实际权重、数据缓存或 CUDA。正式实验在有这些挂载的 CUDA 机器运行；缺文件会明确报错。
 
 ## 任务与预算
 
-项目任务清单 [eval_suites.yaml](../configs/eval_suites.yaml) 固定参照版本（`LogKV@bf8ca5f` 的 `eval.sh`/`majob.sh` 默认值）的 47 个 main 入口：14 个常识/知识/指令任务、20 个 LongBench、13 个 LongBench-E；另有 3 个 NIAH single。按统一协议，NIAH 只评测 `[32768]`，模型窗口 32768、batch 1；main 与 NIAH 分阶段运行，main 阶段不传 NIAH metadata（与参考脚本一致）。参考 shell 原先对 NIAH 默认六档长度，本项目不再使用。
+项目任务清单 [eval_suites.yaml](../configs/eval_suites.yaml) 固定参照版本（`HourunLi/LogKV@4fd97c7` 的 `eval.sh`/`majob.sh` 默认值）的 47 个 main 入口：14 个常识/知识/指令任务、20 个 LongBench、13 个 LongBench-E；另有 3 个 NIAH single。按统一协议，NIAH 只评测 `[32768]`，模型窗口 32768、batch 1；main 与 NIAH 分阶段运行，main 阶段不传 NIAH metadata（与参考脚本一致）。参考 shell 原先对 NIAH 默认六档长度，本项目不再使用。
 
 HF 离线缓存路径由本项目设置（`CAM_HF_CACHE`，默认服务器共享缓存），且在 Transformers/Datasets 导入前生效；map/filter 预处理写进程私有临时文件，多 rank 不竞争共享缓存文件；新版 datasets 写入的不兼容缓存条目会明确报错，不升级 datasets、不换数据。RULER metadata 的 `pretrained` 统一为原始 Base 目录字符串，使三种后端共享生成数据和 tokenization 条件；参考 shell 使用各 checkpoint 的 SAVE_DIR 作为这个字段，旧结果不能仅凭任务名直接合并。
 

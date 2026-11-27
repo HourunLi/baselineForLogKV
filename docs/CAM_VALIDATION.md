@@ -80,7 +80,7 @@ python -m pytest -q \
 - 从 tiny LitGPT Base 转换，检验 manifest 并实际加载 CaM，执行继承自参考 eval.py 的真实选择题与生成方法；另一次参考导入保持原生接口。
 - 配置完整任务列表、NIAH 六种长度与当前 `litgpt/eval.sh` 逐项一致；三方输出合同、来源验证、错误标签移除和结果元数据。
 - 子进程验证缓存环境在 Transformers/Hugging Face 导入前生效；对新入口实际执行 `--print-config`，库实际 cache 路径与环境设定一致，未加载权重。
-- Shell 参数模拟覆盖单机、标准多机、managed_cluster 地址解析，以及拒绝多机静默 standalone；这不是实际分布式 GPU 执行。
+- Shell 参数模拟覆盖单机、标准多机、ModelArts 地址解析，以及拒绝多机静默 standalone；这不是实际分布式 GPU 执行。
 - 原有 DMS 离线测试及共享评测回归通过。未改动参考 `litgpt` 的源文件；原有 README/tutorials 未提交修改保留。
 
 尚未验证：实际 Qwen3-1.7B CUDA/BF16 推理、32K 峰值显存/吞吐、服务器数据与任务精度、多卡通信。没有新增训练或产生正式评测结果。下一步仅做文档中的 Full KV / CaM 相同任务各 4 条样本检查，再决定是否扩大。

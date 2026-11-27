@@ -161,7 +161,7 @@ def test_niah_preserves_user_offline_cache_paths(monkeypatch, tmp_path):
         assert os.environ["HF_HUB_OFFLINE"] == "1"
 
 
-def test_managed_cluster_bounds_workers_by_visible_gpus(tmp_path):
+def test_modelarts_bounds_workers_by_visible_gpus(tmp_path):
     import os
     root = Path(__file__).resolve().parents[1]
     # Only the launcher's standalone GPU-count probe sees this simulated CUDA topology.

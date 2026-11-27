@@ -25,13 +25,13 @@
 
 | 类别 | 版本 |
 |---|---|
-| 解释器 | `/opt/conda/envs/torch218/bin/python`，Python 3.10.20，EulerOS（glibc 2.31） |
+| 解释器 | `/home/ma-user/anaconda3/envs/torch218/bin/python`，Python 3.10.20，EulerOS（glibc 2.31） |
 | 深度学习 | torch 2.11.0+cu128、torchvision 0.26.0+cu128、triton 3.6.0、flash-attn 2.8.3 |
 | 评测 | **lm-eval 0.4.11**、**datasets 4.8.4**、transformers 4.51.3、tokenizers 0.21.4、huggingface-hub 0.36.2、evaluate 0.4.6、fsspec 2023.10.0 |
 | 数据与表格 | pyarrow 23.0.1、numpy 2.2.6、pandas 2.3.3、xlsxwriter 3.2.9 |
 | 训练相关 | lightning 2.6.1、jsonargparse 4.41.0、litdata 0.2.61、safetensors 0.7.0、tensorboard 2.20.0 |
 | 其他 | PyYAML 6.0.3、psutil 7.1.3、nltk 3.9.4、pytest 9.1.1、hf_transfer 0.1.9 |
-| editable 包 | `litgpt 0.5.12`，来自 `LitGPT@b1a96a0`，即 SemanticLogKV 的 fork |
+| editable 包 | `litgpt 0.5.12`，来自 `gitee.com/yushengzhao/litgpt@3ae1ade`，即 SemanticLogKV 的 fork |
 | **未安装** | accelerate、sentencepiece、openpyxl |
 | 硬件 | 8× A800-SXM4-80GB，驱动 535.183.01 |
 
@@ -45,9 +45,9 @@
   export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}
   ```
   （推断）训练作业的默认路径里排在前面的是一份旧 libcuda，`/usr/lib/x86_64-linux-gnu` 中是容器运行时注入的实际驱动库。
-- **`PYTHONPATH=/opt/runtime/lib:/workspace/infer/model/1`。** 包名和顶层模块名要避开 `utils`、`data`、`model`、`litgpt` 这类通用名字。
+- **`PYTHONPATH=/usr/local/seccomponent/lib:/home/ma-user/infer/model/1`。** 包名和顶层模块名要避开 `utils`、`data`、`model`、`litgpt` 这类通用名字。
 - **`HF_ENDPOINT=https://hf-mirror.com`。** 只在联网准备数据时有用，评测强制离线。
-- **`pip check` 原本就报冲突**（managed_cluster、msprof-analyze 对 attrs、pandas、numpy 等的约束）。这是环境原状，不要试图“修复”。
+- **`pip check` 原本就报冲突**（modelarts、msprof-analyze 对 attrs、pandas、numpy 等的约束）。这是环境原状，不要试图“修复”。
 - **lm-eval 0.4.9 在 torch218 里连 import 都失败（缺 accelerate）。** 已验证（副本中）。所以“把 lm-eval 锁到 0.4.9”在这个环境里不可行。
 
 ### 导出环境快照（只读）
@@ -55,8 +55,8 @@
 环境有变化或怀疑被改动时，在服务器上运行，把输出文件发出来核对：
 
 ```bash
-source /opt/conda/bin/activate torch218
-OUT=/workspace/torch218_env_$(date +%Y%m%d_%H%M%S).txt
+source /home/ma-user/anaconda3/bin/activate torch218
+OUT=/data/lihourun/torch218_env_$(date +%Y%m%d_%H%M%S).txt
 {
   echo "## python"; which python
   python -c "import sys, platform; print(sys.version); print(platform.platform())"
@@ -89,7 +89,7 @@ echo "$OUT"
 ```bash
 # freeze.txt 来自上面的 "## pip freeze" 段。去掉平台专用包、editable litgpt、需要编译的 flash-attn 和测试用不到的
 # torchvision；torch 去掉 +cu128 后缀改从 PyPI 安装，它的 nvidia/cuda 依赖由安装器重新解析
-grep -vE '^(-e |managed_cluster|ma[-_]|obstore|boto|s3transfer|cryptography|flash.attn|pip @|nvidia-|cuda-|torchvision)' \
+grep -vE '^(-e |modelarts|ma[-_]|tb-graph-ascend|msprof|esdk-obs|huaweicloud|obstore|boto|s3transfer|cryptography|flash.attn|pip @|nvidia-|cuda-|torchvision)' \
   freeze.txt | sed 's/+cu[0-9]*$//' > freeze-replica.txt
 uv venv --python 3.10 venv-torch218
 uv pip install --python venv-torch218/bin/python -r freeze-replica.txt
@@ -121,15 +121,15 @@ pandas 写 xlsx 时优先用 xlsxwriter，torch218 里只有它。在联网的�
 
 | 用途 | 路径 | 说明 |
 |---|---|---|
-| 各 baseline 代码 | `/workspace/baselineForLogKV/<分支名>` | chunkKV 在 `.../chunkKV`；其他分支同样每个一个目录 |
-| SemanticLogKV 项目 | `/workspace/semanticLogKV` | 只读参考，运行时不得访问 |
-| 原始 Base | `/workspace/checkpoints/Qwen/Qwen3-1.7B-Base/` | 保留末尾斜杠：RULER metadata 与缓存键用的就是这个写法 |
-| 训练数据 prolong | `/workspace/longcontext/prolong/data` | 只供需训练的方法使用 |
-| HF 缓存根 | `/workspace/data/hf_cache` | datasets 条目在其中的 `hf_cache/` 子目录 |
-| SemanticLogKV 输出 | `/workspace/ckpt-logKV/...`、`tb-32k-*` | 不得写入或覆盖 |
+| 各 baseline 代码 | `/data/lihourun/baselineForLogKV/<分支名>` | chunkKV 在 `.../chunkKV`；其他分支同样每个一个目录 |
+| SemanticLogKV 项目 | `/data/lihourun/semanticLogKV` | 只读参考，运行时不得访问 |
+| 原始 Base | `/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/` | 保留末尾斜杠：RULER metadata 与缓存键用的就是这个写法 |
+| 训练数据 prolong | `/home/ma-user/work/bucket-pangu-green/lihourun/longcontext/prolong/data` | 只供需训练的方法使用 |
+| HF 缓存根 | `/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache` | datasets 条目在其中的 `hf_cache/` 子目录 |
+| SemanticLogKV 输出 | `/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/...`、`tb-32k-*` | 不得写入或覆盖 |
 | 旧隔离目录 | `.../data/hf_cache/unreadable_by_datasets3` | ChunkKV 排错时留下的，不要复用；内容见 `docs/CHUNKKV.md` |
 
-`shared-storage` 是桶挂载。目录“移动”可能实际是复制加删除，修改时间不一定保留；而离线加载正是按修改时间选条目。
+`bucket-pangu-green` 是桶挂载。目录“移动”可能实际是复制加删除，修改时间不一定保留；而离线加载正是按修改时间选条目。
 
 ### 评测进程必须设置的变量
 
@@ -218,7 +218,7 @@ docs/<METHOD>.md             # 方法细节、预算口径、排错与验证记�
 | 端口 | `MASTER_PORT` 默认 6000，main 用 +1、NIAH 用 +2，可由 `EVAL_MASTER_PORT`、`NIAH_MASTER_PORT` 覆盖 |
 | 阶段 | 先 main 后 NIAH，各起一次 torchrun；main 失败即退出，不进入 NIAH |
 | 拒绝的参数 | `--suite`、`--tasks`、`--evaluation-config`、`--experiment-config`、`--print-config` |
-| 环境 | 默认 `source /opt/conda/bin/activate torch218`；conda 激活后再 `set -u` |
+| 环境 | 默认 `source /home/ma-user/anaconda3/bin/activate torch218`；conda 激活后再 `set -u` |
 | 运行库 | 激活后、任何 CUDA 调用前设置 SemanticLogKV 的 PATH/`LD_LIBRARY_PATH` 与 NCCL 变量（第 3 节） |
 | CUDA 自检 | 启动 torchrun 前用同一解释器执行一次 `torch.cuda.init()`；失败时打印加载的 libcuda 路径、驱动 API 版本和 `LD_LIBRARY_PATH` 后退出。`torch.cuda.device_count()` 走 NVML，驱动库不匹配时照样返回 8，不能代替初始化 |
 

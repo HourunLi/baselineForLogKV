@@ -41,7 +41,7 @@ def test_default_launcher_passes_the_shared_config_and_cli_overrides(tmp_path):
 
 
 def test_project_task_lists_are_the_fixed_32k_protocol():
-    """Snapshot of the reference eval.sh/majob.sh defaults (LogKV@bf8ca5f), NIAH at 32K only."""
+    """Snapshot of the reference eval.sh/majob.sh defaults (HourunLi/LogKV@4fd97c7), NIAH at 32K only."""
     suites = yaml.safe_load((ROOT / "configs/eval_suites.yaml").read_text())
     main = suites["main_tasks"]
     assert len(main) == 47 and len(set(main)) == 47
@@ -65,7 +65,7 @@ def test_standard_multinode_launcher_uses_shared_rendezvous(tmp_path):
                          "--master_addr", "worker0", "--master_port", "6123"]
 
 
-def test_managed_cluster_multinode_does_not_silently_launch_standalone(tmp_path):
+def test_modelarts_multinode_does_not_silently_launch_standalone(tmp_path):
     result, args = _launch(tmp_path, {"MA_NUM_HOSTS": "2"})
     assert result.returncode != 0 and not args
     assert "MASTER_ADDR" in result.stderr
@@ -74,7 +74,7 @@ def test_managed_cluster_multinode_does_not_silently_launch_standalone(tmp_path)
     assert "isolated jobs" in result.stderr
 
 
-def test_managed_cluster_launcher_resolves_platform_node_address(tmp_path):
+def test_modelarts_launcher_resolves_platform_node_address(tmp_path):
     result, args = _launch(tmp_path, {
         "MA_NUM_HOSTS": "2", "MA_NUM_GPUS": "8", "VC_TASK_INDEX": "1",
         "MA_VJ_NAME": "job", "MA_TASK_NAME": "worker", "MA_MASTER_INDEX": "0",
