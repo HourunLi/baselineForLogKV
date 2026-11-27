@@ -114,6 +114,7 @@ def _expand_single_string(text: str) -> str:
         inner = match.group(1)
         if ':-' in inner:
             var_name, default_val = inner.split(':-', 1)
+            return os.environ.get(var_name) or default_val
         elif '-' in inner:
             var_name, default_val = inner.split('-', 1)
         else:
