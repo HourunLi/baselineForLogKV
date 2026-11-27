@@ -56,6 +56,7 @@ def test_litgpt_yarn_dense_prefix_and_storage_reuse(interval):
         torch.testing.assert_close(actual[:, :48], dense(ids[:, :48]), atol=2e-6, rtol=2e-5)
     assert cam.snapshot(128)["retained_slots"] == 48 * 4
     assert cam.storage_bytes() == 48 * 4 * (2 * 8 * 4 + 4)
+    saved = [[t.clone() for t in c.storage] for c in cam.caches]
     cam.reset_cache()
     assert ptrs == [[t.data_ptr() for t in c.storage] for c in cam.caches]
     if interval == 1:
@@ -63,6 +64,9 @@ def test_litgpt_yarn_dense_prefix_and_storage_reuse(interval):
     else:
         replay = cam(ids, pos)
     torch.testing.assert_close(actual, replay, atol=2e-6, rtol=2e-5)
+    for cache, expected in zip(cam.caches, saved):
+        for tensor, reference in zip(cache.storage, expected):
+            torch.testing.assert_close(tensor, reference, atol=2e-5, rtol=2e-5)
 
 
 def test_reference_lm_checkpoint_score_and_generation(tmp_path, monkeypatch):

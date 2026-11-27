@@ -72,7 +72,31 @@ class CaMCache:
             self.scores = torch.cat((self.scores, self.scores.new_zeros(keys.shape[:3])), dim=2)
         self.processed_tokens += keys.shape[2]
 
-    def update(self, attention_scores):
+    def strict_windows(self, keys, values):
+        """Slide a full cache through one prefill block, compacting large tensors only once.
+
+        Each yielded view includes exactly one new token. The caller computes attention
+        and applies its single-victim merge before requesting the next view.
+        """
+        sinks = self.start_size
+        block = keys.shape[2]
+        buffers = (torch.cat((self.keys, keys), 2), torch.cat((self.values, values), 2),
+                   torch.cat((self.scores, self.scores.new_zeros(keys.shape[:3])), 2))
+        for offset in range(block):
+            window = slice(offset, offset + self.cache_size + 1)
+            self.keys, self.values, self.scores = (buf[:, :, window] for buf in buffers)
+            if offset and sinks:
+                for buf, stored in zip((self.keys, self.values, self.scores), self.storage):
+                    buf[:, :, :sinks].copy_(stored[:, :, :sinks])
+            self.processed_tokens += 1
+            yield offset
+            if sinks:
+                self.storage[2][:, :, :sinks].copy_(self.scores[:, :, :sinks])
+        for buf, stored in zip(buffers, self.storage):
+            stored[:, :, sinks:].copy_(buf[:, :, block + sinks:])
+        self.keys, self.values, self.scores = self.storage
+
+    def update(self, attention_scores, *, sliding=False):
         """Accumulate this forward's attention, then merge and remove the oldest recent entries over budget."""
         if self.scores is None or attention_scores.shape != self.scores.shape:
             raise ValueError("attention_scores must match [batch, kv_heads, cached_tokens]")
@@ -108,6 +132,9 @@ class CaMCache:
                                                         upper=False, unitriangular=True)
                 carry[:, :, begin + n:begin + n + merge].add_(band[..., n:, :] @ victims)
             self.values[:, :, start + excess:start + excess + merge] = carry[:, :, excess:]
+
+        if sliding:
+            return  # strict_windows advances the view after this merge.
 
         def compact(tensor, out):
             if out is None:

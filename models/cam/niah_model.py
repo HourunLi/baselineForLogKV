@@ -36,6 +36,14 @@ class NiahCaM(nn.Module):
             while begin < tokens:
                 # Before the cache fills no query can observe an eviction. Evaluate those rows together.
                 free = capacity - min(cache.processed_tokens, capacity)
+                if free == 0 and merge_interval == 1 and tokens - begin > 1:
+                    cos, sin = gpt.cos[None, :capacity + 1], gpt.sin[None, :capacity + 1]
+                    queries = apply_rope(q[:, :, begin:], cos[:, -1:], sin[:, -1:])
+                    for i in cache.strict_windows(k[:, :, begin:], v[:, :, begin:]):
+                        keys = apply_rope(cache.keys, cos, sin)
+                        outputs.append(attend_and_merge(queries[:, :, i:i + 1], keys, cache, scale,
+                                                        sliding=True))
+                    break
                 end = min(tokens, begin + (free if free > 0 else merge_interval))
                 cache.append(k[:, :, begin:end], v[:, :, begin:end])
                 length = cache.keys.shape[2]

@@ -2,7 +2,7 @@
 import torch
 
 
-def attend_and_merge(query, keys, cache, scale):
+def attend_and_merge(query, keys, cache, scale, *, sliding=False):
     batch, heads, tokens, dim = query.shape
     groups, length = keys.shape[1:3]
     queries_per_group = heads // groups
@@ -22,5 +22,5 @@ def attend_and_merge(query, keys, cache, scale):
         received.add_(probs.mean(dim=2).sum(dim=2))
         out = probs.reshape(batch, groups, -1, length).to(cache.values.dtype) @ cache.values
         outputs.append(out.reshape(batch, heads, count, dim).transpose(1, 2))
-    cache.update(received)
+    cache.update(received, sliding=sliding)
     return torch.cat(outputs, dim=1).reshape(batch, tokens, heads * dim)
