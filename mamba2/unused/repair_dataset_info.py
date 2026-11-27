@@ -16,7 +16,7 @@ the original is kept as ``dataset_info.json.truncated``.
 
     python unused/repair_dataset_info.py <cache>/cais___mmlu/world_religions/0.0.0/<hash>/dataset_info.json
     python unused/repair_dataset_info.py <same path> --write --check
-    python unused/repair_dataset_info.py --scan /workspace/data/hf_cache/hf_cache \\
+    python unused/repair_dataset_info.py --scan /home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache/hf_cache \\
         [--write --check]   # every unreadable file under the cache (majob.sh / eval.sh: REPAIR_HF_CACHE=1)
 """
 

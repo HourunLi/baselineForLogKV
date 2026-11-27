@@ -9,7 +9,7 @@
 `eval.sh` 默认同时报告有效 KV 槽位压缩，无需重新训练或增加开关。先用 4 条 32K 样本检查输出：
 
 ```bash
-DIAG_ARGS='--limit 4 --metadata {"pretrained":"/workspace/checkpoints/Qwen/Qwen3-1.7B-Base/","max_seq_lengths":[32768]}' \
+DIAG_ARGS='--limit 4 --metadata {"pretrained":"/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-1.7B-Base/","max_seq_lengths":[32768]}' \
   bash eval.sh exp/qwen1.7b-32k/arc_attach_alpha_beta_k12_b128_2k.yaml niah_single_2 none
 ```
 

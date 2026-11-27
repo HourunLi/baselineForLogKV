@@ -155,7 +155,7 @@ def expand_env_vars(obj: Any) -> Any:
     训练（demo.py）与评测（eval.py）的 YAML 装载、CLI 参数注入必须共用它：
     Python 自带的 os.path.expandvars 不认识 `${VAR-default}`（变量名含 `-`
     时查不到就原样保留），曾导致 demo 把 checkpoint 存进字面名为
-    `maintainer` 的目录，而 majob.sh 用 bash 展开后的路径去
+    `lihourun` 的目录，而 majob.sh 用 bash 展开后的路径去
     评测，两边指向不同目录。幂等：已展开的字符串不含 `${...}`，再过一遍是
     no-op。
     """

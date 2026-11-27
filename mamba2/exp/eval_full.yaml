@@ -1,7 +1,7 @@
 arch_name: Qwen/Qwen3-8B-Base
-checkpoint_dir: ${MAMBA2_CKPT:-/workspace/ckpt-mamba2/qwen8b-32k}
-tokenizer_dir: ${QWEN_BASE:-/workspace/checkpoints/Qwen/Qwen3-8B-Base}
-output_path: ${MAMBA2_RESULTS:-/workspace/ckpt-mamba2/eval-full}
+checkpoint_dir: ${MAMBA2_CKPT:-/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-mamba2/qwen8b-32k}
+tokenizer_dir: ${QWEN_BASE:-/home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-8B-Base}
+output_path: ${MAMBA2_RESULTS:-/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-mamba2/eval-full}
 config_overrides:
   block_size: 32768
 eval_main: true

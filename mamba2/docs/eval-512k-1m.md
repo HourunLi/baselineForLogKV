@@ -36,7 +36,7 @@ PPL 的 32K–256K 下载流程同样使用普通文件；可用的 Hub 缓存�
 下载器改用普通目录并打印新路径；评测进程必须导出新路径，子进程无法修改父 shell 的旧环境变量。
 
 ```bash
-export HF_HOME=/workspace/data/hf_cache
+export HF_HOME=/home/ma-user/work/bucket-pangu-green/lihourun/data/hf_cache
 export LONGBENCH2_DIR="${HF_HOME}/longbench2"
 export BABILONG_DIR="${HF_HOME}/babilong"
 export LONG_PPL_DOCS=10
@@ -44,12 +44,12 @@ export LONG_PPL_BOOKS="${HF_HOME}/long_ppl_books_1m/emozilla--pg19"
 
 bash diag.sh unused/fetch_long_eval_data.py --lengths 512k,1m --longbench2 \
   --ppl-books-hub emozilla/pg19 \
-  --tokenizer /workspace/checkpoints/Qwen/Qwen3-8B-Base \
+  --tokenizer /home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-8B-Base \
   --out fetch_512k_1m.json
 
 bash diag.sh unused/check_long_eval_data.py --lengths 512k,1m \
   --suites ruler,babilong,books,longbench2 \
-  --tokenizer /workspace/checkpoints/Qwen/Qwen3-8B-Base
+  --tokenizer /home/ma-user/work/bucket-pangu-green/lihourun/checkpoints/Qwen/Qwen3-8B-Base
 ```
 
 1.7B 将 tokenizer 改为 `Qwen3-1.7B-Base`。每个 tokenizer 有独立的 PPL 选择缓存。
