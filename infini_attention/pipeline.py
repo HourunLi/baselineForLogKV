@@ -33,24 +33,18 @@ def main():
     root = Path(env.get("INFINI_OUTPUT_ROOT") or
                 Path("/home/ma-user/work/bucket-pangu-green/lihourun/ckpt-logKV/Infini-Attention") /
                 env.get("MA_VJ_NAME", "qwen8b-32k")).resolve()
+    checkpoint = "cpt"
+    step_args = []
     if args.steps is not None:
         if not 1 <= args.steps < cfg["steps"]:
             cli.error(f"Smoke test steps must be between 1 and {cfg['steps'] - 1}")
         root = root / "smoke" / f"steps-{args.steps}"
-        env.update(INFINI_OUTPUT_ROOT=str(root), GPUS_PER_NODE=str(gpus),
-                   INFINI_QWEN_BASE=env.get("INFINI_QWEN_BASE") or cfg["base"])
-        print(f"Training smoke test: {args.steps} steps in {root}", flush=True)
-        train = ["bash", "scripts/train_infini.sh"]
-        run_stages(nodes, rank, env, [
-            ("GPU, NCCL, base and shared storage", train + ["check"], False),
-            ("prepare ProLong", train + ["prepare"], True),
-            ("CPT smoke test", train + ["cpt", "--steps", str(args.steps)], False),
-        ])
-        return
-    env.update(INFINI_OUTPUT_ROOT=str(root), INFINI_CHECKPOINT_DIR=str(root / "cpt"),
+        checkpoint = f"trial-{args.steps}"
+        step_args = ["--steps", str(args.steps)]
+    env.update(INFINI_OUTPUT_ROOT=str(root), INFINI_CHECKPOINT_DIR=str(root / checkpoint),
                GPUS_PER_NODE=str(gpus), INFINI_QWEN_BASE=env.get("INFINI_QWEN_BASE") or cfg["base"])
     env.setdefault("INFINI_OUTPUT_DIR", str(root / "evaluate"))
-    print(f"CPT output: {root}/cpt\nEvaluation: {env['INFINI_OUTPUT_DIR']}", flush=True)
+    print(f"CPT output: {root / checkpoint}\nEvaluation: {env['INFINI_OUTPUT_DIR']}", flush=True)
     train = ["bash", "scripts/train_infini.sh"]
     stages = [
         ("GPU, NCCL, base and shared storage", train + ["check"], False),
@@ -59,7 +53,7 @@ def main():
     ]
     if args.pipeline:
         stages.extend([("prepare ProLong", train + ["prepare"], True),
-                       ("CPT", train + ["cpt"], False),
+                       ("CPT", train + ["cpt"] + step_args, False),
                        ("evaluation", ["bash", "eval.sh"], False)])
     run_stages(nodes, rank, env, stages)
 
